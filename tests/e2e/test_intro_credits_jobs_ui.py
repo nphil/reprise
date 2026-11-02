@@ -212,7 +212,7 @@ def dashboard(authed_page: Page, app_url: str):
         state["paused"] = processing_paused
         file_lists.clear()
         file_lists.update(file_lists_by_id or {})
-        authed_page.goto(f"{app_url}/")
+        authed_page.goto(f"{app_url}/dashboard")
         authed_page.wait_for_load_state("domcontentloaded")
         if any(job["status"] not in {"pending", "running"} for job in jobs_ref["jobs"]):
             authed_page.locator("#jobStatusFilter").select_option(label="All jobs and history")

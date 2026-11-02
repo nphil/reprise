@@ -6,9 +6,11 @@ from pathlib import Path
 
 import pytest
 
+from media_preview_generator.markers.store import MarkerStore
 from media_preview_generator.reprise.analysis import analyze
 from media_preview_generator.reprise.identity import media_version
-from media_preview_generator.reprise.models import CandidateWindow
+from media_preview_generator.reprise.models import CandidateWindow, PlaybackIdentity
+from media_preview_generator.reprise.store import RepriseStore
 
 
 def make_video(path: Path, picture=None, changed_audio=False, filters=None):
@@ -65,11 +67,35 @@ def make_video(path: Path, picture=None, changed_audio=False, filters=None):
     return media_version(str(path), 7000, json.dumps({"audio_streams": [{"plex_id": "123", "index": 1}]}))
 
 
-def run(target, reference, kind="intro"):
+@pytest.fixture
+def catalog(tmp_path):
+    markers = MarkerStore(str(tmp_path / "markers.db"))
+    store = RepriseStore(markers)
+
+    def register(*versions):
+        for episode, version in enumerate(versions, start=1):
+            key = str(episode)
+            identity = PlaybackIdentity(
+                "machine", key, key, key, "/part/" + key, version.size_bytes, version.duration_ms, "123"
+            )
+            store.register_media(
+                version,
+                identity,
+                server_id="server",
+                metadata={"library_id": "library", "show_key": "show", "season": 1, "episode": episode},
+            )
+        return store
+
+    yield register
+    markers.close()
+
+
+def run(target, reference, catalog, kind="intro"):
     return analyze(
         target,
         [CandidateWindow(kind, 1000, 6000, "test")],
         [reference],
+        store=catalog(target, reference),
         cancel_check=lambda: False,
         pause_check=lambda: False,
         progress_callback=None,
@@ -94,10 +120,10 @@ def overlaps(start, end, ranges):
         ((4.0, 4.3), False, "credits"),  # credit/post-credit footage
     ],
 )
-def test_changed_native_material_is_preserved(tmp_path, picture, changed_audio, kind):
+def test_changed_native_material_is_preserved(tmp_path, catalog, picture, changed_audio, kind):
     reference = make_video(tmp_path / "reference.mkv")
     target = make_video(tmp_path / "target.mkv", picture, changed_audio)
-    result = run(target, reference, kind)
+    result = run(target, reference, catalog, kind)
     assert result.status == "complete", result.reasons
     assert skips(result), result.reasons
     if picture is None:
@@ -110,20 +136,21 @@ def test_changed_native_material_is_preserved(tmp_path, picture, changed_audio, 
     assert all(r.audio_stream_ids == ("123",) for r in skips(result))
 
 
-def test_identical_timeline_produces_proposals(tmp_path):
+def test_identical_timeline_produces_proposals(tmp_path, catalog):
     reference = make_video(tmp_path / "reference.mkv")
     target = make_video(tmp_path / "target.mkv")
-    result = run(target, reference)
+    result = run(target, reference, catalog)
     assert result.status == "complete", result.reasons
     assert overlaps(3000, 4000, skips(result)), result.reasons
 
 
-def test_cancelled_analysis_never_returns_partial_ranges(tmp_path):
+def test_cancelled_analysis_never_returns_partial_ranges(tmp_path, catalog):
     item = make_video(tmp_path / "one.mkv")
     result = analyze(
         item,
         [CandidateWindow("intro", 1000, 6000, "test")],
         [],
+        store=catalog(item),
         cancel_check=lambda: True,
         pause_check=lambda: False,
         progress_callback=None,
@@ -133,7 +160,7 @@ def test_cancelled_analysis_never_returns_partial_ranges(tmp_path):
     assert not result.ranges and not result.evidence
 
 
-def test_reordered_pictures_do_not_form_a_false_run(tmp_path):
+def test_reordered_pictures_do_not_form_a_false_run(tmp_path, catalog):
     def boxes(first, second):
         return (
             f"drawbox=x=0:y=0:w=40:h=40:color={first}:t=fill:enable='between(t,2,2.9)',"
@@ -142,19 +169,20 @@ def test_reordered_pictures_do_not_form_a_false_run(tmp_path):
 
     reference = make_video(tmp_path / "reference.mkv", filters=boxes("red", "blue"))
     target = make_video(tmp_path / "target.mkv", filters=boxes("blue", "red"))
-    result = run(target, reference)
+    result = run(target, reference, catalog)
     assert result.status == "complete", result.reasons
     assert not overlaps(2000, 3000, skips(result))
     assert not overlaps(4000, 5000, skips(result))
 
 
-def test_nonzero_video_seek_keeps_file_presentation_time(tmp_path):
+def test_nonzero_video_seek_keeps_file_presentation_time(tmp_path, catalog):
     reference = make_video(tmp_path / "reference.mkv")
     target = make_video(tmp_path / "target.mkv")
     result = analyze(
         target,
         [CandidateWindow("credits", 3000, 6000, "test")],
         [reference],
+        store=catalog(target, reference),
         cancel_check=lambda: False,
         pause_check=lambda: False,
         progress_callback=None,
@@ -223,21 +251,7 @@ def test_video_seek_uses_absolute_normalized_presentation_times(tmp_path, offset
     assert [pts for pts, _ in frames] == expected
 
 
-def test_variable_presentation_times_do_not_hide_a_changed_frame():
-    from fractions import Fraction
-
-    from media_preview_generator.reprise.recurrence import matching_second
-
-    timestamps = [Fraction(0)]
-    for i in range(35):
-        timestamps.append(timestamps[-1] + (80 if i % 2 else 120))
-    original = [(pts, f"frame-{i}") for i, pts in enumerate(timestamps)]
-    changed = [(pts, "gag" if 1400 <= pts < 1600 else digest) for pts, digest in original]
-    assert matching_second(original, original, 1000, 0)
-    assert not matching_second(original, changed, 1000, 0)
-
-
-def test_actual_vfr_video_preserves_short_visual_change(tmp_path):
+def test_actual_vfr_video_preserves_short_visual_change(tmp_path, catalog):
     vfr = r"settb=1/1000,setpts=PTS+floor(N/2)*20"
     gag = "drawbox=x=0:y=0:w=40:h=40:color=red:t=fill:enable='between(t,2.2,2.3)'," + vfr
     reference = make_video(tmp_path / "reference.mkv", filters=vfr)
@@ -258,7 +272,7 @@ def test_actual_vfr_video_preserves_short_visual_change(tmp_path):
     )
     times = [round(float(f["best_effort_timestamp_time"]) * 1000) for f in json.loads(probe)["frames"]]
     assert len({b - a for a, b in zip(times, times[1:], strict=False)}) > 1
-    result = run(target, reference)
+    result = run(target, reference, catalog)
     assert result.status == "complete", result.reasons
     assert skips(result), result.reasons
     assert not overlaps(2420, 2640, skips(result))  # actual VFR presentation support of changed frames
@@ -277,7 +291,7 @@ def test_inode_mismatch_rejected(tmp_path):
         check_current(replace(version, inode=version.inode + 1))
 
 
-def test_duplicate_candidates_have_unique_store_keys(tmp_path):
+def test_duplicate_candidates_have_unique_store_keys(tmp_path, catalog):
     reference = make_video(tmp_path / "reference.mkv")
     target = make_video(tmp_path / "target.mkv")
     window = CandidateWindow("intro", 1000, 6000, "test")
@@ -285,6 +299,7 @@ def test_duplicate_candidates_have_unique_store_keys(tmp_path):
         target,
         [window, window],
         [reference],
+        store=catalog(target, reference),
         cancel_check=lambda: False,
         pause_check=lambda: False,
         progress_callback=None,

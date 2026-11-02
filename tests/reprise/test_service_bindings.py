@@ -1,5 +1,6 @@
 """Binding safety and real queue/SQLite checks using generated audiovisual media."""
 
+import os
 import shutil
 import threading
 import time
@@ -8,11 +9,13 @@ from dataclasses import replace
 import pytest
 
 from media_preview_generator.markers.store import MarkerStore
+from media_preview_generator.reprise.admission import admit_references
 from media_preview_generator.reprise import service as service_module
 from media_preview_generator.reprise.identity import media_version
-from media_preview_generator.reprise.models import AnalysisResult, DecisionRange, Evidence, PlaybackIdentity
+from media_preview_generator.reprise.models import DecisionRange, Evidence, PlaybackIdentity
 from media_preview_generator.reprise.service import RepriseService, _mapping_fingerprint
 from media_preview_generator.reprise.store import RepriseStore
+from media_preview_generator.reprise.verification_profile import PROFILE_FINGERPRINT, PROFILE_ID
 from media_preview_generator.servers.registry import ServerRegistry
 from media_preview_generator.web import jobs, settings_manager
 from media_preview_generator.web.routes import job_runner
@@ -70,6 +73,7 @@ def test_mapping_changes_immediately_invalidate_stream_and_publication_eligibili
     b.mkdir()
     (a / "episode.mp4").write_bytes(b"original")
     (b / "episode.mp4").write_bytes(b"original")
+    (a / "reference.mp4").write_bytes(b"reference")
     remote = "/plex/tv/episode.mp4"
     version = media_version(str(a / "episode.mp4"), 10000, "{}")
     identity = PlaybackIdentity("machine", "1", "2", "3", "/library/parts/3/file", 8, 10000, "4")
@@ -95,16 +99,25 @@ def test_mapping_changes_immediately_invalidate_stream_and_publication_eligibili
         "library_id": "library",
         "remote_part_path": remote,
         "mapping_fingerprint": _mapping_fingerprint(cfg, cfg.libraries[0]),
+        "show_key": "show", "season": 1, "episode": 1,
     }
     store.register_media(version, identity, server_id="server", metadata=metadata)
+    reference = media_version(str(a / "reference.mp4"), 10000, "{}")
+    ref_identity = replace(identity, rating_key="2", media_id="20", part_id="30",
+                           part_key="/library/parts/30/file", part_size_bytes=9)
+    ref_metadata = {**metadata, "episode": 2, "remote_part_path": "/plex/tv/reference.mp4"}
+    store.register_media(reference, ref_identity, server_id="server", metadata=ref_metadata)
+    snapshot = admit_references(version, [reference], store)[0][1]
     service = RepriseService(store, registry, None)
     evidence = Evidence(
-        "e", 0, 1000, "audiovisual", "match", "match", "", version.id, 0, 1000, {"checked_audio_stream_ids": ["4"]}
+        "e", 0, 1000, "audiovisual", "match", "match", "", reference.id, 0, 1000,
+        {"checked_audio_stream_ids": ["4"], "admission_provenance": snapshot,
+         "verification_profile": PROFILE_ID, "profile_fingerprint": PROFILE_FINGERPRINT}
     )
-    approved = DecisionRange("r", "intro", "skip", 0, 1000, "approved", True, "detector", "match", "", ("e",), ("4",))
-    result = AnalysisResult(
-        version.id, "analysis", 1, "complete", "current", "signature", "1", (approved,), (evidence,), ()
-    )
+    proposal = DecisionRange("r", "intro", "skip", 0, 1000, "proposed", False, "detector", "match", "", ("e",), ("4",))
+    run = store.begin_analysis(version.id, "job", "signature")
+    result = store.finish_analysis(run, (evidence,), (proposal,), version.id)
+    result = store.save_review(version.id, result.result_revision, [{"range_id": "r", "review_status": "approved"}], "owner")
     assert service.eligible_ranges(result, identity)
     with service.open_stream(version.id)[0] as source:
         assert source.read() == b"original"
@@ -128,7 +141,11 @@ def test_mapping_changes_immediately_invalidate_stream_and_publication_eligibili
     (b / "episode.mp4").unlink()
     metadata["mapping_fingerprint"] = _mapping_fingerprint(cfg, cfg.libraries[0])
     store.register_media(version, identity, server_id="server", metadata=metadata)
-    assert service.eligible_ranges(result, identity)
+    ref_metadata["mapping_fingerprint"] = metadata["mapping_fingerprint"]
+    store.register_media(reference, ref_identity, server_id="server", metadata=ref_metadata)
+    assert not service.eligible_ranges(result, identity)
+    with service.open_stream(version.id)[0] as source:
+        assert source.read() == b"original"
     (b / "episode.mp4").write_bytes(b"original")
     assert service.lookup(identity)["freshness"] == "stale"
     assert not service.eligible_ranges(result, identity)
@@ -186,6 +203,7 @@ def lifecycle(tmp_path, monkeypatch, synthetic_episode):
                 "remote_part_path": str(path),
                 "show_key": "show",
                 "season": 1,
+                "episode": int(rating_key.rsplit("-", 1)[-1]),
                 "candidates": [
                     {"kind": kind, "start_ms": 1000, "end_ms": 6000, "source": "fixture"}
                     for kind in ("intro", "credits")
@@ -256,6 +274,25 @@ def test_alternate_episode_version_cannot_supply_recurrence(lifecycle):
     )
     assert not service.lookup(identity)["eligible_skip_ranges"]
     assert not any(e.reference_version_id for e in result.evidence)
+
+def test_hardlinked_episode_alias_cannot_supply_recurrence(lifecycle):
+    service, register = lifecycle
+    original, identity = register("target", "episode-1")
+    path = original.canonical_path
+    alias_path = path + ".hardlink"
+    os.link(path, alias_path)
+    target = media_version(path, original.duration_ms, original.stream_signature)
+    alias = media_version(alias_path, original.duration_ms, original.stream_signature)
+    metadata = service.store.get_bindings(original.id)[0][2]
+    service.store.register_media(target, identity, server_id="server", metadata=metadata)
+    alias_identity = replace(identity, rating_key="episode-2", media_id="alias", part_id="alias", part_key="/part/alias")
+    service.store.register_media(alias, alias_identity, server_id="server",
+                                 metadata={**metadata, "episode": 2, "remote_part_path": alias_path})
+    assert target.id != alias.id and (target.device, target.inode) == (alias.device, alias.inode)
+    queued_analysis(service, target)
+    result = service.store.get_result(target.id)
+    assert not any(e.reference_version_id for e in result.evidence)
+    assert not any(r.action == "skip" for r in result.ranges)
 
 
 @pytest.mark.parametrize("cancel_at", ["analyzer_return", "binding_check"])

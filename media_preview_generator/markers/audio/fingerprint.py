@@ -2,9 +2,8 @@
 
 CPU only (there is no GPU chromaprint). As many run at once as workers run them: the worker pool is the cap, as it is
 for previews. Each runs at ffmpeg's own thread count on any worker: a GPU worker's ``ffmpeg_threads`` caps its GPU
-work, and chromaprint is CPU work. Pause all, quiet hours and a schedule's stop time stop a running one where it is
-(:mod:`..freeze`). Only jellyfin-ffmpeg carries the chromaprint muxer in the image; the arm64 image has none, so season
-audio is then unavailable rather than failing every episode.
+work, and chromaprint is CPU work. Pause all, quiet hours and a schedule's stop time stop a running one in place.
+Season audio is unavailable if the selected FFmpeg lacks the chromaprint muxer.
 """
 
 from __future__ import annotations
@@ -72,7 +71,6 @@ MISSING_KEEP = timedelta(days=30)
 # How long an ffmpeg that didn't list its muxers (timed out, couldn't start, exited with an error) stays unknown before
 # it is asked again.
 CHROMAPRINT_RETRY_S = 600.0
-JELLYFIN_FFMPEG = "/usr/lib/jellyfin-ffmpeg/ffmpeg"
 # How long a killed ffmpeg may take to let go of its output before it is left to a reaper thread.
 KILL_WAIT_S = 5.0
 # The time limit of one fingerprint (a hung network mount must not hold a worker), shared by its ffmpeg runs when the
@@ -187,15 +185,12 @@ def forget_chromaprint_answers() -> None:
 
 
 def _ffmpeg_candidates(configured: str | None) -> list[str]:
-    return [
-        candidate
-        for candidate in dict.fromkeys(c for c in (configured, JELLYFIN_FFMPEG, shutil.which("ffmpeg")) if c)
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK)
-    ]
+    candidate = shutil.which(configured or "ffmpeg")
+    return [candidate] if candidate else []
 
 
 def chromaprint_ffmpeg(configured: str | None) -> str | None:
-    """The first ffmpeg with chromaprint: the configured one, jellyfin-ffmpeg, then ``ffmpeg`` on PATH."""
+    """Return the selected FFmpeg if it has chromaprint."""
     for candidate in _ffmpeg_candidates(configured):
         if has_chromaprint(candidate):
             return candidate
@@ -225,7 +220,7 @@ def chromaprint_status(configured: str | None) -> tuple[str | None, str]:
         return found, ""
     if chromaprint_state(configured) is ChromaprintState.UNKNOWN:
         return None, "ffmpeg didn't answer the check for the chromaprint muxer; it is checked again in 10 minutes"
-    return None, "Needs an ffmpeg with the chromaprint muxer (jellyfin-ffmpeg in the amd64 image); none was found"
+    return None, "Needs an ffmpeg with the chromaprint muxer; the selected ffmpeg does not provide it"
 
 
 def fingerprint_window(retime: float | None) -> str:

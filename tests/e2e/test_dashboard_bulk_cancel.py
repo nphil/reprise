@@ -44,7 +44,7 @@ def test_cancel_selected_cancels_only_ticked_rows_including_running(authed_page:
 
     page.route("**/api/jobs?**", jobs_list)
     page.route("**/api/jobs/cancel-bulk", cancel_bulk)
-    page.goto(f"{app_url}/")
+    page.goto(f"{app_url}/dashboard")
 
     expect(page.locator("#job-row-q-one")).to_be_visible()
     expect(page.locator("#selectionBar")).to_be_hidden()
@@ -84,7 +84,7 @@ def test_cancel_selected_shows_neutral_toast_when_some_are_skipped(authed_page: 
 
     page.route("**/api/jobs?**", jobs_list)
     page.route("**/api/jobs/cancel-bulk", cancel_bulk)
-    page.goto(f"{app_url}/")
+    page.goto(f"{app_url}/dashboard")
 
     page.locator("#job-row-q-one .job-select-cb").check()
     page.locator("#job-row-q-two .job-select-cb").check()
@@ -120,7 +120,7 @@ def test_delete_finished_acts_only_on_ticked_rows_and_clear_dropdown_hides(authe
 
     page.route("**/api/jobs?**", jobs_list)
     page.route("**/api/jobs/clear", clear)
-    page.goto(f"{app_url}/")
+    page.goto(f"{app_url}/dashboard")
 
     expect(page.locator("#job-row-d-one")).to_be_visible()
     expect(page.locator("#clearJobsDropdown")).to_be_visible()
@@ -153,7 +153,7 @@ def test_select_all_checkbox_sits_in_its_own_column_left_of_id(authed_page: Page
         _fulfill_json(route, {"jobs": list(jobs.values()), "total": len(jobs), "pages": 1, "page": 1})
 
     page.route("**/api/jobs?**", jobs_list)
-    page.goto(f"{app_url}/")
+    page.goto(f"{app_url}/dashboard")
 
     box = page.locator("#job-row-q-one .job-select-cb").bounding_box()
     jid = page.locator("#job-row-q-one .jid").bounding_box()
@@ -177,7 +177,7 @@ def test_running_rows_are_selectable_whether_paused_or_not(authed_page: Page, ap
         _fulfill_json(route, {"jobs": list(jobs.values()), "total": len(jobs), "pages": 1, "page": 1})
 
     page.route("**/api/jobs?**", jobs_list)
-    page.goto(f"{app_url}/")
+    page.goto(f"{app_url}/dashboard")
 
     expect(page.locator("#job-row-r-held")).to_be_visible()
     expect(page.locator("#job-row-r-held .job-select-cb")).to_have_count(1)

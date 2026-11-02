@@ -199,7 +199,7 @@ class TestNotificationsLifecycle:
         """
         app_url, _ = backend_real_app
 
-        backend_real_page.goto(f"{app_url}/")
+        backend_real_page.goto(f"{app_url}/dashboard")
         backend_real_page.wait_for_load_state("domcontentloaded")
 
         # Wait for loadNotifications() to populate the list.
@@ -245,7 +245,7 @@ class TestNotificationsLifecycle:
             return backend_real_page.locator(f'.notification-entry[data-notification-id="{notification_id}"]')
 
         # Precondition: both cards render, so the later absence is meaningful.
-        backend_real_page.goto(f"{app_url}/")
+        backend_real_page.goto(f"{app_url}/dashboard")
         expect(entry(DEPRECATED_IMAGE_ID)).to_have_count(1, timeout=8000)
         expect(entry(SCHEMA_MIGRATION_ID)).to_have_count(1)
 

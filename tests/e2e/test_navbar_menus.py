@@ -120,7 +120,9 @@ def nav_page(authed_page: Page) -> Generator[Page, None, None]:
     assert errors == [], {"page_errors": errors, "script_network": script_network}
 
 
-def _open(page: Page, app_url: str, path: str = "/", viewport: dict = DESKTOP, font: str = "page-font") -> None:
+def _open(
+    page: Page, app_url: str, path: str = "/dashboard", viewport: dict = DESKTOP, font: str = "page-font"
+) -> None:
     page.set_viewport_size(viewport)
     page.goto(f"{app_url}{path}")
     expect(page.locator("nav.navbar")).to_be_visible()
@@ -518,7 +520,7 @@ class TestPhoneMenu:
             _expect_open(nav_page, name)
             for other in _others(name):
                 _expect_closed(nav_page, other)
-            assert nav_page.url == f"{app_url}/"
+            assert nav_page.url == f"{app_url}/dashboard"
             items = _items(nav_page, name)
             expect(items.locator("b")).to_have_text(_texts(name))
             for i in range(items.count()):

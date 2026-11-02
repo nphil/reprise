@@ -106,7 +106,7 @@ def _open(page: Page, app_url: str, groups: list[dict], workers: list[dict], wid
     page.route("**/api/worker-groups**", lambda r: _fulfill_json(r, state))
     page.route("**/api/jobs/workers", lambda r: _fulfill_json(r, {"workers": workers}))
     page.set_viewport_size({"width": width, "height": 900})
-    page.goto(app_url + "/")
+    page.goto(app_url + "/dashboard")
     page.evaluate("localStorage.removeItem('workerGroupsExpanded')")
     page.reload()
     page.wait_for_selector("#workerGroupLiveRows [data-group-id]")

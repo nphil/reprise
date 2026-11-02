@@ -59,7 +59,7 @@ def test_queue_filters_keep_exact_library_pair_and_reset_pagination(authed_page:
         )
 
     page.route("**/api/jobs?**", jobs)
-    page.goto(app_url + "/")
+    page.goto(app_url + "/dashboard")
     queue = page.locator("#dashboard-all-jobs")
     expect(queue.get_by_role("option", name="Movies · Home Plex", exact=True)).to_have_count(1)
     expect(queue.get_by_role("option", name="Movies · Studio Jellyfin", exact=True)).to_have_count(1)
@@ -140,7 +140,7 @@ def test_worker_identity_and_open_file_survive_progress_and_status_updates(
         },
     ]
     page.route("**/api/jobs/workers", lambda route: _fulfill_json(route, {"workers": workers}))
-    page.goto(app_url + "/")
+    page.goto(app_url + "/dashboard")
     preview = page.locator('[data-worker-key="GPU_42"]')
     loudness = page.locator('[data-worker-key="CPU_5"]')
     expect(preview.get_by_text("#42", exact=True)).to_have_attribute("aria-label", "Worker ID 42")
@@ -208,7 +208,7 @@ def test_hidden_occupied_group_remains_discoverable_and_keeps_paused_state(authe
         "ffmpeg_started": True,
     }
     page.route("**/api/jobs/workers", lambda route: _fulfill_json(route, {"workers": [worker]}))
-    page.goto(app_url + "/")
+    page.goto(app_url + "/dashboard")
     controls = page.locator("#workerGroupFilters")
     expect(page.locator("#workerGroupDashboard").get_by_text("Archive work", exact=True)).to_be_hidden()
     expect(page.locator("#workerGroupSummary")).to_contain_text("7 groups · 1 occupied")
@@ -358,7 +358,7 @@ def test_system_details_start_open_on_phone_and_toggle_collapses(authed_page: Pa
     page.set_viewport_size({"width": 390, "height": 844})
     mock_dashboard_defaults(page)
     mock_worker_groups(page)
-    page.goto(f"{app_url}/")
+    page.goto(f"{app_url}/dashboard")
     details = page.locator("#systemDetails")
     toggle = page.locator(".system-details-toggle")
 
@@ -419,7 +419,7 @@ def test_the_no_workers_warning_shows_above_the_workers_card(authed_page: Page, 
             route, {"gpu_threads": 0, "cpu_threads": 0, "config_warning": "No workers configured. Add a group."}
         ),
     )
-    page.goto(f"{app_url}/")
+    page.goto(f"{app_url}/dashboard")
     expect(page.locator("#noWorkersWarningBanner")).to_have_text("No workers configured. Add a group.")
     assert page.evaluate(
         "() => document.getElementById('noWorkersWarningRow').nextElementSibling.id === 'dashboard-workers'"
@@ -434,7 +434,7 @@ def test_toasts_shown_back_to_back_raise_no_error(authed_page: Page, app_url: st
     page.on("pageerror", lambda error: errors.append(str(error)))
     mock_dashboard_defaults(page)
     mock_worker_groups(page)
-    page.goto(f"{app_url}/")
+    page.goto(f"{app_url}/dashboard")
     # The second toast arrives while the first is still fading in.
     page.evaluate("() => { showToast('One', 'first', 'success'); showToast('Two', 'second', 'info'); }")
     expect(page.locator("#toastTitle")).to_have_text("Two")
@@ -456,6 +456,6 @@ def test_the_bell_stays_quiet_when_the_api_answers_with_the_setup_page(authed_pa
         lambda route: route.fulfill(status=200, content_type="text/html", body="<!DOCTYPE html><html></html>"),
     )
     with page.expect_response("**/api/system/notifications"):
-        page.goto(f"{app_url}/")
+        page.goto(f"{app_url}/dashboard")
     page.wait_for_timeout(300)
     assert not [e for e in errors if "loadNotifications" in e], errors

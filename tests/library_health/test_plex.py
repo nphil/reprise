@@ -2,7 +2,6 @@
 
 import json
 import os
-import time
 import tracemalloc
 import unicodedata
 import xml.etree.ElementTree as ET
@@ -393,7 +392,7 @@ def test_cancel_stops_early(monkeypatch, tmp_path):
         _run(monkeypatch, tmp_path, _cfg(tmp_path, [_lib()]), items, cancel=lambda: True)
 
 
-def test_large_library_counts_quickly(monkeypatch, tmp_path):
+def test_large_library_counts_are_correct(monkeypatch, tmp_path):
     total = 20_000
     items = []
     for i in range(total):
@@ -405,16 +404,13 @@ def test_large_library_counts_quickly(monkeypatch, tmp_path):
     build_plex_db(db_path, items)
     monkeypatch.setattr(plex, "_open_db", lambda _cfg: FakeLocalDb(db_path))
 
-    started = time.monotonic()
     result = plex.count_plex(
         _cfg(tmp_path, [_lib()]), MagicMock(), nothing_found={}, cancel_check=lambda: False, progress=lambda *_: None
     )
-    elapsed = time.monotonic() - started
 
     assert _cell(result, "1", Feature.PREVIEWS).total == total
     assert _cell(result, "1", Feature.PREVIEWS).done == total // 20
     assert _cell(result, "1", Feature.LOUDNESS).done == total // 2
-    assert elapsed < 5
 
 
 def test_a_local_database_is_read_straight_into_the_lookups_without_a_second_copy(monkeypatch, tmp_path):

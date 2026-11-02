@@ -34,7 +34,7 @@ def _complete_setup(complete_setup) -> None:
 def dashboard_page(authed_page: Page, app_url: str) -> Page:
     mock_dashboard_defaults(authed_page)
     mock_worker_groups(authed_page)
-    authed_page.goto(f"{app_url}/")
+    authed_page.goto(f"{app_url}/dashboard")
     authed_page.wait_for_load_state("domcontentloaded")
     return authed_page
 
@@ -77,7 +77,7 @@ class TestDashboardWithServers:
                 },
             ],
         )
-        authed_page.goto(f"{app_url}/")
+        authed_page.goto(f"{app_url}/dashboard")
         authed_page.wait_for_load_state("domcontentloaded")
         # Each server's name should appear in the status block.
         expect(authed_page.locator("#mediaServersStatus")).to_contain_text("Home Plex", timeout=3000)
@@ -96,7 +96,7 @@ class TestDashboardWorkerGroups:
         mock_dashboard_defaults(authed_page)
         groups = mock_worker_groups(authed_page)
         legacy = capture_settings_save(authed_page)
-        authed_page.goto(app_url + "/")
+        authed_page.goto(app_url + "/dashboard")
         cpu_line = authed_page.locator('[data-system-group="cpu"]')
         gpu_line = authed_page.locator('[data-system-group="gpu"]')
         expect(authed_page.locator("[data-system-group]")).to_have_count(2)
@@ -120,7 +120,7 @@ class TestDashboardWorkerGroups:
     def test_group_header_shows_capacity_chip_and_capability_icons(self, authed_page: Page, app_url: str) -> None:
         mock_dashboard_defaults(authed_page)
         groups = mock_worker_groups(authed_page)
-        authed_page.goto(app_url + "/")
+        authed_page.goto(app_url + "/dashboard")
         row = authed_page.locator('[data-group-id="cpu"]')
         expect(row.locator('[data-group-indicator="configured"]')).to_have_attribute(
             "aria-label", "0 of 1 configured worker busy. Worker counts set simultaneous tasks, not CPU cores."
@@ -134,7 +134,7 @@ class TestDashboardWorkerGroups:
     def test_dashboard_has_no_edit_pencil_and_manage_groups_appears_once(self, authed_page: Page, app_url: str) -> None:
         mock_dashboard_defaults(authed_page)
         groups = mock_worker_groups(authed_page)
-        authed_page.goto(app_url + "/")
+        authed_page.goto(app_url + "/dashboard")
         expect(authed_page.locator('[data-group-id="gpu"]')).to_be_visible()
         expect(authed_page.locator("[data-group-edit], .worker-group-edit, #workerGroupEditor")).to_have_count(0)
         expect(authed_page.get_by_role("button", name="Edit GPU video", exact=True)).to_have_count(0)
@@ -166,7 +166,7 @@ class TestDashboardWorkerGroups:
                 },
             ),
         )
-        authed_page.goto(app_url + "/")
+        authed_page.goto(app_url + "/dashboard")
         header = authed_page.locator("#dashboard-workers .card-header")
         pause = header.get_by_role("button", name="Pause all processing, including current files", exact=True)
         expect(pause).to_have_text("Pause")
@@ -183,7 +183,7 @@ class TestDashboardVersion:
     def test_update_available_badge_shown_when_newer(self, authed_page: Page, app_url: str) -> None:
         mock_dashboard_defaults(authed_page)
         mock_version_with_update(authed_page)
-        authed_page.goto(f"{app_url}/")
+        authed_page.goto(f"{app_url}/dashboard")
         authed_page.wait_for_load_state("domcontentloaded")
         badge = authed_page.locator("#dashboardUpdateBadge")
         expect(badge).to_be_visible(timeout=3000)
@@ -230,7 +230,7 @@ class TestActiveJobWaitingToRetry:
         authed_page.route(
             "**/api/jobs?**", lambda r: _fulfill_json(r, {"jobs": [job], "total": 1, "page": 1, "pages": 1})
         )
-        authed_page.goto(f"{app_url}/")
+        authed_page.goto(f"{app_url}/dashboard")
         authed_page.wait_for_load_state("domcontentloaded")
 
         row = authed_page.locator(f"#job-row-{job['id']}")

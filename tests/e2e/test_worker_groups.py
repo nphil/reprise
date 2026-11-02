@@ -226,7 +226,7 @@ def test_dashboard_group_header_reports_capacity_and_has_no_edit_pencil(
 ) -> None:
     page = authed_page
     mock_dashboard_defaults(page)
-    page.goto(app_url + "/")
+    page.goto(app_url + "/dashboard")
     row = page.locator('#workerGroupDashboard [data-group-id="cpu-night"]')
     expect(row.locator('[data-group-indicator="configured"]')).to_have_attribute(
         "aria-label", "2 of 2 configured workers busy. Worker counts set simultaneous tasks, not CPU cores."
@@ -316,7 +316,7 @@ def test_group_refresh_preserves_worker_nodes_and_per_job_pause_occupancy(
         "progress_percent": 0,
     }
     page.route("**/api/jobs/workers", lambda route: route.fulfill(json={"workers": [worker]}))
-    page.goto(app_url + "/")
+    page.goto(app_url + "/dashboard")
     row = page.locator('#workerGroupDashboard [data-group-id="cpu-night"]')
     expect(row.locator('[data-group-indicator="configured"]')).to_have_attribute(
         "aria-label", "2 of 2 configured workers busy. Worker counts set simultaneous tasks, not CPU cores."
@@ -374,7 +374,7 @@ def test_worker_wait_states_remain_distinct(
     row_data.update(state=state, busy=0, finishing=0)
     # An open group may report its current opening; that is not a future appointment.
     row_data["next_available_at"] = "2099-10-05T23:00:00+11:00"
-    authed_page.goto(app_url + "/")
+    authed_page.goto(app_url + "/dashboard")
     row = authed_page.locator('[data-group-id="cpu-night"]')
     # The group's hours ride in the clock icon's label; only exceptional states get words in the header.
     expect(row.get_by_role("img", name="Mon 23:00–07:00 next day")).to_be_visible()
@@ -408,7 +408,7 @@ def test_local_server_opening_uses_encoded_wall_time_not_browser_zone(
     mock_dashboard_defaults(authed_page)
     group_api["state"].update(timezone=zone, timezone_label="Local time (UTC+11:00)")
     group_api["state"]["capacity"]["groups"][0].update(state="off_hours", next_available_at=opening)
-    authed_page.goto(app_url + "/")
+    authed_page.goto(app_url + "/dashboard")
     assert authed_page.evaluate("Intl.DateTimeFormat().resolvedOptions().timeZone") == "America/Los_Angeles"
     expect(authed_page.locator('[data-group-id="cpu-night"] .worker-group-state')).to_have_text(
         "Outside hours · Next " + expected
@@ -436,7 +436,7 @@ def test_named_server_timezone_still_converts_opening_from_utc(
     session.send("Emulation.setTimezoneOverride", {"timezoneId": "America/Los_Angeles"})
     mock_dashboard_defaults(authed_page)
     group_api["state"]["capacity"]["groups"][0].update(state="off_hours", next_available_at="2099-07-06T13:00:00Z")
-    authed_page.goto(app_url + "/")
+    authed_page.goto(app_url + "/dashboard")
     expect(authed_page.locator('[data-group-id="cpu-night"] .worker-group-state')).to_have_text(
         re.compile(r"Outside hours · Next Mon.*11:00.*PM · Australia/Sydney")
     )
@@ -450,7 +450,7 @@ def test_global_pause_and_removed_draining_group_remain_visible(
     group_api["state"]["capacity"]["groups"].append(
         {"id": "removed", "name": "Old audio", "resource": "cpu", "busy": 0, "finishing": 1}
     )
-    authed_page.goto(app_url + "/")
+    authed_page.goto(app_url + "/dashboard")
     expect(authed_page.locator("#workerGroupHold")).to_contain_text("manual pause and global pause schedule")
     expect(authed_page.locator("#workerGroupHold")).to_contain_text(
         "Resume processing and wait for the pause schedule to end."
@@ -524,7 +524,7 @@ def test_worker_card_names_group_and_retiring_phase(authed_page: Page, app_url: 
         "progress_percent": 0,
     }
     authed_page.route("**/api/jobs/workers", lambda route: route.fulfill(json={"workers": [worker]}))
-    authed_page.goto(app_url + "/")
+    authed_page.goto(app_url + "/dashboard")
     expect(authed_page.locator('[data-group-id="cpu-night"] strong')).to_have_text("Overnight loudness")
     expect(authed_page.locator("[data-status-badge]")).to_have_text("Finishing current file")
     expect(authed_page.locator("[data-title]")).to_contain_text("Movie")
@@ -541,7 +541,7 @@ def test_resume_processing_keeps_server_reported_quiet_hold(authed_page: Page, a
         "**/api/processing/resume", lambda route: route.fulfill(json={"paused": True, "reasons": ["quiet_hours"]})
     )
     group_api["state"].update(processing_paused=True, pause_reasons=["quiet_hours"])
-    page.goto(app_url + "/")
+    page.goto(app_url + "/dashboard")
     page.get_by_role("button", name="Resume all processing", exact=True).click()
     expect(page.locator("#toastBody")).to_contain_text("global pause schedule is still active")
     expect(page.get_by_role("button", name="Resume all processing", exact=True)).to_be_visible()
@@ -579,7 +579,7 @@ def test_preview_job_pause_is_independent_and_schedule_resume_remains_held(
     page.route("**/api/jobs/preview-pause/pause", change)
     page.route("**/api/jobs/preview-pause/resume", change)
     page.route("**/api/processing/pause", lambda route: (calls.append("GLOBAL"), route.fulfill(json={"paused": True})))
-    page.goto(app_url + "/")
+    page.goto(app_url + "/dashboard")
     row = page.locator("#job-row-preview-pause")
     row.get_by_role("button", name="Pause job", exact=True).click()
     expect(row.get_by_role("button", name="Resume job", exact=True)).to_be_visible()
@@ -645,7 +645,7 @@ def test_worker_group_editor_and_dashboard_fit_supported_sizes(
             page.locator("#section-workers").screenshot(path=str(Path(screenshots) / f"editor-{width}-{theme}.png"))
     page.locator("#workerGroupClose").click()
     mock_dashboard_defaults(page)
-    page.goto(app_url + "/")
+    page.goto(app_url + "/dashboard")
     page.evaluate("theme => document.documentElement.dataset.bsTheme = theme", theme)
     expect(page.locator("#workerGroupDashboard")).to_contain_text("Overnight loudness")
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
@@ -675,7 +675,7 @@ def test_paused_idle_groups_show_one_hold_and_no_redundant_zero_activity(
     for row in state["capacity"]["groups"]:
         row.update(busy=0, finishing=0, available=0, state="active")
     state["groups"][1]["name"] = state["hardware"][0]["name"]
-    authed_page.goto(app_url + "/")
+    authed_page.goto(app_url + "/dashboard")
     expect(authed_page.locator("#workerGroupHold")).to_be_visible()
     expect(authed_page.locator("#workerGroupHold")).to_have_text(
         "Processing paused: manual pause. Resume processing to use available groups."
@@ -693,7 +693,7 @@ def test_paused_idle_groups_show_one_hold_and_no_redundant_zero_activity(
 def test_named_gpu_shows_full_hardware_name_on_its_member_row(authed_page: Page, app_url: str, group_api: dict) -> None:
     mock_dashboard_defaults(authed_page)
     group_api["state"]["groups"][1]["name"] = "Video work"
-    authed_page.goto(app_url + "/")
+    authed_page.goto(app_url + "/dashboard")
     gpu = authed_page.locator('[data-group-id="gpu-video"]')
     expect(gpu.locator("xpath=..").locator(".devname .nm")).to_have_text("NVIDIA card")
     expect(authed_page.locator('[data-system-group="gpu-video"] small')).to_have_text("2 GPU")
@@ -742,7 +742,7 @@ def test_live_loudness_worker_shows_audio_activity_until_ffmpeg_reports_real_pro
         "eta": "-",
     }
     authed_page.route("**/api/jobs/workers", lambda route: route.fulfill(json={"workers": [worker]}))
-    authed_page.goto(app_url + "/")
+    authed_page.goto(app_url + "/dashboard")
     expect(authed_page.locator("[data-percent]")).to_have_text("Analyzing audio · stream 1/2")
     bar = authed_page.get_by_role("progressbar", name="Loudness analysis", exact=True)
     expect(bar).to_be_visible()

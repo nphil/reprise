@@ -134,9 +134,10 @@ def _reap(proc: subprocess.Popen, reaper_name: str) -> None:
 
 
 def ffprobe_path_for(ffmpeg_path: str | None) -> str:
-    """Prefer the ffprobe shipped next to the configured ffmpeg (jellyfin-ffmpeg in the image)."""
+    """Prefer the ffprobe shipped next to the configured ffmpeg."""
     if ffmpeg_path:
-        sibling = os.path.join(os.path.dirname(ffmpeg_path), "ffprobe")
+        resolved = shutil.which(ffmpeg_path) or ffmpeg_path
+        sibling = os.path.join(os.path.dirname(resolved), "ffprobe")
         if os.path.isfile(sibling) and os.access(sibling, os.X_OK):
             return sibling
     return shutil.which("ffprobe") or "ffprobe"

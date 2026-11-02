@@ -1,0 +1,183 @@
+"""Canonical qualified native-signal contract; safe for read-only API imports.
+
+This profile is not a semantic, rendered-equivalence or audibility guarantee.
+A changed formula, interpretation or support rule requires a new fingerprint.
+"""
+
+import hashlib
+import json
+from collections.abc import Mapping
+from typing import Any
+
+PROFILE_ID = "native-signal-review-first-v3"
+PROFILE_SPEC: dict[str, Any] = {
+    "id": PROFILE_ID,
+    "admission_revision": "episode-provenance-1",
+    "decoder_semantic_revision": "native-ordered-complete-context-final-declarations-2",
+    "scope": "Codec-tolerant native signal repetition proposals requiring owner review; not semantic, rendered or audibility equivalence. Tiny visual edits may be missed.",
+    "candidate": {
+        "max_ms": 180000,
+        "reference_radius_ms": 30000,
+        "context_ms": 2000,
+        "maximum_scan_frames": 40000,
+        "sample_count": 96,
+        "neighbors": 3,
+        "descriptor_mse": 25,
+        "minimum_votes": 3,
+        "minimum_vote_span_ms": 500,
+        "maximum_offsets": 3,
+        "bucket_per_ms": 2,
+        "plane_std": 8,
+        "descriptor": "4x4 tiles per native plane; every fourth pixel for hint means; normalize 255/(2**depth-1); float32 vector",
+        "std": "max within-plane population standard deviation, float64, normalized 255/(2**depth-1)",
+        "sampling": "target[::max(1,len(target)//96)]; up to three argpartition nearest reference descriptors",
+        "offset": "observed exact rational median-list offset in half-ms bucket; rank negative vote count then abs first observed offset",
+        "proof": "Descriptors and votes are proposals only; no exact-hash/audio-hint fallback",
+    },
+    "video": {
+        "peak": 160,
+        "local4": 32,
+        "local8": 16,
+        "concentration8": 0.7,
+        "concentration_level": 12,
+        "signed8": 10,
+        "signed16": 7,
+        "signed32": 3.5,
+        "max_frame_gap_ms": 250,
+        "pair_tolerance_ms": "1/2",
+        "residual": "(left.astype(float32)-right.astype(float32))*255/(2**bit_depth-1); every pixel of every plane",
+        "absolute_tiles": "mean absolute residual and fraction above12; four phases0,size/2; include0 and far edge; partial tiles use actual area",
+        "signed_tiles": "absolute signed mean; full8/16/32 tiles at half-tile stride plus far-edge full window; smaller plane whole mean; float64 integral sums",
+        "aggregation": "maximum over all native planes; every limit inclusive",
+        "pairing": "fixed offset; unique consecutive reference indices; positive target gap<=250ms; duration disagreement<=1/2ms; both endpoints must pass",
+        "support": "actual rational intersection, never tolerance expansion; last observed frame START is boundary; failed/unknown whole interval veto plus250ms",
+    },
+    "audio": {
+        "window_ms": 20,
+        "hop_ms": 10,
+        "chunk_seconds": 10,
+        "rmse": 0.06,
+        "nrmse": 0.6,
+        "correlation": 0.85,
+        "peak": 0.2,
+        "silence": 1e-7,
+        "denominator_floor": 1e-30,
+        "novelty_ratio": 4,
+        "novelty_floor": 5e-5,
+        "novelty_windows": 5,
+        "moving_floor": 8e-4,
+        "moving_windows": 2,
+        "phase_shared_ratio": 1,
+        "phase_floor": 1e-3,
+        "phase_windows": 5,
+        "short_phase_guard_ms": 40,
+        "context_trim_ms": 40,
+        "identity": "Per channel R=max(RMSx,RMSy),E=RMS(x-y),C=sum(x*y)/max(sqrt(sumx²*sumy²),1e-30),P=maxabs(x-y); E<=.06,E/max(R,1e-7)<=.6,P<=.20; C>=.85 if R>1e-7",
+        "spectra": "float64 PCM; N=rate//50,H=rate//100; numpy.hanning(N); complex rfft(x*w)*sqrt(2)/N; all bins including DC/Nyquist; no fitting",
+        "magnitude": "M=max(absX-4absY,absY-4absX,0)",
+        "weak": "per-bin/channel min M across5 consecutive windows; max_channel sqrt(sum_bins held²)>5e-5 veto60ms plus250ms",
+        "moving": "L[t,c]=sqrt(sum_bins M²); max_c min(L[i,c],L[i+1,c])>8e-4 veto30ms plus40ms; same channel, bins may move",
+        "phase": "Q=max(abs(X-Y)-min(absX,absY),0); per-bin/channel min across5; max_channel sqrt(sum_bins held²)>1e-3 veto60ms plus40ms",
+        "clock": "rate divisible100; fixed exact sample-index grid from first inward-supported paired sample; never reset at chunks; native sample supports differ exactly by offset; equal shape/rate/layout/ordered IDs",
+        "streaming": "One sequential prefix decode/audit per stream and comparison, bounded chunks and rolling5 spectra; carry every veto; all contexts exhausted and exited successfully before support; compare final declaration tuples including absence and initial/per-frame scope",
+        "tracks": "Every mapped track and every native channel; no downmix,resample,normalization,gain,lag,phase or warp fit",
+        "extent": "ceil first window start to floor(last window start+20ms); trim40ms both ends; no padding; retain audio pieces>=500ms",
+    },
+    "support": {
+        "guard_ms": 250,
+        "minimum_run_ms": 500,
+        "guards": "Conservative content/word preservation, NOT timestamp uncertainty or a frame-gap derivation",
+        "rounding": "Failed audio supports round outward before guards; intersect rational video/audio; anchor then ceil start/floor end; never bridge holes",
+        "pieces": "Sort target start then descending length; target nonoverlap and monotonic nonreused reference time; offset changes only across separately anchored holes",
+    },
+    "anchors": {
+        "edge_ms": 500,
+        "span_ms": 200,
+        "temporal_rms": 0.5,
+        "minimum_total_frames": 6,
+        "minimum_group_frames": 3,
+        "eligible": "lo<=nativePTS<hi; exact rational referencePTS=targetPTS+offset; both per-plane STD>=8 and descriptor MSE<=25",
+        "start": "Try eligible p increasing; group through p+min(500ms,(lastEligiblePTS-p)/2); >=3 frames,span>=200ms,RMS descriptor first-to-last>=.5",
+        "end": "Try q decreasing; last500ms ending q, only PTS strictly after start group's LAST; same group requirements; genuinely disjoint native records",
+        "projection": "First start-anchor to last end-anchor; >=500ms before inward integer projection; do not infer final frame duration",
+    },
+    "metadata": {
+        "color_fields": ["color_range", "color_space", "color_primaries", "color_transfer"],
+        "unspecified_tokens": [None, "", "unknown", "unspecified"],
+        "reserved": "Reject reserved and malformed values, do not canonicalize to unspecified",
+        "range": ["tv", "pc", "limited", "full"],
+        "space": [
+            "gbr",
+            "bt709",
+            "fcc",
+            "bt470bg",
+            "smpte170m",
+            "smpte240m",
+            "ycgco",
+            "bt2020nc",
+            "bt2020c",
+            "smpte2085",
+            "chroma-derived-nc",
+            "chroma-derived-c",
+            "ictcp",
+        ],
+        "primaries": [
+            "bt709",
+            "bt470m",
+            "bt470bg",
+            "smpte170m",
+            "smpte240m",
+            "film",
+            "bt2020",
+            "smpte428",
+            "smpte431",
+            "smpte432",
+            "jedec-p22",
+            "ebu3213",
+        ],
+        "transfer": [
+            "bt709",
+            "gamma22",
+            "gamma28",
+            "smpte170m",
+            "smpte240m",
+            "linear",
+            "log",
+            "log_sqrt",
+            "iec61966-2-4",
+            "bt1361e",
+            "iec61966-2-1",
+            "bt2020-10",
+            "bt2020-12",
+        ],
+        "stream": "equal codec/profile,width,height,pixfmt,positive SAR and nominal cadence,canonical color classes; no representation conversion",
+        "frames": "Every native frame complete, unique rational PTS, stable compatible declarations; all planes; reject interlace,crop,rotation,HDR and unsupported interpretation",
+        "chroma": "Known named supported value only; same-decode when available or exact unique PTS coverage of fully successful bounded constant audit; preserve audited-window-constant provenance; not global uniformity",
+        "unknown": "Equal explicitly admitted unspecified colors qualify code-signal only, never rendering equivalence; missing records/malformed declarations fail closed",
+    },
+    "generation": "Stat identity not live digest; recheck every target/reference after all contexts and immediately before persistence; cancellation/errors invalidate whole dependent proof",
+    "runtime": {
+        "structural_formats": ["yuv420p", "yuv422p", "yuv444p", "yuv420p10le", "yuv422p10le", "yuv444p10le"],
+        "native_frame_limit_bytes": 67108864,
+        "metadata_queue_records": 2,
+        "precision": "Signed video raw float32*255/denominator; absolute abs(raw float32)*(255/denominator); integrals/std/audio float64; rational native clocks; no nominal-FPS timing",
+        "audio_clock_resolution": "Fraction support is selected native sample grid; source-frame audit respects declared PTS tick quantization, not sub-tick source-clock proof",
+        "executable_pair": "Configured FFmpeg selected once per analysis and passed through every native context; require its actual sibling ffprobe, no unrelated PATH fallback or automatic alternate decoder",
+        "validation": "FFmpeg5.1.9 local DEV is not FFmpeg8.1.2 acceptance; actual supported deployment runtime and whole-workload resource proof required separately",
+        "resources": "one analysis CPU/FFmpeg threads1; bounded retained frames/chunks, not a universal2GiB whole-app guarantee; late audio prefix is linear work, not fast seeking",
+    },
+    "limitations": "Magnitude4x masks same-bin additions; equal-amplitude phase dead zone through60degrees; floors/persistence miss sufficiently brief,weak,drifting changes; no semantic guarantee; new protected failure remains failure",
+}
+ADMISSION_REVISION = PROFILE_SPEC["admission_revision"]
+PROFILE_FINGERPRINT = hashlib.sha256(
+    json.dumps(PROFILE_SPEC, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+).hexdigest()
+POLICY_VERSION = "2:" + PROFILE_FINGERPRINT
+
+
+def is_current_profile(metrics):
+    return (
+        isinstance(metrics, Mapping)
+        and metrics.get("verification_profile") == PROFILE_ID
+        and metrics.get("profile_fingerprint") == PROFILE_FINGERPRINT
+    )

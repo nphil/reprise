@@ -44,7 +44,7 @@ def _seed(page: Page, schedules: list[dict] | None = None, libraries: list[dict]
 @pytest.fixture
 def filter_page(authed_page: Page, app_url: str) -> Page:
     _seed(authed_page)
-    authed_page.goto(app_url)
+    authed_page.goto(f"{app_url}/dashboard")
     authed_page.wait_for_function("libraries.length === 2")
     authed_page.locator('.dashboard-quick-card button:has-text("Start new job")').click()
     authed_page.locator("#jobScanFilters > summary").click()
@@ -215,7 +215,7 @@ def test_invalid_filters_block_submission(filter_page: Page, invalid_case: str) 
 @pytest.mark.e2e
 def test_unknown_library_type_keeps_both_type_filters_available(authed_page: Page, app_url: str) -> None:
     _seed(authed_page, libraries=[{"id": "mixed", "name": "Mixed", "type": "mixed"}])
-    authed_page.goto(app_url)
+    authed_page.goto(f"{app_url}/dashboard")
     authed_page.wait_for_function("libraries.length === 1")
     authed_page.locator('.dashboard-quick-card button:has-text("Start new job")').click()
     authed_page.locator("#jobScanFilters > summary").click()

@@ -21,7 +21,7 @@ PHONE = {"width": 390, "height": 844}
 SCROLL_PX = 1200
 
 PAGES = {
-    "dashboard": "/",
+    "dashboard": "/dashboard",
     "servers": "/servers",
     "automation": "/automation",
     "settings": "/settings",

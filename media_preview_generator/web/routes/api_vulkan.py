@@ -377,15 +377,9 @@ def _get_vulkan_info() -> dict:
     )
 
     header = (
-        "When this app creates thumbnails for <strong>Dolby Vision "
-        "Profile 5</strong> content, it uses the GPU to tone map them "
-        "(convert the HDR picture to normal colours and brightness). Your container "
-        "does not have a working hardware Vulkan driver for this step, so "
-        "those thumbnails are made without tone mapping and come out "
-        "with the <strong>wrong colours</strong>, a green and purple tint."
-        "<br><br>"
-        "All other content (standard video, HDR10, Dolby Vision Profile "
-        "7 and 8) is not affected."
+        "Dolby Vision Profile 5 thumbnails may have <strong>wrong colours</strong>, including a green and purple tint. "
+        "A working Vulkan driver alone does not establish Profile 5 tone mapping "
+        "with the bundled CPU-focused FFmpeg."
         "<br><br>"
     )
     footer = (

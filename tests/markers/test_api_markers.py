@@ -778,7 +778,7 @@ def test_local_sources_status(client, servers, monkeypatch, found, reason, text_
         "season_audio": {"available": found is not None, "ffmpeg": found, "message": reason},
         "credits_text": {"available": text_available, "message": text_reason},
     }
-    # The ffmpeg jobs use: jellyfin-ffmpeg, then PATH (config._resolve_ffmpeg_path has no setting to pass).
+    # Jobs use ffmpeg on PATH (config._resolve_ffmpeg_path has no setting to pass).
     assert asked == [None]
 
 

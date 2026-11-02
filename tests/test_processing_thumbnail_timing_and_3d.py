@@ -20,7 +20,6 @@ from loguru import logger
 from PIL import Image, ImageStat
 
 from media_preview_generator.processing.filter_chain import (
-    DV5_PATH_INTEL_OPENCL,
     DV5_PATH_LIBPLACEBO,
     DV5_PATH_VAAPI_VULKAN,
     build_dv5_vf,
@@ -60,7 +59,8 @@ def _make_video_after_audio(path: Path, duration_s: float, offset_s: float = 0.0
          "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=mono:d={duration_s}",
          "-itsoffset", str(offset_s),
          "-f", "lavfi", "-i", f"nullsrc=s=64x36:r=5:d={duration_s},geq=lum='T*8':cb=128:cr=128",
-         "-map", "1:v", "-map", "0:a", "-c:v", "mpeg4", "-q:v", "2", "-c:a", "aac", str(path)],
+         "-map", "1:v", "-map", "0:a", "-fps_mode", "passthrough", "-enc_time_base", "1:1000",
+         "-c:v", "mpeg4", "-q:v", "2", "-c:a", "aac", str(path)],
         check=True,
         capture_output=True,
         timeout=60,
@@ -92,7 +92,7 @@ class TestThumbnailsStartAtZero:
     def test_the_fps_filter_pins_the_first_thumbnail_to_zero(self):
         assert build_fps_filter(0.1) == "fps=fps=0.1:round=up:start_time=0"
 
-    @pytest.mark.parametrize("path_kind", [DV5_PATH_INTEL_OPENCL, DV5_PATH_VAAPI_VULKAN, DV5_PATH_LIBPLACEBO])
+    @pytest.mark.parametrize("path_kind", [DV5_PATH_VAAPI_VULKAN, DV5_PATH_LIBPLACEBO])
     def test_dolby_vision_chains_use_the_same_fps_filter(self, path_kind):
         vf = build_dv5_vf(path_kind=path_kind, tonemap_algorithm="hable", fps_value=0.1, base_scale="scale=320:240")
 

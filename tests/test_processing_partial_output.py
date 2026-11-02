@@ -639,11 +639,11 @@ class TestAFolderThatRefusesTheThumbnails:
         os.name == "nt" or os.geteuid() == 0,
         reason="a folder without write permission stops only a POSIX non-root user",
     )
-    def test_real_ffmpeg_that_could_not_create_a_frame_file_in_a_full_folder_ends_on_the_folder(
-        self, run, tmp_path, mock_config
-    ):
-        """Real FFmpeg, runner and cascade. A folder without write permission makes FFmpeg's image2 muxer fail to
-        create its first frame file, exactly as a full btrfs folder does; the check then finds the folder full."""
+    def test_real_ffmpeg_folder_failure_uses_its_reason_or_the_probe(self, run, tmp_path, mock_config):
+        """Real FFmpeg refuses the chmod folder; its specific error takes precedence over the fallback probe.
+
+        Older FFmpeg reports only a generic I/O error, so the simulated full-folder probe supplies ENOSPC instead.
+        """
         from media_preview_generator.processing.ffmpeg_runner import create_ffmpeg_runner
 
         ffmpeg = shutil.which("ffmpeg")
@@ -659,9 +659,15 @@ class TestAFolderThatRefusesTheThumbnails:
             frames.chmod(0o755)
 
         assert isinstance(outcome.result, WorkingFolderError), outcome.result
-        assert (outcome.result.errno, outcome.result.filename) == (errno.ENOSPC, str(frames))
+        assert outcome.result.filename == str(frames)
         refused = [line for line in outcome.warnings if "couldn't write thumbnails" in line]
-        assert len(refused) == 1 and "No space left on device (exit code 251)" in refused[0], outcome.warnings
+        assert len(refused) == 1, outcome.warnings
+        if outcome.result.errno == errno.EACCES:
+            assert "Permission denied (exit code" in refused[0]
+            assert "check PUID and PGID" in refused[0] and "Free up space" not in refused[0]
+        else:
+            assert outcome.result.errno == errno.ENOSPC
+            assert "No space left on device (exit code 251)" in refused[0]
         # Nor is it put down to the video's disk as well.
         assert not any("hit an I/O error" in line for line in outcome.warnings), outcome.warnings
 

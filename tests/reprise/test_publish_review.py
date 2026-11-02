@@ -4,6 +4,7 @@ import pytest
 
 from media_preview_generator.reprise.models import AnalysisResult, DecisionRange, PlaybackIdentity
 from media_preview_generator.reprise.review import plex_projection
+from media_preview_generator.reprise.verification_profile import POLICY_VERSION, PROFILE_FINGERPRINT, PROFILE_ID
 
 
 def _range(**changes):
@@ -12,7 +13,7 @@ def _range(**changes):
 
 
 def _result(*ranges):
-    return AnalysisResult("version", "analysis", 1, "complete", "current", "signature", "1", ranges, (), ())
+    return AnalysisResult("version", "analysis", 1, "complete", "current", "signature", POLICY_VERSION, ranges, (), ())
 
 
 def _identity():
@@ -51,7 +52,8 @@ def test_projection_rejects_keep_and_unknown_evidence_gaps():
     result = _result(r, keep)
     with pytest.raises(ValueError):
         plex_projection(result, _identity(), eligible_ranges(result, "audio"))
-    unknown = Evidence("unknown", 2000, 3000, "video", "unknown", "undecoded", "", None, None, None, {})
+    unknown = Evidence("unknown", 2000, 3000, "video", "unknown", "undecoded", "", None, None, None,
+                       {"verification_profile": PROFILE_ID, "profile_fingerprint": PROFILE_FINGERPRINT})
     result = replace(_result(r), evidence=(unknown,))
     with pytest.raises(ValueError):
         plex_projection(result, _identity(), eligible_ranges(result, "audio"))

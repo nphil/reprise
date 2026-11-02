@@ -41,7 +41,7 @@ def dashboard_page(authed_page: Page, app_url: str) -> Page:
         "**/api/libraries**",
         lambda r: _fulfill_json(r, {"libraries": [{"id": "1", "name": "Movies", "type": "movie"}]}),
     )
-    authed_page.goto(f"{app_url}/")
+    authed_page.goto(f"{app_url}/dashboard")
     authed_page.wait_for_load_state("domcontentloaded")
     return authed_page
 
@@ -166,7 +166,7 @@ def jellyfin_dashboard_page(authed_page: Page, app_url: str) -> Page:
             {"libraries": [{"id": "lib-1", "name": "Movies", "type": "movie", "server_id": "jf-1"}]},
         ),
     )
-    authed_page.goto(f"{app_url}/")
+    authed_page.goto(f"{app_url}/dashboard")
     authed_page.wait_for_load_state("domcontentloaded")
     return authed_page
 
@@ -231,7 +231,7 @@ class TestNewJobModalNonPlex:
                 },
             ),
         )
-        authed_page.goto(f"{app_url}/")
+        authed_page.goto(f"{app_url}/dashboard")
         authed_page.wait_for_load_state("domcontentloaded")
 
         captured: list[dict] = []
@@ -400,7 +400,7 @@ class TestServerDropdownVendorBadges:
                 },
             ),
         )
-        authed_page.goto(f"{app_url}/")
+        authed_page.goto(f"{app_url}/dashboard")
         authed_page.wait_for_load_state("domcontentloaded")
         authed_page.locator('.dashboard-quick-card button:has-text("Start new job")').click()
         expect(authed_page.locator("#jobLibraryList")).to_be_visible(timeout=2000)
@@ -426,7 +426,7 @@ class TestServerDropdownVendorBadges:
         ]
         mock_media_servers_status(authed_page, servers=servers)
         mock_servers_list(authed_page, servers=servers)
-        authed_page.goto(f"{app_url}/")
+        authed_page.goto(f"{app_url}/dashboard")
         authed_page.wait_for_load_state("domcontentloaded")
         authed_page.get_by_role("button", name="Process a file or folder").click()
         expect(authed_page.locator("#manualServerScope")).to_be_visible(timeout=2000)

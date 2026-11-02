@@ -128,7 +128,7 @@ class TestPageGutter:
         mock_dashboard_defaults(authed_page)
         authed_page.set_viewport_size({"width": width, "height": 900})
         edges: dict[str, tuple[float, str]] = {}
-        for path in ("/", "/servers", "/automation", "/settings", "/inspector", "/webhook-activity"):
+        for path in ("/dashboard", "/servers", "/automation", "/settings", "/inspector", "/webhook-activity"):
             authed_page.goto(f"{app_url}{path}")
             authed_page.wait_for_load_state("domcontentloaded")
             edges[path] = authed_page.evaluate(
@@ -145,7 +145,7 @@ class TestPageGutter:
         mock_dashboard_defaults(authed_page)
         authed_page.set_viewport_size({"width": width, "height": 900})
         first_element = {
-            "/": ".dashboard-layout .card",
+            "/dashboard": ".dashboard-layout .card",
             "/servers": ".servers-page h1",
             "/automation": ".automation-sidebar, .automation-mobile-nav",
             "/settings": ".settings-page .page-title",
@@ -167,7 +167,7 @@ class TestPageGutter:
     def test_navbar_row_shares_the_page_gutter_when_wide(self, authed_page: Page, app_url: str) -> None:
         mock_dashboard_defaults(authed_page)
         authed_page.set_viewport_size({"width": 1920, "height": 900})
-        authed_page.goto(f"{app_url}/")
+        authed_page.goto(f"{app_url}/dashboard")
         edges = authed_page.evaluate(
             "() => [document.querySelector('nav.navbar > .page-shell').getBoundingClientRect().left,"
             " document.getElementById('main-content').getBoundingClientRect().left]"

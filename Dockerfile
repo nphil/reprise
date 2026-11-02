@@ -26,6 +26,7 @@ RUN arch="$(dpkg --print-architecture)" && \
       zlib1g-dev libbz2-dev liblzma-dev libgnutls28-dev libzimg-dev libchromaprint-dev && \
     rm -rf /var/lib/apt/lists/*
 COPY docker/ffmpeg/build.sh /tmp/ffmpeg-gpl-build.sh
+COPY Dockerfile /tmp/ffmpeg-gpl-Dockerfile
 ARG FFMPEG_JOBS=4
 RUN apt-get update && FFMPEG_JOBS="$FFMPEG_JOBS" bash /tmp/ffmpeg-gpl-build.sh && \
     rm -rf /var/lib/apt/lists/*
@@ -246,7 +247,7 @@ LABEL maintainer="nphil" \
       org.opencontainers.image.description="Self-hosted media analysis and review" \
       org.opencontainers.image.authors="nphil and contributors" \
       org.opencontainers.image.vendor="nphil" \
-      org.opencontainers.image.licenses="MIT AND GPL-2.0-or-later" \
+      org.opencontainers.image.licenses="MIT AND GPL-2.0-or-later AND LGPL-2.1-or-later" \
       org.opencontainers.image.url="https://github.com/nphil/reprise" \
       org.opencontainers.image.documentation="https://github.com/nphil/reprise" \
       org.opencontainers.image.source="https://github.com/nphil/reprise" \

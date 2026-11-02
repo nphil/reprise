@@ -14,10 +14,13 @@ import time
 from dataclasses import asdict, replace
 from urllib.parse import urlsplit
 
+from ..gpu.ffmpeg_capabilities import ffmpeg_binary
 from ..servers.ownership import apply_path_mappings
+from .admission import admit_references, pair_provenance
 from .identity import is_current, media_version
 from .models import CandidateWindow, PlaybackIdentity
 from .policy import eligible_ranges
+from .verification_profile import PROFILE_FINGERPRINT
 
 _SERVICE = None
 
@@ -43,16 +46,17 @@ def _mapping_fingerprint(config, library):
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def _probe(path, streams, *, cancel_check=None, pause_check=None):
+def _probe(path, streams, *, cancel_check=None, pause_check=None, ffmpeg_path=None):
     from ..markers.freeze import Freeze
-    from .media import Cancelled
+    from .media import Cancelled, paired_ffprobe
 
     cancel = cancel_check or (lambda: False)
     freeze = Freeze.of(pause_check)
     freeze.hold(cancel_check=cancel)
     if cancel():
         raise Cancelled("Library refresh cancelled")
-    command = ["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", path]
+    command = [paired_ffprobe(ffmpeg_path or ffmpeg_binary()), "-v", "error", "-show_streams",
+               "-show_format", "-of", "json", path]
     with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
         proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=output, stderr=errors, start_new_session=True)
         deadline = freeze.clock() + 30
@@ -200,6 +204,7 @@ class RepriseService:
         progress_callback=None,
         register=None,
         candidate_paths=None,
+        ffmpeg_path=None,
     ):
         """Read one library; reconciliation is reserved for a successful queue commit."""
         from ..markers.freeze import Freeze
@@ -329,7 +334,9 @@ class RepriseService:
                     before = os.stat(path)
                     if size != before.st_size:
                         raise ValueError("Plex part size differs from local file")
-                    signature = _probe(path, part.get("Stream", []), cancel_check=cancel, pause_check=freeze)
+                    signature = _probe(
+                        path, part.get("Stream", []), cancel_check=cancel, pause_check=freeze, ffmpeg_path=ffmpeg_path
+                    )
                     version = media_version(path, duration, signature)
                     if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
                         version.device,
@@ -426,9 +433,20 @@ class RepriseService:
             return False
 
     def _references_current(self, result):
-        for reference_id in {e.reference_version_id for e in result.evidence if e.reference_version_id}:
-            reference = self.store.get_media(reference_id)
-            if not reference or not any(self._valid_binding(reference, *b) for b in self._bindings(reference_id)):
+        for version_id in {result.media_version_id} | {e.reference_version_id for e in result.evidence if e.reference_version_id}:
+            version = self.store.get_media(version_id)
+            bindings = self._bindings(version_id)
+            if not version or not bindings or not all(self._valid_binding(version, *b) for b in bindings):
+                return False
+        target = self.store.get_media(result.media_version_id)
+        target_bindings = self._bindings(result.media_version_id)
+        for evidence in result.evidence:
+            if evidence.verdict.lower() != "match":
+                continue
+            reference = self.store.get_media(evidence.reference_version_id)
+            snapshot = (pair_provenance(target, target_bindings, reference, self._bindings(reference.id))
+                        if reference else None)
+            if not snapshot or evidence.metrics.get("admission_provenance") != snapshot:
                 return False
         return True
 
@@ -485,6 +503,8 @@ class RepriseService:
     def eligible_ranges(self, result, identity):
         version = self.store.resolve_binding(identity)
         if not version or version.id != result.media_version_id:
+            return ()
+        if self.store.get_result(version.id) != result:
             return ()
         bindings = [b for b in self._bindings(version.id) if b[0] == identity]
         if len(bindings) != 1 or not self._valid_binding(version, *bindings[0]) or not self._references_current(result):
@@ -826,7 +846,7 @@ class RepriseService:
             _start_job_async(job_id)
         return self.get_job(job_id)
 
-    def _run_refresh(self, job_id, request, pause_check, *, for_analysis=False):
+    def _run_refresh(self, job_id, request, pause_check, *, for_analysis=False, ffmpeg_path=None):
         from ..markers.freeze import Freeze
         from .media import Cancelled
 
@@ -893,6 +913,7 @@ class RepriseService:
                 pause_check=freeze,
                 progress_callback=progress,
                 register=register,
+                ffmpeg_path=ffmpeg_path,
                 candidate_paths=request.get("candidate_paths"),
             )
             summary = {
@@ -936,15 +957,17 @@ class RepriseService:
         job = self.job_manager.get_job(job_id)
         from ..web.settings_manager import get_settings_manager
 
+        ffmpeg_path = ffmpeg_binary()
+
         def paused():
             return self.job_manager.is_pause_requested(job_id) or get_settings_manager().processing_paused
 
         if job.config.get("refresh_request"):
-            self._run_refresh(job_id, job.config["refresh_request"], paused)
+            self._run_refresh(job_id, job.config["refresh_request"], paused, ffmpeg_path=ffmpeg_path)
             return
         library_request = job.config.get("library_analysis_request")
         if library_request:
-            ids = self._run_refresh(job_id, library_request, paused, for_analysis=True)
+            ids = self._run_refresh(job_id, library_request, paused, for_analysis=True, ffmpeg_path=ffmpeg_path)
             if ids is None:
                 return
             if not ids:
@@ -973,6 +996,7 @@ class RepriseService:
                     cancel_check=lambda: self.job_manager.is_cancellation_requested(job_id),
                     pause_check=paused,
                     ffmpeg_threads=1,
+                    ffmpeg_path=ffmpeg_path,
                 )
             except Cancelled:
                 self.job_manager.cancel_job(job_id)
@@ -1028,37 +1052,28 @@ class RepriseService:
             references = []
             cursor = None
             seen_refs = set()
-            target_episodes = {(b[0].plex_machine_identifier, b[0].rating_key) for b in bindings}
             while True:
                 page = self.store.list_media(server_id=bindings[0][1], cursor=cursor, limit=100)
                 for row in page["items"]:
-                    other = row["metadata"]
                     rid = row["media_version"]["id"]
-                    if (
-                        rid != mid
-                        and rid not in seen_refs
-                        and meta.get("show_key")
-                        and other.get("show_key") == meta["show_key"]
-                        and other.get("season") == meta.get("season")
-                    ):
-                        ref = self.store.get_media(rid)
-                        ref_bindings = self._bindings(rid)
-                        reference_episodes = {(b[0].plex_machine_identifier, b[0].rating_key) for b in ref_bindings}
-                        if (
-                            ref
-                            and not target_episodes.intersection(reference_episodes)
-                            and any(self._valid_binding(ref, *b) for b in ref_bindings)
-                        ):
-                            references.append(ref)
-                            seen_refs.add(rid)
+                    if rid == mid or rid in seen_refs:
+                        continue
+                    seen_refs.add(rid)
+                    ref = self.store.get_media(rid)
+                    ref_bindings = self._bindings(rid)
+                    if ref and ref_bindings and all(self._valid_binding(ref, *b) for b in ref_bindings):
+                        references.append(ref)
                 cursor = page.get("next_cursor")
                 if not cursor:
                     break
+            admitted = admit_references(version, references, self.store)
+            references = [ref for ref, _ in admitted]
             signature = hashlib.sha256(
                 (
                     version.stream_signature
                     + json.dumps([asdict(c) for c in candidates], sort_keys=True)
-                    + json.dumps(sorted(seen_refs))
+                    + PROFILE_FINGERPRINT
+                    + json.dumps([(ref.id, snapshot) for ref, snapshot in admitted])
                 ).encode()
             ).hexdigest()
             aid = self.store.begin_analysis(mid, job_id, signature)
@@ -1068,12 +1083,14 @@ class RepriseService:
                     version,
                     candidates,
                     references,
+                    store=self.store,
                     cancel_check=lambda: self.job_manager.is_cancellation_requested(job_id),
                     pause_check=paused,
                     progress_callback=lambda percent, message, index=index: self.job_manager.update_progress(
                         job_id, percent=(index * 100 + percent) / len(ids), current_item=message
                     ),
                     ffmpeg_threads=1,
+                    ffmpeg_path=ffmpeg_path,
                 )
                 if draft.status != "complete":
                     self.store.fail_analysis(

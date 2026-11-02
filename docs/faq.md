@@ -182,14 +182,7 @@ Set each device's worker count in **Settings → Workers** (1 to 32). Start low 
 
 ### Why is CPU usage high when I have a GPU configured?
 
-GPU workers use both GPU and CPU. This is normal. The GPU handles video decoding and downscaling to thumbnail size; the CPU handles frame selection, JPEG encoding, and (for HDR content) part of the colour conversion. Standard SDR content barely uses the CPU at all; HDR content, especially Dolby Vision, uses noticeably more because frames have to move between CPU and GPU memory for the colour conversion step.
-
-Dolby Vision Profile 5 (no HDR10 fallback layer) needs the most from your setup:
-
-- **Intel** (iGPU, Arc): just pass the GPU to the container (`--device /dev/dri:/dev/dri`).
-- **NVIDIA**: set `NVIDIA_DRIVER_CAPABILITIES=all` (or at minimum `compute,video,utility,graphics`) so the NVIDIA Vulkan driver is available inside the container. See [HDR & Dolby Vision](guides.md#hdr--dolby-vision) for the full explanation.
-- **AMD** (Radeon): decoded on the GPU and tone-mapped through Vulkan, as for NVIDIA. Not yet tested on AMD hardware.
-- **Apple / CPU-only**: no hardware Vulkan, so Profile 5 thumbnails come out with a green and purple tint ([Limits](hdr-dolby-vision-thumbnails.md#limits)).
+The bundled FFmpeg is CPU-focused. GPU acceleration is not established for this build, even when a GPU is detected or passed to the container. Dolby Vision Profile 5 has no HDR10 fallback layer, and thumbnail colours are not guaranteed.
 
 **FFmpeg threads per worker** (**Settings → Processing options → GPU device tuning**, one value per GPU) caps the CPU threads each GPU worker may use. The default is 2 and 0 means no cap. If several GPU workers fight over the CPU, lower it.
 

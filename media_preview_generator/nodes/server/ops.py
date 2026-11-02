@@ -45,7 +45,7 @@ def _jsonable(value: object) -> object:
 
 
 def _node_ffmpeg() -> str:
-    """This node's FFmpeg, chosen by the app's own rule (jellyfin-ffmpeg when installed, else ``ffmpeg`` on PATH)."""
+    """This node's FFmpeg, chosen by the app's PATH rule."""
     from ...config import _resolve_ffmpeg_path
 
     return _resolve_ffmpeg_path() or "ffmpeg"

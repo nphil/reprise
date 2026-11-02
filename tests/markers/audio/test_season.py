@@ -1924,8 +1924,7 @@ class TestFailures:
         fingerprint.forget_chromaprint_answers()
         try:
             with (
-                patch.object(fingerprint, "JELLYFIN_FFMPEG", str(tmp_path / "missing")),
-                patch.object(fingerprint.shutil, "which", return_value=None),
+                patch.object(fingerprint.shutil, "which", return_value=str(ffmpeg)),
                 patch.object(fingerprint.subprocess, "run", side_effect=subprocess.TimeoutExpired("ffmpeg", 20)),
             ):
                 state = fingerprint.chromaprint_state(str(ffmpeg))

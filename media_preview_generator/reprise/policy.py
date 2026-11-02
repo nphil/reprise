@@ -3,10 +3,17 @@
 from dataclasses import replace
 
 from .models import AnalysisResult, DecisionRange
+from .verification_profile import POLICY_VERSION, is_current_profile
 
 
 def eligible_ranges(result: AnalysisResult, audio_stream_id: str) -> tuple[DecisionRange, ...]:
-    if result.analysis_status != "complete" or result.freshness != "current" or not audio_stream_id:
+    if (
+        result.analysis_status != "complete"
+        or result.freshness != "current"
+        or result.policy_version != POLICY_VERSION
+        or not all(is_current_profile(e.metrics) for e in result.evidence)
+        or not audio_stream_id
+    ):
         return ()
     barriers = [(r.start_ms, r.end_ms) for r in result.ranges if r.action == "keep"]
     barriers += [(e.start_ms, e.end_ms) for e in result.evidence if e.verdict.lower() != "match"]

@@ -8,10 +8,12 @@ import pytest
 
 from media_preview_generator.markers.publishers.plex_db import LocalPlexDb
 from media_preview_generator.markers.store import MarkerStore
+from media_preview_generator.reprise.admission import admit_references
 from media_preview_generator.reprise.identity import media_version
 from media_preview_generator.reprise.models import DecisionRange, Evidence, PlaybackIdentity
 from media_preview_generator.reprise.service import RepriseService, _mapping_fingerprint
 from media_preview_generator.reprise.store import RepriseStore
+from media_preview_generator.reprise.verification_profile import PROFILE_FINGERPRINT, PROFILE_ID
 from media_preview_generator.servers.registry import ServerRegistry
 from scripts.plex_db_node_fixture import build
 
@@ -26,10 +28,13 @@ def _rows(path):
         return rows
 
 
-def _metadata(registry, path):
+def _metadata(registry, path, episode=1):
     cfg = registry.get_config("local")
     return {
         "library_id": "1",
+        "show_key": "show",
+        "season": 1,
+        "episode": episode,
         "remote_part_path": str(path),
         "mapping_fingerprint": _mapping_fingerprint(cfg, cfg.libraries[0]),
     }
@@ -86,7 +91,8 @@ def case(tmp_path, monkeypatch):
         part_size_bytes=reference.stat().st_size,
     )
     store.register_media(version, identity, server_id="local", metadata=_metadata(registry, media))
-    store.register_media(ref_version, ref_identity, server_id="local", metadata=_metadata(registry, reference))
+    store.register_media(ref_version, ref_identity, server_id="local", metadata=_metadata(registry, reference, 2))
+    [(_, provenance)] = admit_references(version, [ref_version], store)
     evidence = Evidence(
         "match",
         10000,
@@ -98,7 +104,8 @@ def case(tmp_path, monkeypatch):
         ref_version.id,
         10000,
         20000,
-        {"checked_audio_stream_ids": ["1"]},
+        {"checked_audio_stream_ids": ["1"], "admission_provenance": provenance,
+         "verification_profile": PROFILE_ID, "profile_fingerprint": PROFILE_FINGERPRINT},
     )
     proposal = DecisionRange(
         "intro", "intro", "skip", 10000, 20000, "proposed", False, "detector", "same", "", ("match",), ("1",)
@@ -356,7 +363,9 @@ def test_identically_reviewed_versions_publish_and_undo_together(case, tmp_path)
     )
     c["store"].register_media(version, identity, server_id="local", metadata=_metadata(c["service"].registry, other))
     source = c["result"].evidence[0]
-    evidence = replace(source, metrics={"checked_audio_stream_ids": ["2"]})
+    reference = c["store"].get_media(source.reference_version_id)
+    [(_, provenance)] = admit_references(version, [reference], c["store"])
+    evidence = replace(source, metrics={**source.metrics, "checked_audio_stream_ids": ["2"], "admission_provenance": provenance})
     proposal = replace(c["result"].ranges[0], review_status="proposed", locked=False, audio_stream_ids=("2",))
     run = c["store"].begin_analysis(version.id, "job-two", "signature-two")
     result = c["store"].finish_analysis(run, (evidence,), (proposal,), version.id)
@@ -447,7 +456,10 @@ def test_reviewed_shared_file_sibling_changes_and_restores_together(case):
     c["store"].register_media(
         version, identity, server_id="local", metadata=_metadata(c["service"].registry, version.canonical_path)
     )
-    evidence = replace(c["result"].evidence[0], metrics={"checked_audio_stream_ids": ["2"]})
+    source = c["result"].evidence[0]
+    reference = c["store"].get_media(source.reference_version_id)
+    [(_, provenance)] = admit_references(version, [reference], c["store"])
+    evidence = replace(source, metrics={**source.metrics, "checked_audio_stream_ids": ["2"], "admission_provenance": provenance})
     proposal = replace(c["result"].ranges[0], review_status="proposed", locked=False, audio_stream_ids=("2",))
     run = c["store"].begin_analysis(version.id, "sibling-job", "sibling-signature")
     result = c["store"].finish_analysis(run, (evidence,), (proposal,), version.id)

@@ -599,7 +599,7 @@ class TestNodeList:
 
     def test_settings_menu_opens_the_page(self, authed_page: Page, app_url: str) -> None:
         NodesApi(authed_page, [])
-        authed_page.goto(f"{app_url}/")
+        authed_page.goto(f"{app_url}/dashboard")
         authed_page.locator("#navSettingsDropdown").hover()
         authed_page.locator("#navSettingsMenu .dropdown-item", has_text="Nodes").click()
         authed_page.wait_for_url(f"{app_url}/nodes")

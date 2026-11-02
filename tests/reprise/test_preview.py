@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -11,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from media_preview_generator.reprise import identity, media, preview
+from media_preview_generator.reprise import identity, media, preview, service
 
 
 @pytest.fixture
@@ -108,6 +110,47 @@ def test_real_preview_is_browser_compatible_and_selected_track(source, tmp_path)
     freq = np.fft.rfftfreq(len(samples), 1 / 8000)[np.argmax(abs(np.fft.rfft(samples)))]
     assert abs(freq - 880) < 8
     assert build(source, tmp_path / "cache").path == result.path
+
+
+@pytest.mark.skipif(os.name == "nt", reason="executable wrappers require a POSIX shell")
+def test_preview_and_library_probe_use_selected_ffmpeg_pair(source, tmp_path):
+    binaries = tmp_path / "selected tools"
+    binaries.mkdir()
+    log = tmp_path / "invocations.log"
+    for name in ("ffmpeg", "ffprobe"):
+        real = shutil.which(name)
+        assert real is not None
+        wrapper = binaries / name
+        wrapper.write_text(
+            f"#!/bin/sh\nprintf '%s\n' {shlex.quote(name)} >> {shlex.quote(str(log))}\n"
+            f"exec {shlex.quote(real)} \"$@\"\n"
+        )
+        wrapper.chmod(0o755)
+
+    selected = str(binaries / "ffmpeg")
+    result = build(source, tmp_path / "cache", ffmpeg_path=selected)
+    assert result.path.is_file()
+    assert log.read_text().splitlines() == ["ffprobe", "ffmpeg"]
+
+    streams = [
+        {"streamType": "2", "id": "first", "index": 1},
+        {"streamType": "2", "id": "second", "index": 2},
+    ]
+    metadata = json.loads(service._probe(source.canonical_path, streams, ffmpeg_path=selected))
+    assert metadata["audio_streams"] == [{"plex_id": "first", "index": 1}, {"plex_id": "second", "index": 2}]
+    assert log.read_text().splitlines() == ["ffprobe", "ffmpeg", "ffprobe"]
+
+
+def test_missing_sibling_probe_refuses_preview_and_library_probe(source, tmp_path):
+    binaries = tmp_path / "selected"
+    binaries.mkdir()
+    selected = binaries / "ffmpeg"
+    selected.write_text("unused")
+    selected.chmod(0o755)
+    with pytest.raises(media.DecodeError, match="sibling ffprobe"):
+        build(source, tmp_path / "cache", ffmpeg_path=str(selected))
+    with pytest.raises(media.DecodeError, match="sibling ffprobe"):
+        service._probe(source.canonical_path, [], ffmpeg_path=str(selected))
 
 
 def test_stale_file_and_invalid_track_are_refused(source, tmp_path):

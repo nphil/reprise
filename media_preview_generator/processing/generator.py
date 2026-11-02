@@ -51,6 +51,7 @@ from loguru import logger
 
 from ..config import Config
 from ..display_rotation import display_matrix, rotation_filter
+from ..markers.probe import ffprobe_path_for
 from ..shutdown import is_shutting_down
 from ..utils import cpu_workers_hint, debug_logging_hint, gpu_details_hint, is_node_mode, working_folder_hint
 from .ffmpeg_runner import (
@@ -76,6 +77,30 @@ from .retry_cascade import (
     classify_cpu_fallback_reason,
     classify_dv_safe_retry_reason,
 )
+
+
+def _has_dv5_libplacebo(ffmpeg: str) -> bool:
+    """Require the selected build to expose libplacebo's Dolby Vision option."""
+    try:
+        result = subprocess.run(
+            [ffmpeg, "-hide_banner", "-h", "filter=libplacebo"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0 and "apply_dolbyvision" in result.stdout
+
+def _has_dv5_opencl(ffmpeg: str) -> bool:
+    """Require the selected OpenCL filter to expose Dolby Vision metadata support."""
+    try:
+        result = subprocess.run(
+            [ffmpeg, "-hide_banner", "-h", "filter=tonemap_opencl"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0 and "apply_dovi" in result.stdout
+
 
 # Issue #238 / #256 — how many byte-identical thumbnails we tolerate before
 # the keyframe-only fast path is considered unsafe. Keyframe spacing is rarely
@@ -1510,7 +1535,7 @@ def _expected_frame_count(media_info, interval: float) -> float | None:
 END_PROBE_TIMEOUT_S = 30
 
 
-def _probe_video_end_seconds(video_file: str, stated_duration_s: float) -> float | None:
+def _probe_video_end_seconds(video_file: str, stated_duration_s: float, ffprobe: str = "ffprobe") -> float | None:
     """Return where the file's video really ends, in seconds from its start.
 
     Seeks to just before the runtime the file states and reads on to the end
@@ -1529,7 +1554,7 @@ def _probe_video_end_seconds(video_file: str, stated_duration_s: float) -> float
         ``None`` when ffprobe gives no usable answer.
     """
     cmd = [
-        "ffprobe",
+        ffprobe,
         "-v",
         "error",
         "-select_streams",
@@ -1612,7 +1637,7 @@ def _warn_if_frame_count_disagrees_with_duration(
     if expected > 0 and abs(image_count - expected) > 2:
         span_s = image_count * interval
         slack_s = 2 * interval
-        video_end_s = _probe_video_end_seconds(video_file, duration_s) if image_count < expected else None
+        video_end_s = _probe_video_end_seconds(video_file, duration_s, ffprobe_path_for(config.ffmpeg_path)) if image_count < expected else None
         if video_end_s is not None and video_end_s < duration_s - slack_s and span_s >= video_end_s - slack_s:
             logger.warning(
                 "'{}' looks cut short: it says it runs {:.0f} min, but its video stops at {:.0f} min, so its "
@@ -1739,6 +1764,7 @@ def _probe_max_keyframe_gap(
     video_file: str,
     duration_s: float | None = None,
     gap_limit: float | None = None,
+    ffprobe: str = "ffprobe",
 ) -> float | None:
     """Return the biggest gap, in seconds, between consecutive keyframes
     on the first video stream — without decoding anything.
@@ -1787,7 +1813,7 @@ def _probe_max_keyframe_gap(
             starts = _keyframe_probe_window_starts(duration_s, window_len, KEYFRAME_PROBE_WINDOWS)
             read_intervals = ",".join(f"{start:.0f}%+{window_len:.0f}" for start in starts)
 
-    cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0"]
+    cmd = [ffprobe, "-v", "error", "-select_streams", "v:0"]
     if read_intervals:
         cmd += ["-read_intervals", read_intervals]
     cmd += ["-show_entries", "packet=pts_time,flags", "-of", "csv=p=0", video_file]
@@ -1935,7 +1961,7 @@ _FFPROBE_TRANSFER_TO_MEDIAINFO = {"smpte2084": "PQ", "arib-std-b67": "HLG"}
 _FFPROBE_FALLBACK_TIMEOUT_S = 30
 
 
-def _video_details_from_ffprobe(video_file: str) -> dict[str, str]:
+def _video_details_from_ffprobe(video_file: str, ffprobe: str = "ffprobe") -> dict[str, str]:
     """The HDR details of the first video stream, in MediaInfo's field names; empty if ffprobe can't say.
 
     Args:
@@ -1944,7 +1970,7 @@ def _video_details_from_ffprobe(video_file: str) -> dict[str, str]:
     Returns:
         ``Transfer_characteristics`` (PQ or HLG) and ``HDR_format`` (Dolby Vision), for those the stream declares.
     """
-    cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_streams", "-of", "json", video_file]
+    cmd = [ffprobe, "-v", "error", "-select_streams", "v:0", "-show_streams", "-of", "json", video_file]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=_FFPROBE_FALLBACK_TIMEOUT_S, check=False)
         stream = json.loads(proc.stdout or "{}")["streams"][0]
@@ -1962,7 +1988,7 @@ def _video_details_from_ffprobe(video_file: str) -> dict[str, str]:
     return details
 
 
-def read_media_info(video_file: str, **parse_options: Any) -> MediaInfo:
+def read_media_info(video_file: str, *, ffprobe: str = "ffprobe", **parse_options: Any) -> MediaInfo:
     """The file's details as MediaInfo reads them; a file it can't read gets its HDR details from ffprobe, and one
     warning.
 
@@ -1989,11 +2015,11 @@ def read_media_info(video_file: str, **parse_options: Any) -> MediaInfo:
             video_file,
             exc,
         )
-        fields = "".join(f"<{name}>{value}</{name}>" for name, value in _video_details_from_ffprobe(video_file).items())
+        fields = "".join(f"<{name}>{value}</{name}>" for name, value in _video_details_from_ffprobe(video_file, ffprobe).items())
         return MediaInfo(f'<Mediainfo><File><track type="Video">{fields}</track></File></Mediainfo>')
 
 
-def display_turn(video_file: str) -> str | None:
+def display_turn(video_file: str, ffprobe: str = "ffprobe") -> str | None:
     """The filters that show the first video stream's frames as FFmpeg shows them on the CPU, from its display matrix
     (a phone's portrait video stored landscape is turned a quarter; a selfie video may be mirrored too).
 
@@ -2007,7 +2033,7 @@ def display_turn(video_file: str) -> str | None:
         The filters (:func:`display_rotation.rotation_filter`), or None for a stream shown as stored or one ffprobe can't
         read.
     """
-    cmd = ["ffprobe", "-v", "error", "-select_streams", "V:0", "-show_entries", "stream_side_data=displaymatrix",
+    cmd = [ffprobe, "-v", "error", "-select_streams", "V:0", "-show_entries", "stream_side_data=displaymatrix",
            "-of", "json", video_file]  # fmt: skip
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=_FFPROBE_FALLBACK_TIMEOUT_S, check=False)
@@ -2073,7 +2099,8 @@ def generate_images(
         WorkingFolderError: FFmpeg couldn't write the thumbnails to ``output_folder`` (full, over its quota,
             read-only, or not writable by this user); none of them are kept.
     """
-    media_info = read_media_info(video_file)
+    ffprobe = ffprobe_path_for(config.ffmpeg_path)
+    media_info = read_media_info(video_file, ffprobe=ffprobe)
     if gpu == "NVIDIA" and is_greyscale_h264(media_info):
         # NVDEC decodes H.264 greyscale into coloured stripes and FFmpeg reports success (a Quadro P5000 and a TITAN
         # RTX; Intel's VAAPI decodes it right), so it's a codec the GPU lacks, known before any GPU run.
@@ -2088,7 +2115,7 @@ def generate_images(
         )
     # Only frames kept as CUDA or VAAPI surfaces need turning by the app: FFmpeg turns frames in memory itself (the
     # CPU's, VideoToolbox's and D3D11VA's), so no other worker pays for the probe.
-    shown_turn = display_turn(video_file) if gpu in ("NVIDIA", "INTEL", "AMD") else None
+    shown_turn = display_turn(video_file, ffprobe) if gpu in ("NVIDIA", "INTEL", "AMD") else None
     fps_value = round(1 / config.plex_bif_frame_interval, 6)
 
     # Filter primitives.  The final vf chain is assembled inside
@@ -2103,13 +2130,7 @@ def generate_images(
     #   "hdr10_zscale"      — HDR10 / PQ / HLG / DV P7+8: zscale tonemap chain
     #   "libplacebo_dv5"    — DV Profile 5 with libplacebo (CPU/NVIDIA input)
     #   "libplacebo_vaapi"  — DV Profile 5 on AMD: VAAPI→Vulkan DMA-BUF
-    #   "opencl_dv5_intel"  — DV Profile 5 on Intel: VAAPI→OpenCL tonemap
-    #                         (Intel VAAPI + Vulkan libplacebo has an upstream
-    #                         interop bug that returns VK_ERROR_OUT_OF_DEVICE_MEMORY
-    #                         in containers on both iGPU and DG2 Arc; jellyfin-
-    #                         ffmpeg's patched tonemap_opencl handles DV5 RPU
-    #                         correctly and runs on the Intel media engine
-    #                         entirely.  See issue #212.)
+    # Intel uses software decode and the libplacebo upload path, not patched OpenCL.
     path_kind = "sdr"
     # Pre-assembled filter chain for the libplacebo / OpenCL paths (they
     # already contain hwupload/hwmap/hwdownload and do not need GPU-scale
@@ -2120,10 +2141,8 @@ def generate_images(
     use_libplacebo = False
     # True when DV5 uses AMD's VAAPI→Vulkan DMA-BUF libplacebo path.
     use_vaapi_dv5_path = False
-    # True when DV5 uses Intel's VAAPI→OpenCL tonemap_opencl path (Jellyfin
-    # pattern).  Intel's VAAPI→Vulkan libplacebo path is broken upstream on
-    # Mesa ANV — see path_kind doc above.
     use_intel_opencl_dv5_path = False
+    has_dv_filter = False
     # DV5 content + software/missing Vulkan: skip both libplacebo AND
     # the zscale fallback, because zscale on a DV5 stream produces a
     # green overlay (no HDR10 base layer to read).  The SDR path_kind
@@ -2174,7 +2193,25 @@ def generate_images(
                 vulkan_info = get_vulkan_device_info()
                 vk_device = vulkan_info.device
                 vk_is_software = vulkan_info.is_software
-                if vk_is_software or vk_device is None:
+                has_dv_filter = _has_dv5_libplacebo(config.ffmpeg_path)
+                use_intel_opencl_dv5_path = bool(
+                    gpu == "INTEL" and gpu_device_path and gpu_device_path.startswith("/dev/dri/")
+                    and _has_dv5_opencl(config.ffmpeg_path)
+                )
+                if use_intel_opencl_dv5_path:
+                    use_libplacebo = True
+                    path_kind = DV5_PATH_INTEL_OPENCL
+                    libplacebo_vf = build_dv5_vf(
+                        path_kind, config.tonemap_algorithm, fps_value,
+                        f"{shown_turn},{base_scale}" if shown_turn else base_scale,
+                    )
+                elif not has_dv_filter:
+                    logger.warning(
+                        "Dolby Vision Profile 5 tone mapping is unavailable in the selected FFmpeg; "
+                        "{} will be processed without it and thumbnail colours may be wrong.", video_file
+                    )
+                    dv5_software_fallback = True
+                elif vk_is_software or vk_device is None:
                     # A node has no dashboard: the fix is for its own container, so it is said here.
                     how_to_fix = (
                         (dv5_no_vulkan_fix() or "The dashboard's Nodes page says why this node's GPU can't use Vulkan.")
@@ -2202,44 +2239,13 @@ def generate_images(
                         transfer,
                     )
                     use_libplacebo = True
-                    # Pick the DV5 filter chain based on GPU vendor.
-                    #
-                    # Intel (iGPU + Arc DG2): use VAAPI decode + OpenCL tonemap.
-                    #   Intel's VAAPI→Vulkan DMA-BUF interop path is broken
-                    #   upstream (libplacebo's vkCreateImage returns
-                    #   VK_ERROR_OUT_OF_DEVICE_MEMORY on Mesa ANV for the
-                    #   format+modifier combinations used for DV5 hwmap —
-                    #   reproduces on an Intel iGPU in-container and on
-                    #   the reporter's Arc A380).  Jellyfin-ffmpeg's
-                    #   patched tonemap_opencl reads DV RPU side-data and
-                    #   produces correct colours — benchmarked 17x/0 CPU
-                    #   on that iGPU.  See issue #212.
-                    #
-                    # AMD Radeon: use VAAPI→Vulkan DMA-BUF libplacebo.
-                    #   Jellyfin ships this pattern in production for
-                    #   discrete AMD cards; untested locally but FFmpeg
-                    #   flags are vendor-agnostic.
-                    #
-                    # NVIDIA: CUDA decode (set in _run_ffmpeg) + Vulkan
-                    #   libplacebo via hwupload of CPU frames.
-                    #
-                    # Other / no device path: software decode + libplacebo
-                    #   via plain vulkan=vk + hwupload.
-                    # Filter-chain assembly for each vendor's DV5 path lives
-                    # in :func:`build_dv5_vf` at module top.  The reasoning
-                    # about fps-first placement, contrast/saturation, and
-                    # per-vendor hwmap/hwupload choices is documented there.
-                    if gpu == "INTEL" and gpu_device_path is not None and gpu_device_path.startswith("/dev/dri/"):
-                        use_intel_opencl_dv5_path = True
-                        path_kind = DV5_PATH_INTEL_OPENCL
-                    else:
-                        use_vaapi_dv5_path = bool(
-                            gpu is not None
-                            and gpu != "NVIDIA"
-                            and gpu_device_path is not None
-                            and gpu_device_path.startswith("/dev/dri/")
-                        )
-                        path_kind = DV5_PATH_VAAPI_VULKAN if use_vaapi_dv5_path else DV5_PATH_LIBPLACEBO
+                    # A capable Intel OpenCL path was selected above; otherwise Intel uses the generic upload path.
+                    use_vaapi_dv5_path = bool(
+                        gpu not in (None, "NVIDIA", "INTEL")
+                        and gpu_device_path is not None
+                        and gpu_device_path.startswith("/dev/dri/")
+                    )
+                    path_kind = DV5_PATH_VAAPI_VULKAN if use_vaapi_dv5_path else DV5_PATH_LIBPLACEBO
                     # The VAAPI paths' frames stay on the GPU until their download, which FFmpeg doesn't turn
                     # upright; the libplacebo path uploads frames FFmpeg has already turned.
                     turn = shown_turn if path_kind != DV5_PATH_LIBPLACEBO else None
@@ -2381,6 +2387,7 @@ def generate_images(
             video_file,
             duration_s=_video_duration_seconds(media_info),
             gap_limit=gap_limit,
+            ffprobe=ffprobe,
         )
         if max_gap is None:
             logger.info(
@@ -2596,21 +2603,16 @@ def generate_images(
         and not partial_discarded
         and not no_decoder
         and not input_unreadable
-        and (use_vaapi_dv5_path or use_intel_opencl_dv5_path)
+        and (use_vaapi_dv5_path or (use_intel_opencl_dv5_path and has_dv_filter))
     ):
         if cancel_check and cancel_check():
             raise CancellationError(f"Processing cancelled for {video_file}")
         did_sw_libplacebo_retry = True
-        hw_name = "Intel OpenCL" if use_intel_opencl_dv5_path else "VAAPI+Vulkan"
-        if use_intel_opencl_dv5_path:
-            reason = "Intel OpenCL init failed — uncommon, usually a container runtime / ICD conflict"
-        else:
-            reason = "VAAPI→Vulkan libplacebo interop upstream bug (Mesa ANV / amdvlk on some driver+GPU combos)"
+        hw_name = "VAAPI+Vulkan"
+        reason = "VAAPI to Vulkan interop failed"
         logger.warning(
             "Hardware-accelerated Dolby Vision processing ({}) failed for {} — {}. "
-            "Falling back to CPU + software tone mapping. Output will be correct but slower "
-            "(typically 5-10x realtime instead of 15-25x). No action needed unless this happens "
-            "for every Dolby Vision file, in which case it's worth investigating GPU drivers.",
+            "Retrying with CPU and software tone mapping; Dolby Vision colour accuracy is not guaranteed.",
             hw_name,
             video_file,
             reason,

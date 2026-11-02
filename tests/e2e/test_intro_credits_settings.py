@@ -95,7 +95,7 @@ def _mock_local_sources(page: Page, body: object, status: int = 200) -> None:
 
 
 AVAILABLE = {
-    "season_audio": {"available": True, "ffmpeg": "/usr/lib/jellyfin-ffmpeg/ffmpeg", "message": ""},
+    "season_audio": {"available": True, "ffmpeg": "/usr/local/bin/ffmpeg", "message": ""},
     "credits_text": {"available": True, "message": ""},
 }
 
@@ -359,7 +359,7 @@ class TestIntroCreditsSettings:
         assert [s["id"] for s in sent["sources"]] == SOURCE_ORDER
 
     def test_season_audio_without_chromaprint_says_why(self, authed_page: Page, app_url: str) -> None:
-        reason = "Needs an ffmpeg with the chromaprint muxer (the Docker image's jellyfin-ffmpeg has it)"
+        reason = "Needs an ffmpeg with the chromaprint muxer; the selected ffmpeg does not provide it"
         captured = _open_settings_and_wait_for_local(
             authed_page,
             app_url,

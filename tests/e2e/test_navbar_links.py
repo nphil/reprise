@@ -22,7 +22,8 @@ from playwright.sync_api import BrowserContext, Page, expect
 from .conftest import _capture_session_cookie, _seed_settings_complete, _start_app, get_free_port
 
 KOFI = "https://ko-fi.com/stevezau"
-REPO = "https://github.com/stevezau/media_preview_generator"
+REPO = "https://github.com/nphil/reprise"
+UPSTREAM_REPO = "https://github.com/stevezau/media_preview_generator"
 RELEASES = "https://github.com/stevezau/media_preview_generator/releases/latest"
 DESKTOP = {"width": 1440, "height": 900}
 PHONE = {"width": 390, "height": 844}
@@ -93,7 +94,9 @@ def dev_page(page: Page, context: BrowserContext, dev_cookie: dict) -> Page:
     return page
 
 
-def _open(page: Page, app: str, check: dict, viewport: dict, path: str = "/", font: str = "page-font") -> None:
+def _open(
+    page: Page, app: str, check: dict, viewport: dict, path: str = "/dashboard", font: str = "page-font"
+) -> None:
     _call(f"{app}/api/__test/version-cache", check)
     page.set_viewport_size(viewport)
     page.goto(f"{app}{path}")
@@ -139,7 +142,7 @@ def _expect_new_tab_link(page: Page, selector: str, href: str) -> None:
 
 @pytest.mark.e2e
 class TestDesktop:
-    @pytest.mark.parametrize("path", ["/", "/settings", "/automation"])
+    @pytest.mark.parametrize("path", ["/dashboard", "/settings", "/automation"])
     def test_version_coffee_and_star_sit_in_one_tidy_row(self, dev_page: Page, dev_app: str, path: str) -> None:
         _open(dev_page, dev_app, NO_UPDATE, DESKTOP, path)
 
@@ -157,7 +160,7 @@ class TestDesktop:
 
         _expect_new_tab_link(dev_page, "#navStarBtn", REPO)
         expect(dev_page.locator("#navStarBtn")).to_have_attribute(
-            "aria-label", "Star Media Preview Generator on GitHub"
+            "aria-label", "Star Reprise on GitHub"
         )
         expect(dev_page.locator("#navStarBtn")).to_have_text("Star", use_inner_text=True)
 
@@ -226,6 +229,7 @@ class TestDesktop:
 
         menu = dev_page.locator('.dropdown-menu[aria-labelledby="helpMenuBtn"]')
         expect(menu.locator("a", has_text="GitHub repository")).to_be_visible()
+        expect(menu.locator("a", has_text="GitHub repository")).to_have_attribute("href", UPSTREAM_REPO)
         expect(menu.locator(f'a[href="{KOFI}"]')).to_have_count(0)
         expect(menu.locator('a[href*="sponsors"]')).to_have_count(0)
         # The divider that set the coffee row off still separates the repo link, so it isn't stray.

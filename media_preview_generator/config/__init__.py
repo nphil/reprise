@@ -45,19 +45,8 @@ from .validation import (  # noqa: F401
     validate_processing_thread_totals,
 )
 
-# When both are installed we always prefer the Jellyfin build.
-_JELLYFIN_FFMPEG_PATH = "/usr/lib/jellyfin-ffmpeg/ffmpeg"
-
-
 def _resolve_ffmpeg_path() -> str | None:
-    """Pick the FFmpeg binary to use.
-
-    Returns the path to jellyfin-ffmpeg when installed and executable,
-    otherwise whatever ``ffmpeg`` resolves to via ``PATH``.  ``None``
-    means no working FFmpeg was found.
-    """
-    if os.path.isfile(_JELLYFIN_FFMPEG_PATH) and os.access(_JELLYFIN_FFMPEG_PATH, os.X_OK):
-        return _JELLYFIN_FFMPEG_PATH
+    """Use FFmpeg on PATH (the bundled native build in the container)."""
     return shutil.which("ffmpeg")
 
 

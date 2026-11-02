@@ -27,7 +27,7 @@ def _open_with_held_queue(page: Page, app_url: str, *, fake_clock: bool) -> tupl
         page.clock.install()
     held: list[Route] = []
     page.route("**/api/jobs?**", lambda route: held.append(route))
-    page.goto(f"{app_url}/")
+    page.goto(f"{app_url}/dashboard")
     _wait_for_reads(page, held, 1)
     return page, held
 

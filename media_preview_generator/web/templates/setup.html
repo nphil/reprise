@@ -417,7 +417,7 @@
                 <legend>GPU device tuning</legend>
                 <p class="setup-helper">GPU workers use both GPU and CPU. <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="How HDR and Dolby Vision change CPU use." data-explain-title="GPU workers" data-explain-template="infoSetupGpuTpl"><i class="bi bi-info-circle"></i></button>
 <template id="infoSetupGpuTpl">
-    <p>GPU workers use both GPU and CPU. For standard content, the GPU does most of the work. For HDR and Dolby Vision content, CPU usage will be higher due to additional tone mapping processing.</p>
+    <p>GPU workers may use both GPU and CPU. The bundled FFmpeg is CPU-focused; GPU acceleration and Dolby Vision Profile 5 colour accuracy are not established for this build.</p>
 </template>
 </p>
                 <div id="gpuConfigContainer">

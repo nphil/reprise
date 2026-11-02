@@ -31,7 +31,7 @@ def test_resume_button_text_and_icon_are_dark_on_amber(authed_page: Page, app_ur
     page = authed_page
     mock_dashboard_defaults(page)
     page.add_init_script(_SOCKET_STUB)
-    page.goto(f"{app_url}/")
+    page.goto(f"{app_url}/dashboard")
     page.wait_for_selector("#globalPauseResumeQueue", state="attached")
     page.evaluate(
         """() => {
@@ -49,6 +49,6 @@ def test_pause_button_is_offered_when_nothing_is_queued(authed_page: Page, app_u
     page = authed_page
     mock_dashboard_defaults(page)
     page.add_init_script(_SOCKET_STUB)
-    page.goto(f"{app_url}/")
+    page.goto(f"{app_url}/dashboard")
 
     expect(page.locator("#globalPauseResumeQueue")).to_contain_text("Pause")

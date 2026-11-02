@@ -1691,7 +1691,7 @@ table covers every state the check can report, in its exact wording:
 | *(Emby)* "Emby rejected this server's credentials; reconnect it" | The stored API key or login no longer works | Reconnect the server from the Servers page |
 | *(Emby)* "Emby refused the Media Preview Bridge markers endpoint; this server's API key or user needs administrator rights" | The connected account isn't an administrator | Reconnect with an admin account or API key |
 | *(Emby)* Emby shows "Unlock Feature" when a viewer clicks **Skip Intro**, or stops showing Skip Intro; the tab's amber **Emby Premiere** row reads "Viewers can't skip intros: this Emby server has no Emby Premiere key. Skip Credits (Up Next) still works." | Emby only skips intros on a server with an active Emby Premiere key. Without one, its player shows Skip Intro for the first few episodes, asks for Premiere instead of skipping, then hides the button | Add an Emby Premiere key to this Emby server. Nothing to change in this app: the markers are written either way, and the tab notices the key within an hour |
-| *(Settings)* **Matching audio across a season** shows "Not available" with a reason, e.g. "Needs an ffmpeg with the chromaprint muxer (jellyfin-ffmpeg in the amd64 image); none was found" | This container's ffmpeg has no chromaprint (the arm64 image, or a custom ffmpeg) | Use the amd64 Docker image; every other source keeps working. Saved season audio answers can't help decide an intro meanwhile: such an intro is decided from the other sources, and when they can't settle it, nothing is written |
+| *(Settings)* **Matching audio across a season** shows "Not available" because the selected FFmpeg lacks the chromaprint muxer | The selected FFmpeg does not provide chromaprint | Use an FFmpeg build with chromaprint. The bundled native build includes it on both supported architectures; other sources still work. |
 | *(Settings)* **Matching audio across a season** shows "Not available": "ffmpeg didn't answer the check for the chromaprint muxer; it is checked again in 10 minutes" | ffmpeg timed out, couldn't start, or exited with an error when asked for its muxers (a busy or slow container start) | Nothing: jobs started meanwhile match no episodes, but saved season audio answers still count, and the check runs again after 10 minutes |
 | *(Settings)* **On-screen credit text** says "Not available" with one of: "Needs ONNX Runtime and OpenCV, which the Docker image includes; they aren't installed here" · "Needs the text detection model, which the Docker image includes; it isn't at …" (or the text recognition model) · "The text detection model at … isn't the expected file" (or recognition) · "The text detection check didn't answer; it is checked again in 10 minutes" | Running outside the Docker image without the packages/model installed, a moved or corrupted model file, or the check timed out/crashed | Use the Docker image, which ships the packages and model; every other source keeps working meanwhile. The last reason clears itself — the check runs again after 10 minutes |
 | Log line "Credit text detection on \<device\>: CPU (\<reason\>)" although this host has a GPU | The GPU can't run text detection in this container: the reason is e.g. "Vulkan reports no hardware GPU", "no WebGPU device is this GPU", "… GPUs have no WebGPU path in this app", "this GPU has no usable WebGPU adapter", or "WebGPU would run on llvmpipe …, a software renderer, not on this GPU" | Check the GPU is passed into the container the way previews use it. arm64 has no GPU path for credit text either way |
@@ -1771,23 +1771,7 @@ or weren't checked, aren't counted. See
 
 ## HDR & Dolby Vision
 
-HDR thumbnails are **tone-mapped** to SDR (standard dynamic range) automatically, so previews aren't washed out or black. Most HDR formats need nothing from you. The tricky case is **Dolby Vision Profile 5** (4K Dolby Vision rips with no HDR10 fallback layer), and the one setup step you may need is on NVIDIA; see the warning at the bottom of this section.
-
-> [!TIP]
-> **Glossary**
->
-> - **Tone mapping:** converting HDR's wide brightness range to the narrower SDR range a thumbnail can show. Without it, HDR content looks too dark or tinted.
-> - **HDR10 / HDR10+ / HLG:** the common HDR formats. All use one video track and tone-map cleanly.
-> - **Dolby Vision (DV):** Dolby's HDR. **Profile 7/8** carries an HDR10 fallback layer and works like HDR10. **Profile 5** doesn't, and needs special handling.
-> - **libplacebo / Vulkan:** the GPU library that tone-maps DV Profile 5. It needs a working Vulkan driver.
-
-| Format | What we do |
-|--------|------------|
-| HDR10 | Tone-map to SDR (algorithm configurable, default: Hable) |
-| HLG | Tone-map to SDR (algorithm configurable, default: Hable) |
-| HDR10+ (without Dolby Vision) | Tone-map to SDR (algorithm configurable, default: Hable) |
-| Dolby Vision Profile 7/8 (with HDR10 fallback) | Tone-map the HDR10 fallback layer with hardware decode ([#178](https://github.com/stevezau/media_preview_generator/issues/178)) |
-| Dolby Vision Profile 5 (no fallback layer) | Per-GPU specialist path (see below); software fallback uses libplacebo ([#172](https://github.com/stevezau/media_preview_generator/issues/172), [#178](https://github.com/stevezau/media_preview_generator/issues/178), [#212](https://github.com/stevezau/media_preview_generator/issues/212)) |
+The bundled native FFmpeg is CPU-focused. GPU acceleration and Dolby Vision Profile 5 tone mapping are not established for this build. Profile 5 has no HDR10 fallback layer and previews may have incorrect colours. HDR10, HLG and Dolby Vision with a compatible HDR base layer use the standard tone-mapping path.
 
 ### Tone-map algorithm
 
@@ -1797,38 +1781,7 @@ Non-DV HDR content (HDR10, HLG, HDR10+) uses a configurable algorithm, set in **
 
 ### Dolby Vision Profile 5
 
-Profile 5 has no HDR10 fallback layer, so the standard tone-mapping path can't read it. The app picks the right path for your GPU. NVIDIA users, see the warning below.
-
-The path for each GPU vendor:
-
-| Vendor | Notes |
-|---|---|
-| Intel iGPU / Arc | Uses Jellyfin's DV-aware patch |
-| NVIDIA | Needs Vulkan driver — see the NVIDIA warning below |
-| AMD Radeon | Untested locally |
-| CPU-only fallback | No hardware Vulkan, so thumbnails come out with a green and purple tint |
-
-The image ships **jellyfin-ffmpeg 8.1.2** as its preferred FFmpeg because Jellyfin's fork carries a Dolby Vision tone-mapping patch that upstream FFmpeg lacks. Non-amd64 builds use the base image's FFmpeg 8.1.2.
-
-Profile 7/8 (with HDR10 fallback) uses the standard tone-mapping chain and needs no Vulkan.
-
-### Container edge cases handled automatically
-
-The container handles these at startup. They're listed so you can read the logs when they mention DRI symlinks or Vulkan probe retries.
-
-- **Intel GPU under `--runtime=nvidia`.** With both an Intel iGPU and an NVIDIA card under the NVIDIA container runtime, NVIDIA's tooling hides the Intel device from one OpenCL discovery path. The container re-adds the missing symlinks so the Intel iGPU stays usable for tone mapping.
-- **NVIDIA Vulkan on dual-GPU hosts.** With both an Intel iGPU and an NVIDIA dGPU, Vulkan defaults to Intel, but Dolby Vision tone mapping is faster on the NVIDIA card. The container's Vulkan startup probe tries up to four configurations to force NVIDIA, so frames don't bounce between the two cards.
-
-> [!IMPORTANT]
-> **NVIDIA users: set `NVIDIA_DRIVER_CAPABILITIES=all` (or include `graphics`).**
->
-> Dolby Vision Profile 5 needs the NVIDIA Vulkan driver inside the container, and NVIDIA's container toolkit loads it only when the `graphics` capability is declared. The common `compute,video,utility` setting is fine for everything else but **not** for Profile 5. Without `graphics`, the app can't tone-map those files and their thumbnails come out with a green and purple tint.
->
-> **Fix:** add `-e NVIDIA_DRIVER_CAPABILITIES=all` to your `docker run` command (or the `environment:` block of your compose file) and restart the container. `all` is what the official NVIDIA Vulkan images use. For minimum privilege, `compute,video,utility,graphics` also works.
->
-> If NVIDIA's Vulkan driver arrives without the small config files that point to it (as with `--gpus all` on some Docker setups), the app writes them itself. If the banner says none of NVIDIA's graphics driver files are in the container, see [NVIDIA graphics files missing from the container](hdr-dolby-vision-thumbnails.md#nvidia-graphics-files-missing-from-the-container).
->
-> If the banner persists, the cause is less common (a driver-version regression, a missing library in the container runtime config, or an ICD file in the wrong place). The banner names it. `GET /api/system/vulkan/debug` returns a plain-text diagnostic bundle to attach to a GitHub issue.
+Profile 5 has no HDR10 fallback layer. Correct colour is not guaranteed by the bundled FFmpeg. The prior Jellyfin-specific tone-mapping patch is not included; passing through a GPU does not establish support.
 
 ---
 
@@ -1857,7 +1810,7 @@ Common questions have moved to their own page — see [FAQ](faq.md).
 | Job warning: "N file(s) still weren't indexed by the media server after N retries, so no more retries are queued. The next scheduled scan will pick them up." | The media server hadn't added the file to its library by the last retry | Nothing, if you have a scheduled scan: it picks the file up once the server has it. Otherwise raise **Retry count** or **Initial retry delay** (Settings → Retry policy), or check the file is under a library folder the server scans. |
 | Radarr/Sonarr cannot reach webhook URL | Network routing or hostname issue | Use host IP or reachable Docker hostname (not `localhost`), then verify firewall and port `8080`. |
 | New job starts after I paused | Global pause not set or UI not refreshed | Use **Pause** in the **Workers** header. Global pause is persisted and pauses in-flight processing. Group reductions and closing worker hours instead let current files finish. |
-| DV Profile 5 thumbnails have a green and purple tint, and the log warns that no working Vulkan device was found | The container can't reach a hardware Vulkan device, so the app skips Profile 5 tone mapping and extracts plain frames instead | Pass an iGPU to the container with `--device /dev/dri:/dev/dri` (Intel/AMD), or for NVIDIA set `NVIDIA_DRIVER_CAPABILITIES=all` so the NVIDIA Vulkan driver gets injected; if they're still tinted, also start the container with `--runtime=nvidia`. Most users already pass `/dev/dri` for hardware video acceleration, which brings the Vulkan driver along for free. |
+| DV Profile 5 thumbnails have a green and purple tint | Profile 5 tone mapping is not established for the bundled FFmpeg | Do not rely on those thumbnails for colour accuracy. |
 
 ### Validate Plex Config Path
 

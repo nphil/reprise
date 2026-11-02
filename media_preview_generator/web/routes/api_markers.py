@@ -707,7 +707,7 @@ def marker_local_sources():
     from ...markers.credits import textdet_helper
 
     def season_audio() -> dict:
-        # No setting to pass: jobs use jellyfin-ffmpeg, then ffmpeg on PATH, the order chromaprint_status tries.
+        # No setting to pass: jobs use ffmpeg on PATH.
         found, reason = fingerprint.chromaprint_status(None)
         return {"available": found is not None, "ffmpeg": found, "message": reason}
 

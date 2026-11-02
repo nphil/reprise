@@ -20,7 +20,7 @@ MIN_FFMPEG_VERSION = (7, 0, 0)
 
 
 def ffmpeg_binary() -> str:
-    """Return the FFmpeg binary jobs run (jellyfin-ffmpeg when installed), so probes test the same build."""
+    """Return the FFmpeg binary jobs run, so probes test the same build."""
     from ..config import _resolve_ffmpeg_path
 
     return _resolve_ffmpeg_path() or "ffmpeg"

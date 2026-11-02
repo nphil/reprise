@@ -208,7 +208,7 @@ def test_dashboard_shows_node_chip_zero_reason_and_offline_worker_card(
         "node_state": "offline",
     }
     authed_page.route("**/api/jobs/workers", lambda route: route.fulfill(json={"workers": [worker]}))
-    authed_page.goto(app_url + "/")
+    authed_page.goto(app_url + "/dashboard")
     block = authed_page.locator('[data-member-block="gpu-video:m-laptop"]')
     expect(block.locator(".mem-h .node-chip")).to_have_text("old-laptop")
     expect(block.locator("[data-node-zero]")).to_have_text("node offline · 0 now")
@@ -235,7 +235,7 @@ def test_an_offline_nodes_line_doesnt_say_other_devices_keep_working_when_none_d
     video = state["capacity"]["groups"][1]
     video["members"] = [m for m in video["members"] if m["id"] != "m-gpu"]
     mock_dashboard_defaults(authed_page)
-    authed_page.goto(app_url + "/")
+    authed_page.goto(app_url + "/dashboard")
     block = authed_page.locator('[data-member-block="gpu-video:m-laptop"]')
     expect(block.locator(".msg")).to_have_text("old-laptop · GTX 1650: node offline. Its jobs wait. Open old-laptop")
     chip = block.locator("[data-node-zero]")
@@ -274,7 +274,7 @@ def test_a_worker_cards_node_state_has_the_nodes_pages_name_and_colour(
         "node_state": node_state,
     }
     authed_page.route("**/api/jobs/workers", lambda route: route.fulfill(json={"workers": [worker]}))
-    authed_page.goto(app_url + "/")
+    authed_page.goto(app_url + "/dashboard")
     badge = authed_page.locator('[data-worker-key="GPU_4"] [data-status-badge]')
     expect(badge).to_have_text(text)
     expect(badge).to_have_class(f"pill {tone}")
@@ -315,7 +315,7 @@ def test_a_worker_card_says_why_its_node_gives_it_no_work(
         "node_cause": cause,
     }
     authed_page.route("**/api/jobs/workers", lambda route: route.fulfill(json={"workers": [worker]}))
-    authed_page.goto(app_url + "/")
+    authed_page.goto(app_url + "/dashboard")
     expect(authed_page.locator('[data-worker-key="GPU_4"] [data-status-badge]')).to_have_text(text)
 
 
@@ -363,7 +363,7 @@ def test_on_a_phone_the_dashboards_zero_chip_doesnt_cover_the_device_name(
     _temp_problem_node(group_api)
     mock_dashboard_defaults(authed_page)
     authed_page.set_viewport_size({"width": 390, "height": 844})
-    authed_page.goto(app_url + "/")
+    authed_page.goto(app_url + "/dashboard")
     head = authed_page.locator('[data-member-block="gpu-video:m-laptop"] .mem-h')
     chip = head.locator("[data-node-zero]")
     expect(chip).to_have_text("node's temp folder can't be used · 0 now")
@@ -411,7 +411,7 @@ def test_the_dashboard_says_a_node_problem_once_and_links_the_node(
         {"code": "loudness_without_cpu", "message": "Loudness needs a CPU group."},
     ]
     mock_dashboard_defaults(authed_page)
-    authed_page.goto(app_url + "/")
+    authed_page.goto(app_url + "/dashboard")
     block = authed_page.locator('[data-member-block="gpu-video:m-laptop"]')
     expect(block).to_contain_text("old-laptop · GTX 1650: node offline.")
     expect(block.get_by_role("link", name="Open old-laptop")).to_have_attribute("href", "/nodes#node-laptop")
@@ -474,7 +474,7 @@ def test_with_a_worker_on_a_node_this_apps_worker_cards_say_this_app(
     mock_dashboard_defaults(authed_page)
     workers = [LOCAL_WORKER, NODE_WORKER]
     authed_page.route("**/api/jobs/workers", lambda route: route.fulfill(json={"workers": workers}))
-    authed_page.goto(app_url + "/")
+    authed_page.goto(app_url + "/dashboard")
     local = authed_page.locator('[data-worker-key="GPU_1"] [data-node-chip]')
     expect(local).to_have_text("Main")
     expect(local).not_to_have_attribute("hidden", "")
@@ -499,7 +499,7 @@ def test_without_a_worker_on_a_node_worker_cards_have_no_machine_chip(
 ) -> None:
     mock_dashboard_defaults(authed_page)
     authed_page.route("**/api/jobs/workers", lambda route: route.fulfill(json={"workers": [LOCAL_WORKER]}))
-    authed_page.goto(app_url + "/")
+    authed_page.goto(app_url + "/dashboard")
     card = authed_page.locator('[data-worker-key="GPU_1"]')
     expect(card).to_be_visible()
     expect(card.locator("[data-node-chip]")).to_have_attribute("hidden", "")

@@ -25,7 +25,7 @@ class TestQueueHoverDefer:
         self, authed_page: Page, app_url: str, hover_target: str
     ) -> None:
         mock_dashboard_defaults(authed_page)
-        authed_page.goto(f"{app_url}/")
+        authed_page.goto(f"{app_url}/dashboard")
         result = authed_page.evaluate(
             """hoverTarget => {
                 const container = document.getElementById('jobQueue');
@@ -75,7 +75,7 @@ class TestQueueHoverDefer:
 
     def test_queue_render_replaces_stale_rows_when_not_hovered(self, authed_page: Page, app_url: str) -> None:
         mock_dashboard_defaults(authed_page)
-        authed_page.goto(f"{app_url}/")
+        authed_page.goto(f"{app_url}/dashboard")
         result = authed_page.evaluate(
             """() => {
                 const container = document.getElementById('jobQueue');

@@ -1,15 +1,10 @@
 ---
 title: HDR and Dolby Vision preview thumbnails for Plex, Jellyfin and Emby
-heading: HDR and Dolby Vision preview thumbnails without washed-out or green frames
-description: Washed-out or green previews come from HDR frames not tone-mapped. This app tone-maps HDR10, HLG and Dolby Vision;
-  DV Profile 5 needs a Vulkan GPU.
+heading: HDR and Dolby Vision preview thumbnails
+description: HDR tone mapping and Dolby Vision Profile 5 limitations in the CPU-focused FFmpeg build.
 ---
 
-Washed-out, grey or green preview thumbnails come from frames taken from HDR video without tone mapping them to SDR. Tone mapping converts HDR's brightness and colour range into the smaller range a JPEG thumbnail can show. Media Preview Generator does this automatically:
-
-- HDR10, HLG and HDR10+ are tone-mapped to SDR.
-- Dolby Vision Profiles 7 and 8 are read through their HDR10 layer.
-- Dolby Vision Profile 5, which has no HDR10 layer, needs a GPU with a hardware Vulkan driver in the container. On NVIDIA that means `NVIDIA_DRIVER_CAPABILITIES=all`.
+Tone mapping converts HDR brightness and colour to the range a JPEG thumbnail can show. The standard path handles HDR10, HLG and compatible Dolby Vision base layers. Profile 5 has no such base layer; colours are not guaranteed with the bundled CPU-focused FFmpeg.
 
 ## Why the built-ins get it wrong
 
@@ -22,80 +17,30 @@ Checked 23 September 2026. See the [comparison page](comparison.md) for sources.
 ## What this app does, per format
 
 - **HDR10, HLG, HDR10+:** tone-mapped to SDR. The algorithm is set in **Settings → Processing options → Thumbnails → HDR tone mapping**. The default is `hable`; the others are `reinhard`, `mobius`, `clip`, `gamma` and `linear`. If thumbnails look too dark, try `reinhard`.
-- **Dolby Vision Profile 7 and 8:** these carry an HDR10 fallback layer, which is tone-mapped the same way, with hardware decode.
-- **Dolby Vision Profile 5:** there is no HDR10 layer, so the Dolby Vision data itself has to be applied. The app picks a path by GPU vendor:
-  - Intel: VAAPI decode with an OpenCL tone map from Jellyfin's FFmpeg build.
-  - NVIDIA: libplacebo on Vulkan.
-  - AMD: VAAPI decode, then Vulkan with libplacebo.
-
-The app picks the path per file from its metadata. A Dolby Vision file whose video also declares a PQ (HDR10) or HLG transfer is tone-mapped through that layer; one that declares neither is treated as Profile 5. Nothing needs to be set per library. Full detail is in [Guides — HDR & Dolby Vision](guides.md#hdr--dolby-vision).
+- **Dolby Vision Profile 7 and 8:** compatible HDR10 or HLG base layers use the standard path.
+- **Dolby Vision Profile 5:** no HDR10 fallback exists. Thumbnails may have wrong colours, including a green and purple tint. The previous Jellyfin-specific patch is not included in the bundled FFmpeg. GPU passthrough or a working Vulkan driver alone does not establish support.
 
 ## The one setup step: NVIDIA and Dolby Vision Profile 5
 
-NVIDIA's container toolkit only loads its Vulkan driver when the container asks for the `graphics` capability. The common `compute,video,utility` setting leaves it out. Everything else still works, but Dolby Vision Profile 5 doesn't.
-
-```bash
-docker run -d \
-  --gpus all \
-  -e NVIDIA_VISIBLE_DEVICES=all \
-  -e NVIDIA_DRIVER_CAPABILITIES=all \
-  ...
-  stevezzau/media_preview_generator:latest
-```
-
-In Docker Compose, set `NVIDIA_DRIVER_CAPABILITIES=all` under `environment:`. `compute,video,utility,graphics` also works if you prefer the minimum. Restart the container after changing it.
-
-If NVIDIA's Vulkan driver arrives without the small config files that point to it, which happens with `--gpus all` on some Docker setups, the app writes those files itself. If those thumbnails are still tinted, the dashboard says what is missing under **Settings → Processing Options → GPU device tuning**.
+No GPU setup is currently established to guarantee Profile 5 colour accuracy in this build.
 
 ### NVIDIA graphics files missing from the container
 
-The dashboard says this when CUDA works in the container but none of NVIDIA's graphics driver files reached it, even with `NVIDIA_DRIVER_CAPABILITIES=all`. The app can't fill this gap itself, because the driver isn't there to use. Look for the files on the host (not in the container):
-
-```bash
-find / -xdev -name 'libGLX_nvidia.so*' 2>/dev/null
-```
-
-**It finds nothing:** the host's NVIDIA driver was installed without its graphics part. Install the full driver.
-
-**It finds them:** the host's NVIDIA container setup isn't passing them in. It's worth telling whoever provides your NVIDIA driver package. Until that's fixed, mount the files in yourself. In the lines below, replace `/usr/lib` with the folder `find` printed, and `595.99.02` with your driver version (the number at the end of `libGLX_nvidia.so.<version>`). First check that every file exists on the host:
-
-```bash
-ls /usr/lib/libGLX_nvidia.so.0 /usr/lib/libEGL_nvidia.so.0 /usr/lib/libnvidia-{glcore,glvkspirv,tls,eglcore,glsi}.so.595.99.02
-```
-
-Then add them to the container's `volumes:` in compose (or as `-v` options) and recreate it:
-
-```yaml
-    volumes:
-      - /usr/lib/libGLX_nvidia.so.0:/usr/lib/x86_64-linux-gnu/libGLX_nvidia.so.0:ro
-      - /usr/lib/libEGL_nvidia.so.0:/usr/lib/x86_64-linux-gnu/libEGL_nvidia.so.0:ro
-      - /usr/lib/libnvidia-glcore.so.595.99.02:/usr/lib/x86_64-linux-gnu/libnvidia-glcore.so.595.99.02:ro
-      - /usr/lib/libnvidia-glvkspirv.so.595.99.02:/usr/lib/x86_64-linux-gnu/libnvidia-glvkspirv.so.595.99.02:ro
-      - /usr/lib/libnvidia-tls.so.595.99.02:/usr/lib/x86_64-linux-gnu/libnvidia-tls.so.595.99.02:ro
-      - /usr/lib/libnvidia-eglcore.so.595.99.02:/usr/lib/x86_64-linux-gnu/libnvidia-eglcore.so.595.99.02:ro
-      - /usr/lib/libnvidia-glsi.so.595.99.02:/usr/lib/x86_64-linux-gnu/libnvidia-glsi.so.595.99.02:ro
-```
-
-The app writes the config files Vulkan needs, and the log then says `Vulkan ready for Dolby Vision Profile 5 tone-mapping`. After a host driver update, change the version numbers to match. A file that doesn't exist on the host is created there as an empty folder, and Vulkan stays unavailable.
-
-Intel and AMD need no extra step beyond passing `/dev/dri`, which also brings the Mesa Vulkan driver.
-
-**Without a hardware Vulkan driver,** the app can't run the Profile 5 tone-mapping path. It logs a warning and extracts those frames without tone mapping, so their thumbnails come out with a green and purple tint. If only a software Vulkan driver is found (the usual case on NVIDIA without the `graphics` capability), the bell menu also shows a notification. With no Vulkan at all, the log is the only sign. For a diagnostic bundle to attach to a GitHub issue, use `GET /api/system/vulkan/debug`.
+A Vulkan driver is not sufficient to establish Profile 5 support with the bundled FFmpeg.
 
 ## Checking the result
 
 - The **Inspector** (`/inspector`) shows the published thumbnails for Plex, Emby or Jellyfin, frame by frame ([Inspector](multi-server.md#inspector-multi-server)).
 - To redo files after fixing a setting, start a job with **Processing Mode → Regenerate all**. Otherwise files with a current preview are skipped.
-- If a file failed on the GPU and was redone on the CPU, the worker's card in the dashboard **Workers** panel shows a yellow **CPU fallback** badge, and the job log gives the reason.
+- A worker may report CPU fallback if its GPU path fails; the bundled FFmpeg is CPU-focused and GPU acceleration is not established.
 
 ## Speed
 
-Dolby Vision Profile 5 is the slowest format to process. How long it takes depends on the GPU, the codec and your storage, and each GPU vendor needs something different ([FAQ](faq.md#why-is-cpu-usage-high-when-i-have-a-gpu-configured)).
+Performance depends on the media and hardware; GPU acceleration is not established for the bundled build.
 
 ## Limits
 
-- Dolby Vision Profile 5 on NVIDIA needs the `graphics` capability, as above.
-- Without a GPU that provides hardware Vulkan, Profile 5 thumbnails come out with a green and purple tint. That covers CPU-only hosts, macOS, AMD or Intel on Windows, and NVIDIA without the `graphics` capability.
+- Dolby Vision Profile 5 thumbnails may have wrong colours, including a green and purple tint, even if a GPU is available.
 - The thumbnails are SDR by design. Preview thumbnails are small JPEGs, not HDR images.
 
 ## Related

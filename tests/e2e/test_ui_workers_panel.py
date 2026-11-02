@@ -50,7 +50,7 @@ class TestWorkersPanelInPlaceUpdate:
         selecting."
         """
         mock_dashboard_defaults(authed_page)
-        authed_page.goto(f"{app_url}/")
+        authed_page.goto(f"{app_url}/dashboard")
         authed_page.wait_for_load_state("domcontentloaded")
 
         result = authed_page.evaluate(
@@ -118,7 +118,7 @@ class TestWorkersPanelInPlaceUpdate:
         above.
         """
         mock_dashboard_defaults(authed_page)
-        authed_page.goto(f"{app_url}/")
+        authed_page.goto(f"{app_url}/dashboard")
         authed_page.wait_for_load_state("domcontentloaded")
 
         result = authed_page.evaluate(
@@ -168,7 +168,7 @@ class TestWorkerCardPhaseRendering:
 
     def test_pre_ffmpeg_phase_renders_phase_text_not_zero_percent(self, authed_page: Page, app_url: str) -> None:
         mock_dashboard_defaults(authed_page)
-        authed_page.goto(f"{app_url}/")
+        authed_page.goto(f"{app_url}/dashboard")
         authed_page.wait_for_load_state("domcontentloaded")
 
         result = authed_page.evaluate(
@@ -213,7 +213,7 @@ class TestWorkerCardPhaseRendering:
         progress with stale phase text.
         """
         mock_dashboard_defaults(authed_page)
-        authed_page.goto(f"{app_url}/")
+        authed_page.goto(f"{app_url}/dashboard")
         authed_page.wait_for_load_state("domcontentloaded")
 
         result = authed_page.evaluate(
@@ -256,7 +256,7 @@ class TestWorkerCardPhaseRendering:
         d-none class on data-fallback-badge based on worker.fallback_active.
         """
         mock_dashboard_defaults(authed_page)
-        authed_page.goto(f"{app_url}/")
+        authed_page.goto(f"{app_url}/dashboard")
         authed_page.wait_for_load_state("domcontentloaded")
 
         result = authed_page.evaluate(
@@ -300,7 +300,7 @@ class TestWorkerCardPhaseRendering:
         blank. The toast must still name the file (live bug: ``for "this file"``).
         """
         mock_dashboard_defaults(authed_page)
-        authed_page.goto(f"{app_url}/")
+        authed_page.goto(f"{app_url}/dashboard")
         authed_page.wait_for_load_state("domcontentloaded")
 
         reason = (
@@ -342,7 +342,7 @@ class TestChapterWorkerProgress:
     ) -> None:
         mock_dashboard_defaults(authed_page)
         authed_page.set_viewport_size({"width": width, "height": 900})
-        authed_page.goto(f"{app_url}/")
+        authed_page.goto(f"{app_url}/dashboard")
         result = authed_page.evaluate(
             """(ffmpegStarted) => {
                 const worker = {
@@ -398,7 +398,7 @@ class TestChapterWorkerProgress:
         self, authed_page: Page, app_url: str, stage: str | None
     ) -> None:
         mock_dashboard_defaults(authed_page)
-        authed_page.goto(f"{app_url}/")
+        authed_page.goto(f"{app_url}/dashboard")
         result = authed_page.evaluate(
             """(stage) => {
                 const worker = {
@@ -464,7 +464,7 @@ class TestMemberRows:
                 ],
             }
         ]
-        page.goto(f"{app_url}/")
+        page.goto(f"{app_url}/dashboard")
         page.wait_for_selector("#workerGroupLiveRows [data-group-id]")
         return api
 
@@ -494,7 +494,7 @@ class TestMemberRows:
     def test_stepper_minus_is_disabled_at_one_worker(self, authed_page: Page, app_url: str) -> None:
         mock_dashboard_defaults(authed_page)
         mock_worker_groups(authed_page, cpu_count=1)
-        authed_page.goto(f"{app_url}/")
+        authed_page.goto(f"{app_url}/dashboard")
         minus = authed_page.locator("[data-member-block='cpu:m1'] [data-member-scale='-1']")
         expect(minus).to_be_disabled()
 
@@ -523,7 +523,7 @@ class TestMemberRows:
                 ],
             }
         ]
-        authed_page.goto(f"{app_url}/")
+        authed_page.goto(f"{app_url}/dashboard")
         block = authed_page.locator("[data-member-block='cpu:m-old']")
         expect(block).to_contain_text("Removed device")
         expect(block).to_contain_text("1 finishing")
@@ -534,7 +534,7 @@ class TestMemberRows:
     ) -> None:
         mock_dashboard_defaults(authed_page)
         api = mock_worker_groups(authed_page, cpu_count=0)
-        authed_page.goto(f"{app_url}/")
+        authed_page.goto(f"{app_url}/dashboard")
         section = authed_page.locator("[data-worker-group-shell='cpu']")
         expect(section.locator("[data-member-scale]")).to_have_count(0)
         section.locator("[data-group-enable]").click()
@@ -544,7 +544,7 @@ class TestMemberRows:
     def test_system_card_is_read_only_with_one_line_per_group(self, authed_page: Page, app_url: str) -> None:
         mock_dashboard_defaults(authed_page)
         mock_worker_groups(authed_page, cpu_count=4)
-        authed_page.goto(f"{app_url}/")
+        authed_page.goto(f"{app_url}/dashboard")
         line = authed_page.locator("[data-system-group='cpu']")
         expect(line.locator("small")).to_have_text("4 CPU")
         expect(authed_page.locator("#systemWorkerGroups .stepper")).to_have_count(0)

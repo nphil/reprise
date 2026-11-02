@@ -87,6 +87,95 @@ def assert_generated_audio_gap(path):
     assert gaps and max(gaps) > Fraction(1, 10), f"generated audio gap missing: max={max(gaps, default=None)}"
 
 
+@pytest.mark.parametrize("explicit", [False, True])
+def test_selected_ffmpeg_and_sibling_probe_are_used_for_all_media_reads(
+    tmp_path, monkeypatch, explicit, ac3_native_audio
+):
+    import shutil
+
+    from media_preview_generator.reprise import media
+
+    path = tmp_path / "paired.mkv"
+    execute(
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=size=64x48:rate=4:duration=2",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=400:sample_rate=48000:duration=2",
+        "-c:v",
+        "libx264",
+        "-threads",
+        "1",
+        "-chroma_sample_location",
+        "left",
+        "-c:a",
+        "pcm_s16le",
+        "-y",
+        str(path),
+    )
+    item = media_version(str(path), 2000, json.dumps({"audio_streams": [{"plex_id": "a", "index": 1}]}))
+    video_path = tmp_path / "video.mp4"
+    execute(
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=size=64x48:rate=4:duration=2",
+        "-c:v",
+        "libx264",
+        "-threads",
+        "1",
+        "-chroma_sample_location",
+        "left",
+        "-y",
+        str(video_path),
+    )
+    native_video = media_version(str(video_path), 2000, "{}")
+    bindir = tmp_path / "selected"
+    bindir.mkdir()
+    ffmpeg = bindir / "ffmpeg"
+    ffprobe = bindir / "ffprobe"
+    ffmpeg.symlink_to(shutil.which("ffmpeg"))
+    ffprobe.symlink_to(shutil.which("ffprobe"))
+    monkeypatch.setattr(media, "ffmpeg_binary", lambda: str(tmp_path / "wrong" / "ffmpeg") if explicit else str(ffmpeg))
+    launched = []
+    real_popen = subprocess.Popen
+
+    def popen(command, *args, **kwargs):
+        launched.append(command[0])
+        return real_popen(command, *args, **kwargs)
+
+    monkeypatch.setattr(media.subprocess, "Popen", popen)
+    kw = {"ffmpeg_path": str(ffmpeg)} if explicit else {}
+
+    def no():
+        return False
+
+    video, tracks, origin = media.probe(item, no, no, **kw)
+    assert media.video_frames(item, video, 0, 1000, no, no, 1, **kw)
+    assert media.audio_pcm(item, tracks[0], 0, 1000, origin, no, no, 1, **kw)
+    with media.native_frames(native_video, 0, 0, 1000, no, no, 1, **kw) as reader:
+        assert list(reader)
+    with media.native_audio_chunks(ac3_native_audio, 0, 0, 1000, no, no, 1, **kw) as reader:
+        assert list(reader)
+    assert str(ffmpeg) in launched and str(ffprobe) in launched
+    assert set(launched) == {str(ffmpeg), str(ffprobe)}
+
+
+def test_selected_ffmpeg_without_sibling_probe_fails_closed(tmp_path):
+    import shutil
+
+    from media_preview_generator.reprise import media
+
+    selected = tmp_path / "ffmpeg"
+    selected.symlink_to(shutil.which("ffmpeg"))
+    assert shutil.which("ffprobe")
+    with pytest.raises(DecodeError, match="no matching sibling"):
+        media.paired_ffprobe(str(selected))
+
+
 @pytest.fixture(params=[0, 5], ids=["zero-origin", "offset-origin"])
 def native_media(tmp_path, request):
     path = tmp_path / "native.mkv"
@@ -562,6 +651,34 @@ def test_native_audio_all_channels_and_fractional_boundaries(tmp_path, rate, lay
         native_audio_pcm(item, 0, 2500, 4000, lambda: False, lambda: False, 1)
 
 
+@pytest.mark.parametrize("offset", [0, 5])
+def test_streamed_native_audio_global_grid_with_container_origin(tmp_path, offset):
+    import numpy as np
+
+    from media_preview_generator.reprise.media import native_audio_pcm
+
+    path = tmp_path / "offset.mka"
+    execute(
+        "-f",
+        "lavfi",
+        "-i",
+        "aevalsrc=0.1*sin(2*PI*377*t)|0.1*sin(2*PI*613*t):s=48000:d=3:c=stereo",
+        "-c:a",
+        "flac",
+        "-output_ts_offset",
+        str(offset),
+        "-y",
+        str(path),
+    )
+    item = media_version(str(path), 3000, "{}")
+    result = native_audio_pcm(item, 0, 1000, 2000, lambda: False, lambda: False, 1)
+    reference = np.frombuffer(execute("-i", str(path), "-c:a", "pcm_f64le", "-f", "f64le", "-"), dtype="<f8").reshape(
+        -1, 2
+    )
+    assert result.support_start_ms == 1000 and result.support_end_ms == 2000
+    assert np.array_equal(result.data, reference[48000:96000])
+
+
 def test_native_audio_rejects_gap_and_unknown_layout(tmp_path):
     from media_preview_generator.reprise.media import native_audio_pcm
 
@@ -663,6 +780,61 @@ def test_native_uses_unrotated_pixels(tmp_path):
     )
     assert actual == unrotated
     assert frames[0].interpretation_flags == ("display_matrix",)
+
+
+@pytest.mark.parametrize(
+    "stream_matrix,frame_type,allowed",
+    [
+        (True, "3x3 displaymatrix", True),
+        (False, "3x3 displaymatrix", False),
+        (True, "unknown frame interpretation", False),
+    ],
+)
+def test_frame_display_matrix_needs_stream_rejection_flag(tmp_path, monkeypatch, stream_matrix, frame_type, allowed):
+    from media_preview_generator.reprise import media
+
+    path = tmp_path / "matrix.mkv"
+    execute(
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=size=64x48:rate=4:duration=2",
+        "-c:v",
+        "ffv1",
+        "-chroma_sample_location",
+        "left",
+        "-y",
+        str(path),
+    )
+    assert_generated_video_format(path)
+    item = media_version(str(path), 2000, "{}")
+    real_run = media.run
+
+    def inject(command, *args, **kwargs):
+        data = real_run(command, *args, **kwargs)
+        if "-show_streams" in command:
+            parsed = json.loads(data)
+            if stream_matrix:
+                parsed["streams"][0]["side_data_list"] = [{"side_data_type": "Display Matrix"}]
+            return json.dumps(parsed).encode()
+        if "-show_frames" in command:
+            parsed = json.loads(data)
+            parsed["frames"][0].setdefault("side_data_list", []).append({"side_data_type": frame_type})
+            return json.dumps(parsed).encode()
+        return data
+
+    monkeypatch.setattr(media, "run", inject)
+    if allowed:
+        with media.native_frames(item, 0, 0, 1000, lambda: False, lambda: False, 1) as reader:
+            frames = list(reader)
+        assert frames and all(frame.interpretation_flags == ("display_matrix",) for frame in frames)
+        from media_preview_generator.reprise.recurrence import video_metrics
+
+        assert video_metrics(frames[0], frames[0]) is None
+    else:
+        with pytest.raises(DecodeError, match="Unsupported native frame interpretation metadata"):
+            with media.native_frames(item, 0, 0, 1000, lambda: False, lambda: False, 1):
+                pass
 
 
 @pytest.mark.parametrize("fault", ["missing-frame-fields", "zero-exit-error", "warning", "tail"])
@@ -981,6 +1153,237 @@ def with_test_audio_declarations(lines):
     return output
 
 
+def intercept_audio_records(monkeypatch, transform):
+    from media_preview_generator.reprise import media
+
+    original = media._AudioLines.next_line
+    pending = {}
+
+    def altered(self, *args, **kwargs):
+        if self.proc.args[0] != "ffmpeg":
+            return original(self, *args, **kwargs)
+        if self not in pending:
+            lines = []
+            while True:
+                line = original(self, *args, **kwargs)
+                if line is None:
+                    break
+                lines.append(line + b"\n")
+            pending[self] = iter(transform(lines))
+        return next(pending[self], None)
+
+    monkeypatch.setattr(media._AudioLines, "next_line", altered)
+
+
+def test_sequential_native_audio_chunks_are_provisional_and_exact(ac3_native_audio):
+    import numpy as np
+
+    from media_preview_generator.reprise.media import native_audio_chunks
+
+    item = ac3_native_audio
+    with native_audio_chunks(item, 0, 125, 1125, lambda: False, lambda: False, 1, chunk_samples=4800) as reader:
+        chunks = list(reader)
+        assert reader.declarations is None
+    assert reader.declarations is not None
+    assert len(chunks) == 10
+    assert all(not chunk.data.flags.writeable and chunk.data.shape == (4800, 6) for chunk in chunks)
+    assert [chunk.support_start_ms for chunk in chunks] == list(range(125, 1125, 100))
+    assert chunks[-1].support_end_ms == 1125
+    reference = np.frombuffer(
+        execute("-i", item.canonical_path, "-c:a", "pcm_f64le", "-f", "f64le", "-"), dtype="<f8"
+    ).reshape(-1, 6)
+    assert np.array_equal(np.concatenate([chunk.data for chunk in chunks]), reference[6000:54000])
+
+
+def test_sequential_audio_abandon_and_consumer_error_invalidate(ac3_native_audio):
+    from media_preview_generator.reprise.media import native_audio_chunks
+
+    with pytest.raises(DecodeError, match="not exhausted"):
+        with native_audio_chunks(
+            ac3_native_audio, 0, 0, 1500, lambda: False, lambda: False, 1, chunk_samples=4800
+        ) as reader:
+            next(reader)
+    assert reader.declarations is None
+    with pytest.raises(RuntimeError, match="consumer"):
+        with native_audio_chunks(
+            ac3_native_audio, 0, 0, 1500, lambda: False, lambda: False, 1, chunk_samples=4800
+        ) as reader:
+            next(reader)
+            raise RuntimeError("consumer")
+    assert reader.declarations is None
+
+
+def test_sequential_audio_final_exit_honors_pause_and_cancel(ac3_native_audio):
+    from media_preview_generator.reprise import media
+
+    state = {"final": False, "pauses": 0, "cancel": False}
+
+    def pause():
+        if state["final"]:
+            state["pauses"] += 1
+            return state["pauses"] <= 2
+        return False
+
+    with media.native_audio_chunks(
+        ac3_native_audio, 0, 0, 1000, lambda: state["cancel"], pause, 1, chunk_samples=4800
+    ) as reader:
+        assert list(reader)
+        state["final"] = True
+    assert state["pauses"] >= 3 and reader.declarations is not None
+
+    state.update(final=False, cancel=False)
+    with pytest.raises(media.Cancelled):
+        with media.native_audio_chunks(
+            ac3_native_audio, 0, 0, 1000, lambda: state["cancel"], pause, 1, chunk_samples=4800
+        ) as reader:
+            assert list(reader)
+            state["cancel"] = True
+    assert reader.declarations is None
+
+
+def test_sequential_audio_rechecks_file_after_exhaustion(ac3_native_audio):
+    from media_preview_generator.reprise.media import native_audio_chunks
+
+    with pytest.raises(DecodeError, match="Media changed"):
+        with native_audio_chunks(
+            ac3_native_audio, 0, 0, 1000, lambda: False, lambda: False, 1, chunk_samples=4800
+        ) as reader:
+            assert list(reader)
+            with open(ac3_native_audio.canonical_path, "ab") as output:
+                output.write(b"changed")
+    assert reader.declarations is None
+
+
+def test_sequential_audio_late_fault_invalidates_provisional_chunks(ac3_native_audio, monkeypatch):
+    from media_preview_generator.reprise.media import native_audio_chunks
+
+    def alter(lines):
+        lines.append(b"[error] injected late decoder diagnostic\n")
+        return [line.rstrip(b"\n") for line in lines]
+
+    intercept_audio_records(monkeypatch, alter)
+    seen = []
+    with pytest.raises(DecodeError, match="decoder reported"):
+        with native_audio_chunks(
+            ac3_native_audio, 0, 0, 1000, lambda: False, lambda: False, 1, chunk_samples=4800
+        ) as reader:
+            for chunk in reader:
+                seen.append(chunk)
+    assert seen and reader.declarations is None
+
+
+def test_audio_child_start_failure_reaps_process(monkeypatch):
+    import sys
+    import threading
+
+    from media_preview_generator.reprise import media
+
+    created = []
+    real_popen = media.subprocess.Popen
+    real_start = threading.Thread.start
+    calls = []
+
+    def capture(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        created.append(process)
+        return process
+
+    def fail_second(thread):
+        calls.append(thread)
+        if len(calls) == 2:
+            raise RuntimeError("thread startup")
+        return real_start(thread)
+
+    monkeypatch.setattr(media.subprocess, "Popen", capture)
+    monkeypatch.setattr(threading.Thread, "start", fail_second)
+    with pytest.raises(RuntimeError, match="thread startup"):
+        media._AudioLines([sys.executable, "-c", "import time; time.sleep(60)"], decoder=False)
+    assert len(created) == 1 and created[0].poll() is not None
+
+
+def test_audio_pause_is_barrier_before_queued_record(monkeypatch):
+    import sys
+
+    from media_preview_generator.reprise import media
+
+    child = media._AudioLines([sys.executable, "-c", "import time; time.sleep(60)"], decoder=False)
+    child.events.put(b"ready")
+    calls = []
+
+    def pause():
+        calls.append(True)
+        return len(calls) < 3
+
+    try:
+        assert child.next_line([child], lambda: False, pause) == b"ready"
+        assert len(calls) >= 3
+    finally:
+        child.close()
+
+
+def test_streamed_audio_stall_is_bounded_and_reaped(monkeypatch):
+    import sys
+    import time
+    from types import SimpleNamespace
+
+    from media_preview_generator.reprise import media
+
+    child = media._AudioLines([sys.executable, "-c", "import time; time.sleep(60)"], decoder=False)
+    clock = iter((0, 31))
+    monkeypatch.setattr(media, "time", SimpleNamespace(monotonic=lambda: next(clock), sleep=time.sleep))
+    try:
+        with pytest.raises(DecodeError, match="stalled"):
+            child.next_line([child], lambda: False, lambda: False)
+    finally:
+        child.close()
+    assert child.proc.poll() is not None
+
+
+def test_streamed_native_audio_cancel_reaps_both_children(ac3_native_audio, monkeypatch):
+    from media_preview_generator.reprise import media
+
+    created = []
+    original_init = media._AudioLines.__init__
+
+    def capture(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        created.append(self.proc)
+
+    monkeypatch.setattr(media._AudioLines, "__init__", capture)
+    with pytest.raises(media.Cancelled):
+        media.native_audio_pcm(ac3_native_audio, 0, 0, 1000, lambda: len(created) == 2, lambda: False, 1)
+    assert len(created) == 2 and all(process.poll() is not None for process in created)
+
+
+@pytest.mark.parametrize("fault", ["tail_error", "malformed_frame", "timestamp_mismatch"])
+def test_streamed_native_audio_rejects_protocol_faults_and_reaps(ac3_native_audio, monkeypatch, fault):
+    from media_preview_generator.reprise import media
+
+    created = []
+    original_init = media._AudioLines.__init__
+
+    def capture(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        created.append(self.proc)
+
+    def alter(lines):
+        if fault == "tail_error":
+            lines.append(b"[error] injected terminal decoder error\n")
+        else:
+            i = next(i for i, line in enumerate(lines) if b"Parsed_ashowinfo_" in line and b" n:" in line)
+            if fault == "malformed_frame":
+                lines[i] = lines[i].replace(b" n:", b" malformed:", 1)
+            else:
+                lines[i] = lines[i].replace(b"pts:0", b"pts:9999", 1)
+        return [line.rstrip(b"\n") for line in lines]
+
+    monkeypatch.setattr(media._AudioLines, "__init__", capture)
+    intercept_audio_records(monkeypatch, alter)
+    with pytest.raises(DecodeError):
+        media.native_audio_pcm(ac3_native_audio, 0, 0, 1000, lambda: False, lambda: False, 1)
+    assert len(created) == 2 and all(process.poll() is not None for process in created)
+
+
 @pytest.mark.parametrize(
     "fault",
     [
@@ -1000,14 +1403,8 @@ def with_test_audio_declarations(lines):
 def test_ac3_native_rejects_bad_declarations(ac3_native_audio, monkeypatch, fault):
     from media_preview_generator.reprise import media
 
-    original = media.run
-
-    def altered(*args, **kwargs):
-        result = original(*args, **kwargs)
-        if not kwargs.get("capture_stderr"):
-            return result
-        data, log = result
-        lines = with_test_audio_declarations(log.splitlines(keepends=True))
+    def altered(lines):
+        lines = with_test_audio_declarations(lines)
         matrices = [i for i, line in enumerate(lines) if b"side data - matrix encoding:" in line]
         services = [i for i, line in enumerate(lines) if b"side data - audio service type:" in line]
         assert len(matrices) >= 2 and len(services) == 1
@@ -1036,9 +1433,9 @@ def test_ac3_native_rejects_bad_declarations(ac3_native_audio, monkeypatch, faul
             service = lines.pop(services[0])
             first_frame = next(i for i, line in enumerate(lines) if b"Parsed_ashowinfo_" in line and b" n:" in line)
             lines.insert(first_frame, service)
-        return data, b"".join(lines)
+        return [line.rstrip(b"\n") for line in lines]
 
-    monkeypatch.setattr(media, "run", altered)
+    intercept_audio_records(monkeypatch, altered)
     if fault == "valid":
         decoded = media.native_audio_pcm(ac3_native_audio, 0, 0, 1000, lambda: False, lambda: False, 1)
         assert dict(decoded.declarations)["audio_service_initial"] == ("Main Audio Service",)
@@ -1051,6 +1448,8 @@ def test_ac3_native_rejects_bad_declarations(ac3_native_audio, monkeypatch, faul
 @pytest.mark.parametrize(
     ("declaration", "other"),
     [
+        (None, None),
+        ((), ()),
         ((("matrix_encoding", ("none",)),), (("matrix_encoding", ("none",)),)),
         ((("matrix_encoding", ("none",)),), ()),
         ((("matrix_encoding", ("none",)),), (("matrix_encoding", ("different",)),)),
@@ -1060,43 +1459,61 @@ def test_ac3_native_rejects_bad_declarations(ac3_native_audio, monkeypatch, faul
         ),
     ],
 )
-def test_native_audio_comparison_requires_identical_declarations(monkeypatch, declaration, other):
-    import numpy as np
-
+def test_native_audio_comparison_requires_identical_declarations(ac3_native_audio, monkeypatch, declaration, other):
     from media_preview_generator.reprise import analysis, media
 
-    data = np.zeros((9600, 2), dtype="<f8")
-    values = iter(
-        [
-            media.NativeAudio(data, 48000, "stereo", ("FL", "FR"), Fraction(0), Fraction(200), declaration),
-            media.NativeAudio(data, 48000, "stereo", ("FL", "FR"), Fraction(0), Fraction(200), other),
-        ]
+    original_reader = media.native_audio_chunks
+    original_verifier = analysis.verify.AudioVerifier
+    profiles = iter((declaration, other))
+    finished = []
+
+    class DeclaredReader:
+        def __init__(self, inner, profile):
+            self.inner = inner
+            self.profile = profile
+            self.declarations = None
+
+        def __enter__(self):
+            self.inner.__enter__()
+            return self
+
+        def __iter__(self):
+            return iter(self.inner)
+
+        def __exit__(self, exc_type, exc, tb):
+            result = self.inner.__exit__(exc_type, exc, tb)
+            if exc_type is None:
+                self.declarations = self.profile
+            return result
+
+    class TrackingVerifier(original_verifier):
+        def finish(self):
+            finished.append(True)
+            return super().finish()
+
+    monkeypatch.setattr(
+        media,
+        "native_audio_chunks",
+        lambda *args, **kwargs: DeclaredReader(original_reader(*args, **kwargs), next(profiles)),
     )
-    called = []
-    monkeypatch.setattr(media, "native_audio_pcm", lambda *args: next(values))
-    monkeypatch.setattr(analysis.verify, "audio_matches", lambda *args: called.append(True) or True)
-    args = (object(), object(), [("a", 0, 48000, 2)], [("b", 0, 48000, 2)], 0, 200, 0, lambda: False, lambda: False, 1)
-    if other == declaration:
+    monkeypatch.setattr(analysis.verify, "AudioVerifier", TrackingVerifier)
+    item = ac3_native_audio
+    args = (item, item, [("a", 0, 48000, 6)], [("b", 0, 48000, 6)], 0, 1000, 0, lambda: False, lambda: False, 1)
+    if declaration is not None and other == declaration:
         analysis._audio_support(*args)
-        assert called
+        assert finished == [True]
     else:
         with pytest.raises(DecodeError, match="declarations differ"):
             analysis._audio_support(*args)
-        assert not called
+        assert not finished
 
 
 @pytest.mark.parametrize("repeat", [True, False])
 def test_ac3_per_frame_service_scope_and_absent_matrix(ac3_native_audio, monkeypatch, repeat):
     from media_preview_generator.reprise import media
 
-    original = media.run
-
-    def altered(*args, **kwargs):
-        result = original(*args, **kwargs)
-        if not kwargs.get("capture_stderr"):
-            return result
-        data, log = result
-        lines = with_test_audio_declarations(log.splitlines(keepends=True))
+    def altered(lines):
+        lines = with_test_audio_declarations(lines)
         service = next(line for line in lines if b"side data - audio service type:" in line)
         output = []
         count = 0
@@ -1109,9 +1526,9 @@ def test_ac3_per_frame_service_scope_and_absent_matrix(ac3_native_audio, monkeyp
                 if repeat or count <= 2:
                     output.append(service)
         assert count > 2
-        return data, b"".join(output)
+        return [line.rstrip(b"\n") for line in output]
 
-    monkeypatch.setattr(media, "run", altered)
+    intercept_audio_records(monkeypatch, altered)
     if repeat:
         result = media.native_audio_pcm(ac3_native_audio, 0, 0, 1000, lambda: False, lambda: False, 1)
         declarations = dict(result.declarations)

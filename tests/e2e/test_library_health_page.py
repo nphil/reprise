@@ -214,7 +214,7 @@ class TestLibraryHealthPage:
         assert "fix=" not in authed_page.url
 
     def test_bell_notice_links_to_review_and_fix(self, authed_page: Page, app_url: str, seeded_health) -> None:
-        authed_page.goto(f"{app_url}/")
+        authed_page.goto(f"{app_url}/dashboard")
         authed_page.locator("#notificationBellBtn").click()
 
         notice = authed_page.locator("#notificationList")

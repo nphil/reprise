@@ -155,7 +155,7 @@ class TestLiveJobLifecycle:
         """After job_completed, the active-jobs container should NOT keep showing the job."""
         app_url, _ = backend_real_app
 
-        backend_real_page.goto(f"{app_url}/")
+        backend_real_page.goto(f"{app_url}/dashboard")
         backend_real_page.wait_for_load_state("domcontentloaded")
 
         post_resp = requests.post(

@@ -110,7 +110,7 @@ jobs:
           tar -C /tmp/reprise-ffmpeg -cf ffmpeg-bundle.tar opt/ffmpeg-gpl
           sha256sum ffmpeg-bundle.tar > ffmpeg-bundle.tar.sha256
           docker run -d --name reprise-ci-smoke --network none --tmpfs /config:rw -e PUID=1000 -e PGID=1000 reprise-ci:local
-          for attempt in {1..60}; do
+          for _ in {1..60}; do
             state="$(docker inspect -f '{{.State.Status}}' reprise-ci-smoke)"
             health="$(docker inspect -f '{{.State.Health.Status}}' reprise-ci-smoke)"
             if [ "$health" = healthy ]; then exit 0; fi
@@ -393,8 +393,8 @@ jobs:
     # Plex needs PLEX_CLAIM (4-min validity from https://plex.tv/claim)
     # via the workflow_dispatch input or a long-lived secret. Without
     # it the Plex tests are skipped; Emby + Jellyfin still run.
-    runs-on: ubuntu-latest
-    needs: [lint, test]
+    runs-on: ubuntu-24.04
+    needs: [lint, test, ffmpeg-build]
     if: |
       github.event_name == 'workflow_dispatch' ||
       contains(github.event.pull_request.labels.*.name, 'e2e-real-vendors')
@@ -410,30 +410,14 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
-      - name: Install FFmpeg + mediainfo
-        # The integration fixtures call /usr/bin/ffmpeg directly.
+      - name: Install mediainfo
         timeout-minutes: 5
         uses: ./.github/actions/apt-install
         with:
-          packages: ffmpeg mediainfo
+          packages: mediainfo
 
-      - name: Show FFmpeg + mediainfo versions
-        run: |
-          /usr/bin/ffmpeg -version | head -1
-          mediainfo --Version | head -1
-
-      - name: Install jellyfin-ffmpeg8 (the FFmpeg the image ships)
-        # Ubuntu's FFmpeg 6.1 lacks options the app relies on (per-stream -bsf:v:0 for keyframe reads),
-        # so the frame tests failed here while passing on the image's 8.1.2.
-        run: |
-          curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors --retry-connrefused \
-            https://repo.jellyfin.org/jellyfin_team.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/jellyfin.gpg
-          printf 'Types: deb\nURIs: https://repo.jellyfin.org/ubuntu\nSuites: noble\nComponents: main\nArchitectures: amd64\nSigned-By: /usr/share/keyrings/jellyfin.gpg\n' \
-            | sudo tee /etc/apt/sources.list.d/jellyfin.sources >/dev/null
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends jellyfin-ffmpeg8
-          echo /usr/lib/jellyfin-ffmpeg >> "$GITHUB_PATH"
-          /usr/lib/jellyfin-ffmpeg/ffmpeg -version | head -1
+      - name: Install and verify runtime FFmpeg
+        uses: ./.github/actions/install-runtime-ffmpeg
 
       - name: Install dependencies
         run: pip install -e ".[test]"

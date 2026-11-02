@@ -9,6 +9,14 @@ readonly JOBS="${FFMPEG_JOBS:-4}"
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || { echo 'FFMPEG_JOBS must be a positive integer' >&2; exit 1; }
 
 mkdir -p "$ROOT/x264" "$PREFIX/share/source/x264" "$PREFIX/share/source/ffmpeg"
+cp /tmp/ffmpeg-gpl-Dockerfile "$PREFIX/share/source/Dockerfile"
+dpkg-query -W -f='${binary:Package}\t${Version}\n' | LC_ALL=C sort > "$PREFIX/share/source/build-packages.tsv"
+mkdir -p "$PREFIX/share/source/apt"
+if [[ -f /etc/apt/sources.list ]]; then
+    cp /etc/apt/sources.list "$PREFIX/share/source/apt/"
+fi
+cp -a /etc/apt/sources.list.d "$PREFIX/share/source/apt/"
+apt-cache policy > "$PREFIX/share/source/apt/policy.txt"
 cd "$ROOT/x264"
 # APT authenticates the Ubuntu source index and the source package checksums.
 # Retain the exact downloaded source package, including Ubuntu's patches.
@@ -46,6 +54,8 @@ cp /tmp/ffmpeg-gpl-build.sh "$PREFIX/share/source/build.sh"
 tar -xf "$archive"
 cd "ffmpeg-$VERSION"
 cp COPYING.GPLv2 COPYING.GPLv3 COPYING.LGPLv2.1 COPYING.LGPLv3 LICENSE.md "$PREFIX/share/source/ffmpeg/"
+printf '%s\n' 'This software is based in part on the work of the Independent JPEG Group.' \
+    > "$PREFIX/share/source/ffmpeg/NOTICE-IJG.txt"
 export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig"
 ffmpeg_args=(
     --prefix="$PREFIX"
@@ -75,6 +85,9 @@ make install
 # ELF interpreter is deliberately left to the host; wrappers can point only
 # these programs at this directory with LD_LIBRARY_PATH.
 mkdir -p "$PREFIX/runtime-libs"
+notices="$PREFIX/share/source/runtime-library-notices"
+mkdir -p "$notices"
+: > "$notices/owners.tsv"
 for executable in "$PREFIX/bin/ffmpeg" "$PREFIX/bin/ffprobe"; do
     dependencies="$(ldd "$executable")"
     while read -r soname arrow path rest; do
@@ -83,6 +96,49 @@ for executable in "$PREFIX/bin/ffmpeg" "$PREFIX/bin/ffprobe"; do
             echo "Missing dependency for $executable: $soname $arrow $path" >&2
             exit 1
         fi
+        resolved="$(readlink -f "$path")"
+        owner_records=""
+        for candidate in "$path" "$resolved"; do
+            case "$candidate" in
+                /usr/lib*) alias="${candidate#/usr}" ;;
+                /lib*) alias="/usr$candidate" ;;
+                *) alias="$candidate" ;;
+            esac
+            for variant in "$candidate" "$alias"; do
+                if found="$(dpkg-query -S "$variant" 2>/dev/null)"; then
+                    owner_records+="$found"$'\n'
+                fi
+            done
+        done
+        if [[ -z "$owner_records" ]]; then
+            echo "No installed package owns shared library: $path" >&2
+            exit 1
+        fi
+        while IFS= read -r record; do
+            [[ -n "$record" ]] || continue
+            if [[ "$record" != *': /'* ]]; then
+                echo "Unexpected package ownership record: $record" >&2
+                exit 1
+            fi
+            owners="${record%%: /*}"
+            IFS=',' read -ra owner_list <<< "$owners"
+            for owner in "${owner_list[@]}"; do
+                owner="${owner//[[:space:]]/}"
+                package="${owner%%:*}"
+                copyright="/usr/share/doc/$package/copyright"
+                if [[ ! -f "$copyright" ]]; then
+                    echo "Missing copyright notice for $owner ($path)" >&2
+                    exit 1
+                fi
+                info="$(dpkg-query -W -f='${db:Status-Status}\t${binary:Package}\t${Version}\t${source:Package}\t${source:Version}' "$owner")"
+                if [[ "$info" != $'installed\t'* ]]; then
+                    echo "Library owner is not installed: $owner ($path)" >&2
+                    exit 1
+                fi
+                cp -L "$copyright" "$notices/$package.copyright"
+                printf '%s\t%s\t%s\n' "$soname" "$path" "$info" >> "$notices/owners.tsv"
+            done
+        done <<< "$owner_records"
         if [[ -e "$PREFIX/runtime-libs/$soname" ]]; then
             cmp -s "$path" "$PREFIX/runtime-libs/$soname" || {
                 echo "Conflicting dependency: $soname" >&2
@@ -93,3 +149,4 @@ for executable in "$PREFIX/bin/ffmpeg" "$PREFIX/bin/ffprobe"; do
         fi
     done <<< "$dependencies"
 done
+LC_ALL=C sort -u -o "$notices/owners.tsv" "$notices/owners.tsv"

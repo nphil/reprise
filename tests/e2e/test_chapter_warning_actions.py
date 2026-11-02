@@ -67,7 +67,7 @@ def test_warning_notice_survives_unfinished_filter_and_review_clears_other_filte
     page.set_viewport_size({"width": width, "height": 1000})
     errors = []
     page.on("pageerror", lambda error: errors.append(error))
-    page.goto(app_url)
+    page.goto(f"{app_url}/dashboard")
     expect(page.locator("#jobStatusFilter")).to_have_value("active")
     expect(page.locator("#job-row-active-loudness")).to_be_visible()
     expect(page.locator("#job-row-chapter-warning")).to_have_count(0)
@@ -112,7 +112,7 @@ def _wait_for_posts(page, posts: list, count: int) -> None:
 
 def test_explicit_rerun_prevents_duplicate_posts_and_recovers_after_request_failure(warning_page):
     page, app_url, _queries, posts, _state = warning_page
-    page.goto(app_url)
+    page.goto(f"{app_url}/dashboard")
     page.get_by_role("button", name="Review chapter warnings", exact=True).click()
     expect(page.locator("#job-row-chapter-warning")).to_be_visible()
     page.locator("#job-row-chapter-warning").get_by_role("button", name="View logs", exact=True).click()
@@ -141,6 +141,6 @@ def test_explicit_rerun_prevents_duplicate_posts_and_recovers_after_request_fail
 def test_empty_warning_count_hides_notice_without_hiding_active_work(warning_page):
     page, app_url, _queries, _posts, state = warning_page
     state["count"] = 0
-    page.goto(app_url)
+    page.goto(f"{app_url}/dashboard")
     expect(page.locator("#job-row-active-loudness")).to_be_visible()
     expect(page.locator("#chapterWarningsNotice")).to_be_hidden()

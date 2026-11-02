@@ -1,84 +1,43 @@
-"""Bounded alignment hints and exhaustive native-code-signal verification.
+"""Bounded native-signal gates and disjoint alignment anchors.
 
-Descriptors suggest offsets only. Match evidence requires every native plane and
-channel, witnessed temporal support, and the compatible declaration profile.
-Tolerances describe decoded code values, NOT rendered/perceptual equivalence.
+Hints never constitute support. Decode lifecycle and generation checks belong to
+analysis; this module retains only descriptors, interval vetoes and rolling spectra.
 """
 
-from collections import Counter, defaultdict
+import math
+from collections import defaultdict, deque
 from fractions import Fraction
 
 import numpy as np
 
-PROFILE = "native-code-signal-v1"
-# Development calibration constants. Freeze these with the profile before holdout.
-VIDEO_PEAK = 48.0
-VIDEO_LOCAL4 = 12.0
-VIDEO_LOCAL8 = 8.0
-VIDEO_CONCENTRATION_LEVEL = 12.0
-VIDEO_CONCENTRATION8 = 0.20
-AUDIO_WINDOW_MS = 20
-AUDIO_HOP_MS = 10
-AUDIO_NRMSE = 0.05
-AUDIO_CORRELATION = 0.998
-AUDIO_ABSOLUTE_RMSE = 0.003
-AUDIO_ENERGY_DELTA = 0.002
-AUDIO_BAND_ABSOLUTE = 0.0002
-AUDIO_BAND_RELATIVE = 0.25
-AUDIO_SILENCE = 1e-7
-# Conservative content/word preservation, NOT inferred timestamp uncertainty.
-# This margin is independent of the maximum accepted native video frame gap.
-CHANGE_GUARD_MS = 250
-MIN_RUN_MS = 500
-MAX_FRAME_GAP_MS = 250
-COLOR_FIELDS = ("color_range", "color_space", "color_primaries", "color_transfer")
-UNKNOWN_DECLARATIONS = {None, "unknown", "unspecified", "reserved", ""}
+from .verification_profile import PROFILE_SPEC
 
-
-def shifts(target, reference, maximum=16):
-    """Exact-frame offset hints; repetitive/black frames cannot establish anchors."""
-    positions = defaultdict(list)
-    for pts, digest in reference:
-        if len(positions[digest]) < 33:
-            positions[digest].append(pts)
-    votes = Counter()
-    for pts, digest in target:
-        matches = positions.get(digest, ())
-        if len(matches) <= 32:
-            for other in matches:
-                votes[round(other - pts)] += 1
-    return [offset for offset, count in votes.most_common(maximum) if count >= 3]
-
-
-def matching_second(target, reference, start_ms, offset_ms):
-    """Exact fast path: require complete native-frame continuity including edges."""
-
-    def section(frames, start, end):
-        inside = [(p, h) for p, h in frames if start <= p < end]
-        before = next(((p, h) for p, h in reversed(frames) if p < start), None)
-        after = next(((p, h) for p, h in frames if p >= end), None)
-        return [before, *inside, after] if inside and before and after else None
-
-    a = section(target, Fraction(start_ms), Fraction(start_ms + 1000))
-    b = section(reference, Fraction(start_ms + offset_ms), Fraction(start_ms + offset_ms + 1000))
-    return bool(
-        a
-        and b
-        and len(a) == len(b)
-        and all(h == k and abs(q - p - offset_ms) <= Fraction(1, 2) for (p, h), (q, k) in zip(a, b, strict=True))
-        and all(q[0] - p[0] <= MAX_FRAME_GAP_MS for p, q in zip(a, a[1:], strict=False))
-    )
+CANDIDATE = PROFILE_SPEC["candidate"]
+VIDEO = PROFILE_SPEC["video"]
+AUDIO = PROFILE_SPEC["audio"]
+ANCHORS = PROFILE_SPEC["anchors"]
+COLOR_FIELDS = tuple(PROFILE_SPEC["metadata"]["color_fields"])
+CHANGE_GUARD_MS = PROFILE_SPEC["support"]["guard_ms"]
+MIN_RUN_MS = PROFILE_SPEC["support"]["minimum_run_ms"]
+MAX_FRAME_GAP_MS = VIDEO["max_frame_gap_ms"]
 
 
 def plane_array(plane):
-    dtype = np.dtype("u1" if plane.sample_bytes == 1 else "<u2")
     return np.ndarray(
-        (plane.height, plane.width), dtype=dtype, buffer=plane.data, strides=(plane.stride_bytes, plane.sample_bytes)
+        (plane.height, plane.width),
+        dtype=np.dtype("u1" if plane.sample_bytes == 1 else "<u2"),
+        buffer=plane.data,
+        strides=(plane.stride_bytes, plane.sample_bytes),
     )
 
 
-def declaration(value):
-    return "unspecified" if value in UNKNOWN_DECLARATIONS else str(value)
+def declaration(value, field):
+    metadata = PROFILE_SPEC["metadata"]
+    if value in metadata["unspecified_tokens"]:
+        return "unspecified"
+    if value not in metadata[field.removeprefix("color_")]:
+        raise ValueError("Unsupported native " + field + " declaration")
+    return value
 
 
 def frame_declarations(frame):
@@ -88,52 +47,112 @@ def frame_declarations(frame):
         frame.pixel_format,
         frame.bit_depth,
         frame.sample_aspect_ratio,
-        *(declaration(getattr(frame, key)) for key in COLOR_FIELDS),
+        *(declaration(getattr(frame, key), key) for key in COLOR_FIELDS),
         frame.chroma_location,
         frame.interpretation_flags,
     )
 
 
 def descriptor(frame):
-    """Small full-color spatial hint, never evidence. Native pixels still verified."""
     values = []
     for plane in frame.planes:
-        data = plane_array(plane)
-        # Spatially located tiles, unlike a palette histogram. Sampling is allowed
-        # ONLY here: every sample is revisited by the native verifier.
-        for rows in np.array_split(data, 4, axis=0):
+        for rows in np.array_split(plane_array(plane), 4, axis=0):
             for tile in np.array_split(rows, 4, axis=1):
                 values.append(float(tile[::4, ::4].mean()) * 255 / ((1 << frame.bit_depth) - 1))
     return np.asarray(values, dtype=np.float32)
 
 
-def perceptual_shifts(target, reference, maximum=12):
-    """Vote exact native-PTS offsets from coherent spatial hints, bounded memory."""
+def spatial_information(frame):
+    return max(float(plane_array(p).std(dtype=np.float64)) * 255 / ((1 << frame.bit_depth) - 1) for p in frame.planes)
+
+
+def perceptual_shifts(target, reference):
     if not target or not reference:
         return []
-    right = np.stack([item[1] for item in reference])
+    right = np.stack([r[1] for r in reference])
     votes = defaultdict(list)
-    # Limit proposal work; final verification has no temporal subsampling.
-    step = max(1, len(target) // 96)
-    for pts, feature in target[::step]:
-        if float(feature.std()) < 2:
+    for pts, feature, std in target[:: max(1, len(target) // CANDIDATE["sample_count"])]:
+        if std < CANDIDATE["plane_std"]:
             continue
         distance = np.mean((right - feature) ** 2, axis=1)
-        indices = np.argpartition(distance, min(2, len(distance) - 1))[:3]
-        for idx in indices:
-            if distance[idx] <= 25:
-                offset = reference[int(idx)][0] - pts
-                votes[round(offset * 2)].append((pts, offset))
-    ordered = sorted(votes.values(), key=lambda points: (-len(points), abs(points[0][1])))
-    return [
-        points[len(points) // 2][1]
-        for points in ordered
-        if len(points) >= 3 and max(p[0] for p in points) - min(p[0] for p in points) >= 500
-    ][:maximum]
+        count = min(CANDIDATE["neighbors"], len(reference))
+        for idx in np.argpartition(distance, count - 1)[:count]:
+            if reference[int(idx)][2] < CANDIDATE["plane_std"] or distance[idx] > CANDIDATE["descriptor_mse"]:
+                continue
+            offset = reference[int(idx)][0] - pts
+            votes[round(offset * CANDIDATE["bucket_per_ms"])].append((pts, offset))
+    valid = [
+        p
+        for p in votes.values()
+        if len(p) >= CANDIDATE["minimum_votes"]
+        and max(q[0] for q in p) - min(q[0] for q in p) >= CANDIDATE["minimum_vote_span_ms"]
+    ]
+    valid.sort(key=lambda p: (-len(p), abs(p[0][1])))
+    return [p[len(p) // 2][1] for p in valid[: CANDIDATE["maximum_offsets"]]]
+
+
+def anchor(target, reference, lo, hi, offset):
+    mapped = {t: (feature, std) for t, feature, std in reference}
+    points = []
+    for t, feature, std in target:
+        if not lo <= t < hi or std < CANDIDATE["plane_std"]:
+            continue
+        ref = mapped.get(t + offset)
+        if (
+            ref is not None
+            and ref[1] >= CANDIDATE["plane_std"]
+            and np.mean((feature - ref[0]) ** 2) <= CANDIDATE["descriptor_mse"]
+        ):
+            points.append((t, feature))
+    if len(points) < ANCHORS["minimum_total_frames"]:
+        return None
+
+    def valid(group):
+        return (
+            len(group) >= ANCHORS["minimum_group_frames"]
+            and group[-1][0] - group[0][0] >= ANCHORS["span_ms"]
+            and float(np.sqrt(np.mean((group[-1][1] - group[0][1]) ** 2))) >= ANCHORS["temporal_rms"]
+        )
+
+    left = next(
+        (
+            edge
+            for i, p in enumerate(points)
+            if valid(
+                edge := [
+                    q
+                    for q in points[i:]
+                    if q[0] <= p[0] + min(Fraction(ANCHORS["edge_ms"]), (points[-1][0] - p[0]) / 2)
+                ]
+            )
+        ),
+        None,
+    )
+    if left is None:
+        return None
+    right = next(
+        (
+            edge
+            for i in range(len(points) - 1, -1, -1)
+            if valid(
+                edge := [q for q in points[: i + 1] if q[0] >= points[i][0] - ANCHORS["edge_ms"] and q[0] > left[-1][0]]
+            )
+        ),
+        None,
+    )
+    if right is None or right[-1][0] - left[0][0] < MIN_RUN_MS:
+        return None
+    return (
+        math.ceil(left[0][0]),
+        math.floor(right[-1][0]),
+        {
+            "start_pts_ms": [str(q[0]) for q in left],
+            "end_pts_ms": [str(q[0]) for q in right],
+        },
+    )
 
 
 def _local_max(data, size):
-    """Four overlapping tile phases; every edge pixel participates, without resize."""
     worst = 0.0
     h, w = data.shape
     for oy in (0, size // 2):
@@ -141,13 +160,27 @@ def _local_max(data, size):
             ys = np.unique(np.r_[0, np.arange(oy, h, size), h]).astype(int)
             xs = np.unique(np.r_[0, np.arange(ox, w, size), w]).astype(int)
             sums = np.add.reduceat(np.add.reduceat(data, ys[:-1], axis=0), xs[:-1], axis=1)
-            means = sums / (np.diff(ys)[:, None] * np.diff(xs)[None, :])
-            worst = max(worst, float(means.max()))
+            worst = max(worst, float((sums / (np.diff(ys)[:, None] * np.diff(xs)[None, :])).max()))
     return worst
 
 
+def _signed_local(data, size):
+    h, w = data.shape
+    if h < size or w < size:
+        return float(abs(data.mean()))
+    ys = np.unique(np.r_[np.arange(0, h - size + 1, size // 2), h - size])
+    xs = np.unique(np.r_[np.arange(0, w - size + 1, size // 2), w - size])
+    integral = np.pad(data.cumsum(0, dtype=np.float64).cumsum(1), ((1, 0), (1, 0)))
+    sums = (
+        integral[(ys + size)[:, None], xs + size]
+        - integral[ys[:, None], xs + size]
+        - integral[(ys + size)[:, None], xs]
+        + integral[ys[:, None], xs]
+    )
+    return float(np.max(np.abs(sums)) / (size * size))
+
+
 def video_metrics(left, right):
-    """Worst native-plane code residuals; no time or channel averaging."""
     if (
         left.interpretation_flags
         or right.interpretation_flags
@@ -155,81 +188,118 @@ def video_metrics(left, right):
         or len(left.planes) != len(right.planes)
     ):
         return None
-    maxima = {"peak": 0.0, "local4": 0.0, "local8": 0.0, "concentration8": 0.0}
-    scale = 255 / ((1 << left.bit_depth) - 1)
+    maxima = dict.fromkeys(("peak", "local4", "local8", "concentration8", "signed8", "signed16", "signed32"), 0.0)
     for a, b in zip(left.planes, right.planes, strict=True):
         if (a.width, a.height, a.sample_bytes) != (b.width, b.height, b.sample_bytes):
             return None
-        residual = np.abs(plane_array(a).astype(np.float32) - plane_array(b)) * scale
-        maxima["peak"] = max(maxima["peak"], float(residual.max()))
-        maxima["local4"] = max(maxima["local4"], _local_max(residual, 4))
-        maxima["local8"] = max(maxima["local8"], _local_max(residual, 8))
+        left_data, right_data = plane_array(a).astype(np.float32), plane_array(b).astype(np.float32)
+        raw = left_data - right_data
+        absolute = np.abs(raw) * (255 / ((1 << left.bit_depth) - 1))
+        residual = raw * 255 / ((1 << left.bit_depth) - 1)
+        maxima["peak"] = max(maxima["peak"], float(absolute.max()))
+        for size in (4, 8):
+            key = "local" + str(size)
+            maxima[key] = max(maxima[key], _local_max(absolute, size))
         maxima["concentration8"] = max(
-            maxima["concentration8"], _local_max((residual > VIDEO_CONCENTRATION_LEVEL).astype(np.float32), 8)
+            maxima["concentration8"], _local_max((absolute > VIDEO["concentration_level"]).astype(np.float32), 8)
         )
+        for size in (8, 16, 32):
+            key = "signed" + str(size)
+            maxima[key] = max(maxima[key], _signed_local(residual, size))
     return maxima
 
 
 def video_matches(left, right):
     metrics = video_metrics(left, right)
-    return bool(
-        metrics is not None
-        and metrics["peak"] <= VIDEO_PEAK
-        and metrics["local4"] <= VIDEO_LOCAL4
-        and metrics["local8"] <= VIDEO_LOCAL8
-        and metrics["concentration8"] <= VIDEO_CONCENTRATION8
-    )
+    return metrics is not None and all(value <= VIDEO[key] for key, value in metrics.items())
 
 
-def audio_metrics(left, right, rate):
-    """20ms per-channel native waveform AND spectrum; no gain/lag/downmix fitting."""
-    if left.shape != right.shape or not len(left) or not np.isfinite(left).all() or not np.isfinite(right).all():
-        return None
-    x = np.sqrt(np.mean(left * left, axis=0))
-    y = np.sqrt(np.mean(right * right, axis=0))
-    error = np.sqrt(np.mean((left - right) ** 2, axis=0))
-    scale = np.maximum(x, y)
-    correlation = np.sum(left * right, axis=0) / np.maximum(
-        np.sqrt(np.sum(left * left, axis=0) * np.sum(right * right, axis=0)), 1e-30
-    )
-    silent = scale <= AUDIO_SILENCE
-    correlation[silent] = np.where(error[silent] <= AUDIO_SILENCE, 1.0, -1.0)
-    window = np.hanning(len(left))[:, None]
-    a = np.fft.rfft(left * window, axis=0)
-    b = np.fft.rfft(right * window, axis=0)
-    frequency = np.fft.rfftfreq(len(left), 1 / rate)
-    bands = (0, 200, 500, 1000, 2000, 4000, 8000, 12000, rate / 2 + 1)
-    spectral = []
-    for lo, hi in zip(bands, bands[1:], strict=False):
-        selected = (frequency >= lo) & (frequency < hi)
-        if not selected.any():
-            continue
-        band_a = np.sqrt(2 * np.sum(np.abs(a[selected]) ** 2, axis=0)) / len(left)
-        band_b = np.sqrt(2 * np.sum(np.abs(b[selected]) ** 2, axis=0)) / len(left)
-        residual = np.sqrt(2 * np.sum((np.abs(a[selected]) - np.abs(b[selected])) ** 2, axis=0)) / len(left)
-        spectral.append((residual, residual / np.maximum(np.maximum(band_a, band_b), AUDIO_SILENCE)))
-    return {
-        "rmse": error,
-        "nrmse": error / np.maximum(scale, AUDIO_SILENCE),
-        "correlation": correlation,
-        "energy_delta": np.abs(x - y),
-        "spectral": spectral,
-    }
+class AudioVerifier:
+    """One exact sample grid, rolling spectra, and a permanent union of vetoes."""
 
+    def __init__(self, rate, origin):
+        if rate <= 0 or rate % 100:
+            raise ValueError("Native audio window does not fit sample grid")
+        self.rate, self.origin = rate, origin
+        self.width, self.hop = rate * AUDIO["window_ms"] // 1000, rate * AUDIO["hop_ms"] // 1000
+        self.window = np.hanning(self.width)[:, None]
+        self.tail = None
+        self.samples = 0
+        self.windows = 0
+        self.magnitude = deque(maxlen=AUDIO["novelty_windows"])
+        self.phase = deque(maxlen=AUDIO["phase_windows"])
+        self.levels = deque(maxlen=AUDIO["moving_windows"])
+        self.bad = []
+        self.last = None
 
-def audio_matches(left, right, rate):
-    m = audio_metrics(left, right, rate)
-    return bool(
-        m is not None
-        and np.all(m["rmse"] <= AUDIO_ABSOLUTE_RMSE)
-        and np.all(m["nrmse"] <= AUDIO_NRMSE)
-        and np.all(m["correlation"] >= AUDIO_CORRELATION)
-        and np.all(m["energy_delta"] <= AUDIO_ENERGY_DELTA)
-        and all(
-            not np.any((absolute > AUDIO_BAND_ABSOLUTE) & (relative > AUDIO_BAND_RELATIVE))
-            for absolute, relative in m["spectral"]
-        )
-    )
+    def _veto(self, start, duration, guard):
+        lo, hi = math.floor(start) - guard, math.ceil(start + duration) + guard
+        # Branch witnesses arrive in different temporal order; retain a union,
+        # never allow a later pass to erase an earlier witnessed veto.
+        self.bad = union([*self.bad, (lo, hi)])
+
+    def feed(self, left, right):
+        if left.shape != right.shape or left.ndim != 2 or not np.isfinite(left).all() or not np.isfinite(right).all():
+            raise ValueError("Malformed or nonfinite native audio")
+        if self.tail is not None:
+            left = np.concatenate((self.tail[0], left))
+            right = np.concatenate((self.tail[1], right))
+        consumed = 0
+        for index in range(0, len(left) - self.width + 1, self.hop):
+            x, y = left[index : index + self.width], right[index : index + self.width]
+            start = self.origin + Fraction((self.samples + index) * 1000, self.rate)
+            residual = x - y
+            rms = np.maximum(np.sqrt(np.mean(x * x, axis=0)), np.sqrt(np.mean(y * y, axis=0)))
+            error = np.sqrt(np.mean(residual * residual, axis=0))
+            correlation = np.sum(x * y, axis=0) / np.maximum(
+                np.sqrt(np.sum(x * x, axis=0) * np.sum(y * y, axis=0)), AUDIO["denominator_floor"]
+            )
+            identity = np.all(
+                (error <= AUDIO["rmse"])
+                & (error / np.maximum(rms, AUDIO["silence"]) <= AUDIO["nrmse"])
+                & (np.max(np.abs(residual), axis=0) <= AUDIO["peak"])
+                & ((rms <= AUDIO["silence"]) | (correlation >= AUDIO["correlation"]))
+            )
+            if not identity:
+                self._veto(start, AUDIO["window_ms"], CHANGE_GUARD_MS)
+            X = np.fft.rfft(x * self.window, axis=0) * math.sqrt(2) / self.width
+            Y = np.fft.rfft(y * self.window, axis=0) * math.sqrt(2) / self.width
+            A, B = np.abs(X), np.abs(Y)
+            M = np.maximum(np.maximum(A - AUDIO["novelty_ratio"] * B, B - AUDIO["novelty_ratio"] * A), 0)
+            self.magnitude.append(M)
+            self.phase.append(np.maximum(np.abs(X - Y) - AUDIO["phase_shared_ratio"] * np.minimum(A, B), 0))
+            self.levels.append(np.sqrt(np.sum(M * M, axis=0)))
+            for history, floor, guard in (
+                (self.magnitude, AUDIO["novelty_floor"], CHANGE_GUARD_MS),
+                (self.phase, AUDIO["phase_floor"], AUDIO["short_phase_guard_ms"]),
+            ):
+                if len(history) == history.maxlen:
+                    held = np.minimum.reduce(history)
+                    if float(np.max(np.sqrt(np.sum(held * held, axis=0)))) > floor:
+                        span = (history.maxlen - 1) * AUDIO["hop_ms"]
+                        self._veto(start - span, span + AUDIO["window_ms"], guard)
+            if (
+                len(self.levels) == self.levels.maxlen
+                and float(np.max(np.minimum.reduce(self.levels))) > AUDIO["moving_floor"]
+            ):
+                span = (self.levels.maxlen - 1) * AUDIO["hop_ms"]
+                self._veto(start - span, span + AUDIO["window_ms"], AUDIO["short_phase_guard_ms"])
+            self.last = start
+            self.windows += 1
+            consumed = index + self.hop
+        self.samples += consumed
+        self.tail = (left[consumed:].copy(), right[consumed:].copy())
+
+    def finish(self):
+        if self.last is None:
+            return []
+        extent = [
+            (
+                math.ceil(self.origin) + AUDIO["context_trim_ms"],
+                math.floor(self.last + AUDIO["window_ms"]) - AUDIO["context_trim_ms"],
+            )
+        ]
+        return [(a, b) for a, b in subtract(extent, self.bad) if b - a >= MIN_RUN_MS]
 
 
 def union(intervals):

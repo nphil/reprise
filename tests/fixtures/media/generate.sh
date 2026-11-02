@@ -11,12 +11,7 @@ set -euo pipefail
 FIXTURES_DIR="$(cd "$(dirname "$0")" && pwd)"
 readonly FIXTURES_DIR
 
-# Use jellyfin-ffmpeg if present; fall back to system ffmpeg.
-if [ -x /usr/lib/jellyfin-ffmpeg/ffmpeg ]; then
-    readonly FFMPEG="/usr/lib/jellyfin-ffmpeg/ffmpeg"
-else
-    readonly FFMPEG="ffmpeg"
-fi
+readonly FFMPEG="ffmpeg"
 
 echo "==> Using ffmpeg: $FFMPEG"
 echo "==> Output dir:   $FIXTURES_DIR"

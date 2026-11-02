@@ -192,13 +192,12 @@ def test_callers_checking_one_ffmpeg_at_once_share_one_check(monkeypatch):
 @pytest.mark.parametrize(
     ("states", "expected"),
     [
-        ({"conf": "absent", "jf": "available"}, "available"),
-        ({"conf": "unknown", "jf": "available"}, "available"),
-        ({"conf": "unknown", "jf": "absent"}, "unknown"),
-        ({"conf": "absent", "jf": "absent"}, "absent"),
+        ({"conf": "available"}, "available"),
+        ({"conf": "unknown"}, "unknown"),
+        ({"conf": "absent"}, "absent"),
         ({}, "absent"),
     ],
-    ids=["one-has-it", "one-unknown-one-has-it", "one-unknown", "none-has-it", "no-ffmpeg"],
+    ids=["available", "unknown", "absent", "no-ffmpeg"],
 )
 def test_the_chromaprint_state_is_available_then_unknown_then_absent(tmp_path, states, expected):
     binaries = {}
@@ -209,8 +208,7 @@ def test_the_chromaprint_state_is_available_then_unknown_then_absent(tmp_path, s
         binaries[str(binary)] = fpmod.ChromaprintState(states[name])
     missing = str(tmp_path / "missing")
     with (
-        patch.object(fpmod, "JELLYFIN_FFMPEG", str(tmp_path / "jf") if "jf" in states else missing),
-        patch.object(fpmod.shutil, "which", return_value=None),
+        patch.object(fpmod.shutil, "which", side_effect=lambda name: name if name in binaries else None),
         patch.object(fpmod, "muxer_state", side_effect=lambda ffmpeg: binaries[ffmpeg]),
     ):
         configured = str(tmp_path / "conf") if "conf" in states else missing
@@ -220,19 +218,33 @@ def test_the_chromaprint_state_is_available_then_unknown_then_absent(tmp_path, s
     assert ("checked again in 10 minutes" in reason) is (expected == "unknown")
 
 
-def test_chromaprint_ffmpeg_prefers_configured_then_jellyfin_then_path(tmp_path):
-    configured, jellyfin, on_path = (tmp_path / n for n in ("conf", "jf", "path"))
-    for p in (configured, jellyfin, on_path):
+def test_chromaprint_resolves_explicit_command_without_substitution(monkeypatch):
+    asked = []
+    monkeypatch.setattr(fpmod.shutil, "which", lambda name: asked.append(name) or "/selected/ffmpeg")
+    monkeypatch.setattr(fpmod, "has_chromaprint", lambda path: path == "/selected/ffmpeg")
+    assert fpmod.chromaprint_ffmpeg("ffmpeg") == "/selected/ffmpeg"
+    assert asked == ["ffmpeg"]
+
+
+def test_missing_explicit_command_does_not_fall_back(monkeypatch):
+    asked = []
+    monkeypatch.setattr(fpmod.shutil, "which", lambda name: asked.append(name))
+    assert fpmod.chromaprint_ffmpeg("custom-ffmpeg") is None
+    assert asked == ["custom-ffmpeg"]
+
+
+def test_chromaprint_uses_only_selected_ffmpeg(tmp_path):
+    configured, on_path = (tmp_path / n for n in ("conf", "path"))
+    for p in (configured, on_path):
         p.write_text("")
         p.chmod(0o755)
     with (
-        patch.object(fpmod, "JELLYFIN_FFMPEG", str(jellyfin)),
-        patch.object(fpmod.shutil, "which", return_value=str(on_path)),
-        patch.object(fpmod, "has_chromaprint", side_effect=lambda f: f != str(configured)),
+        patch.object(fpmod.shutil, "which", side_effect=lambda name: str(on_path) if name == "ffmpeg" else name),
+        patch.object(fpmod, "has_chromaprint", side_effect=lambda f: f == str(on_path)),
     ):
-        assert fpmod.chromaprint_ffmpeg(str(configured)) == str(jellyfin)
+        assert fpmod.chromaprint_ffmpeg(str(configured)) is None
+        assert fpmod.chromaprint_ffmpeg(None) == str(on_path)
     with (
-        patch.object(fpmod, "JELLYFIN_FFMPEG", str(tmp_path / "missing")),
         patch.object(fpmod.shutil, "which", return_value=str(on_path)),
         patch.object(fpmod, "has_chromaprint", return_value=False),
     ):

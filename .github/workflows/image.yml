@@ -54,6 +54,78 @@ jobs:
           done
           diff -u "${RUNNER_TEMP}/first.json" "${RUNNER_TEMP}/second.json"
           echo "Runtime configuration and uncompressed layer digests match. OCI provenance is not compared."
+      - name: Verify both candidate images before publication
+        env:
+          FIRST_IMAGE: ghcr.io/nphil/reprise@${{ steps.first.outputs.digest }}
+        run: |
+          set -euo pipefail
+          container="reprise-candidate-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          trap 'docker logs "$container" 2>/dev/null || true; docker rm -f -v "$container" >/dev/null 2>&1 || true' EXIT
+          for image in "$FIRST_IMAGE" reprise:cold-comparison; do
+            echo "Checking $image"
+            license="$(docker run --rm --network none --entrypoint /usr/local/bin/ffmpeg "$image" -L 2>&1)"
+            printf '%s\n' "$license"
+            printf '%s\n' "$license" | grep -F -- 'GNU GENERAL PUBLIC LICENSE'
+            buildconf="$(docker run --rm --network none --entrypoint /usr/local/bin/ffmpeg "$image" -buildconf 2>&1)"
+            printf '%s\n' "$buildconf"
+            printf '%s\n' "$buildconf" | grep -E -- '^[[:space:]]*--enable-gpl[[:space:]]*$'
+            if printf '%s\n' "$buildconf" | grep -F -- '--enable-nonfree'; then
+              echo 'Nonfree FFmpeg configuration must not be published' >&2
+              exit 1
+            fi
+            docker run --rm -i --network none --entrypoint python3 "$image" - <<'PY'
+          from pathlib import Path
+
+          source = Path('/opt/ffmpeg-gpl/share/source')
+          loudness = Path('/opt/ffmpeg-loudness/share/source')
+
+          def require_file(path):
+              if not path.is_file() or path.stat().st_size == 0:
+                  raise SystemExit(f'Missing or empty artifact: {path}')
+
+          def require_glob(directory, pattern):
+              matches = list(directory.glob(pattern))
+              if not matches:
+                  raise SystemExit(f'Missing artifact: {directory / pattern}')
+              for path in matches:
+                  require_file(path)
+
+          for name in ('Dockerfile', 'build.sh', 'build-packages.tsv', 'apt/policy.txt',
+                       'runtime-library-notices/owners.tsv', 'ffmpeg/COPYING.GPLv2',
+                       'ffmpeg/COPYING.GPLv3', 'ffmpeg/COPYING.LGPLv2.1',
+                       'ffmpeg/COPYING.LGPLv3', 'ffmpeg/LICENSE.md', 'x264/COPYING',
+                       'chromaprint/copyright', 'zimg/copyright'):
+              require_file(source / name)
+          require_glob(source / 'ffmpeg', 'ffmpeg-*.tar.xz')
+          for package in ('x264', 'chromaprint', 'zimg'):
+              require_glob(source / package, '*.dsc')
+              require_glob(source / package, '*.tar.*')
+          notices = source / 'runtime-library-notices'
+          for line in (notices / 'owners.tsv').read_text().splitlines():
+              fields = line.split('\t')
+              if len(fields) < 4 or not fields[3]:
+                  raise SystemExit(f'Invalid library owner record: {line!r}')
+              require_file(notices / (fields[3].split(':', 1)[0] + '.copyright'))
+          require_glob(loudness, 'ffmpeg-*.tar.xz')
+          for name in ('ebur128.patch', 'COPYING.LGPLv2.1'):
+              require_file(loudness / name)
+          PY
+            docker run -d --name "$container" --network none --tmpfs /config:rw -e PUID=1000 -e PGID=1000 "$image"
+            healthy=false
+            for _ in {1..60}; do
+              state="$(docker inspect -f '{{.State.Status}}' "$container")"
+              health="$(docker inspect -f '{{.State.Health.Status}}' "$container")"
+              if [ "$health" = healthy ]; then healthy=true; break; fi
+              if [ "$state" != running ] || [ "$health" = unhealthy ]; then break; fi
+              sleep 3
+            done
+            if [ "$healthy" != true ]; then
+              docker inspect -f '{{json .State.Health}}' "$container"
+              echo "Candidate failed to become healthy: $image" >&2
+              exit 1
+            fi
+            docker rm -f -v "$container" >/dev/null
+          done
       - name: Publish verified commit image
         env:
           FIRST_IMAGE: ghcr.io/nphil/reprise@${{ steps.first.outputs.digest }}

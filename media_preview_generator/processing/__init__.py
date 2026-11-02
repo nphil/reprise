@@ -32,7 +32,6 @@ from . import jellyfin as _jellyfin_processor_module  # noqa: F401, E402
 from . import plex as _plex_processor_module  # noqa: F401, E402
 from .base import VendorProcessor  # noqa: F401
 from .filter_chain import (  # noqa: F401
-    DV5_PATH_INTEL_OPENCL,
     DV5_PATH_LIBPLACEBO,
     DV5_PATH_VAAPI_VULKAN,
     build_dv5_vf,

@@ -22,7 +22,7 @@ def test_system_quick_actions_and_job_stats_cards_have_the_same_height(authed_pa
     mock_dashboard_defaults(page)
     page.add_init_script(_SOCKET_STUB)
     page.set_viewport_size({"width": 1600, "height": 900})
-    page.goto(f"{app_url}/")
+    page.goto(f"{app_url}/dashboard")
 
     for card in (".dashboard-system-card", ".dashboard-quick-card", ".dashboard-stats-card"):
         expect(page.locator(card)).to_be_visible()
@@ -41,7 +41,7 @@ def test_open_logs_button_sits_on_the_activity_line_not_beside_the_paths(authed_
     job = _job("run-1", status="running")
     page.route("**/api/jobs?**", lambda r: _fulfill_json(r, {"jobs": [job], "total": 1, "pages": 1, "page": 1}))
     page.set_viewport_size({"width": 1600, "height": 900})
-    page.goto(f"{app_url}/")
+    page.goto(f"{app_url}/dashboard")
 
     page.locator("#job-row-run-1 .job-details-toggle, #job-row-run-1 .exp").first.click()
     activity = page.locator("#job-detail-run-1 .job-current-activity")

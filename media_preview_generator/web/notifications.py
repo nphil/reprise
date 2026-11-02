@@ -132,7 +132,7 @@ def _vulkan_card_body(failures: list[tuple[dict[str, Any], Any]]) -> str:
     if any(gpu.get("type") in _WEBGPU_VENDORS for gpu, _ in failures):
         effects.append("Credits text is read on the CPU: just as accurate, slower.")
     effects.append("Dolby Vision Profile 5 thumbnails get a green and purple tint.")
-    effects.append("Previews and intros still use the GPU.")
+    effects.append("GPU acceleration depends on the FFmpeg build and device; the bundled build is CPU-focused.")
     html = "<strong>What this means</strong><ul>" + "".join(f"<li>{escape(e)}</li>" for e in effects) + "</ul>"
 
     why_items, fix_items = [], []

@@ -3,10 +3,12 @@ from dataclasses import replace
 import pytest
 
 from media_preview_generator.markers.store import MarkerStore
+from media_preview_generator.reprise.admission import admit_references
 from media_preview_generator.reprise.identity import media_version
 from media_preview_generator.reprise.models import DecisionRange, Evidence, PlaybackIdentity
 from media_preview_generator.reprise.policy import eligible_ranges
 from media_preview_generator.reprise.store import RepriseStore, RevisionConflict
+from media_preview_generator.reprise.verification_profile import PROFILE_FINGERPRINT, PROFILE_ID
 
 
 def test_real_database_review_rescan_failure_and_replacement(tmp_path):
@@ -16,20 +18,26 @@ def test_real_database_review_rescan_failure_and_replacement(tmp_path):
     store = RepriseStore(marker)
     version = media_version(str(path), 1000, "timing")
     identity = PlaybackIdentity("machine", "1", "2", "3", "/part/3", 8, 1000, "a")
-    store.register_media(version, identity, server_id="local")
-    store.register_media(version, replace(identity, audio_stream_id="b"), server_id="local")
+    metadata = {"show_key": "show", "season": 1, "episode": 1}
+    store.register_media(version, identity, server_id="local", metadata=metadata)
+    store.register_media(version, replace(identity, audio_stream_id="b"), server_id="local", metadata=metadata)
     ref_path = tmp_path / "reference.mkv"
     ref_path.write_bytes(b"reference")
     reference = media_version(str(ref_path), 1000, "timing")
     store.register_media(
-        reference, PlaybackIdentity("machine", "4", "5", "6", "/part/6", 9, 1000, "a"), server_id="local"
+        reference, PlaybackIdentity("machine", "4", "5", "6", "/part/6", 9, 1000, "a"),
+        server_id="local", metadata={"show_key": "show", "season": 1, "episode": 2},
     )
+    [(_, provenance)] = admit_references(version, [reference], store)
     assert store.resolve_binding(identity) == version
     assert len(store.get_bindings(version.id)) == 2
     skip = DecisionRange("r", "intro", "skip", 0, 900, "proposed", False, "detector", "match", "", ("match",), ("a",))
-    unknown = Evidence("e", 400, 500, "video", "unknown", "undecoded", "", None, None, None, {})
+    unknown = Evidence("e", 400, 500, "video", "unknown", "undecoded", "", None, None, None,
+                       {"verification_profile": PROFILE_ID, "profile_fingerprint": PROFILE_FINGERPRINT})
     match = Evidence(
-        "match", 0, 900, "audiovisual", "match", "match", "", reference.id, 0, 900, {"checked_audio_stream_ids": ["a"]}
+        "match", 0, 900, "audiovisual", "match", "match", "", reference.id, 0, 900,
+        {"checked_audio_stream_ids": ["a"], "admission_provenance": provenance,
+         "verification_profile": PROFILE_ID, "profile_fingerprint": PROFILE_FINGERPRINT},
     )
     run = store.begin_analysis(version.id, "job", "signature")
     result = store.finish_analysis(run, (unknown, match), (skip,), version.id)
@@ -97,7 +105,13 @@ def test_changed_evidence_replaces_only_untouched_detector_proposals(tmp_path):
     store = RepriseStore(marker)
     version = media_version(str(path), 10000, "timing")
     identity = PlaybackIdentity("machine", "1", "2", "3", "/part/3", 8, 10000, "a")
-    store.register_media(version, identity, server_id="local")
+    store.register_media(version, identity, server_id="local", metadata={"show_key": "show", "season": 1, "episode": 1})
+    ref_path = tmp_path / "reference.mkv"
+    ref_path.write_bytes(b"reference")
+    reference = media_version(str(ref_path), 10000, "timing")
+    ref_identity = PlaybackIdentity("machine", "4", "5", "6", "/part/6", 9, 10000, "a")
+    store.register_media(reference, ref_identity, server_id="local", metadata={"show_key": "show", "season": 1, "episode": 2})
+    [(_, provenance)] = admit_references(version, [reference], store)
     proposals = tuple(
         DecisionRange(
             name, "intro", "keep", i * 1000, (i + 1) * 1000, "proposed", False, "detector", "unknown", "", (), ()
@@ -144,10 +158,11 @@ def test_changed_evidence_replaces_only_untouched_detector_proposals(tmp_path):
         "match",
         "match",
         "",
-        version.id,
+        reference.id,
         0,
         10000,
-        {"checked_audio_stream_ids": ["a"]},
+        {"checked_audio_stream_ids": ["a"], "admission_provenance": provenance,
+         "verification_profile": PROFILE_ID, "profile_fingerprint": PROFILE_FINGERPRINT},
     )
     run = store.begin_analysis(version.id, "job2", "new")
     updated = store.finish_analysis(run, (evidence,), (fresh,), version.id)

@@ -2215,45 +2215,12 @@ class TestValidateProcessingThreadTotals:
 
 
 class TestResolveFfmpegPath:
-    """Tests for _resolve_ffmpeg_path() binary-selection precedence."""
+    @pytest.mark.parametrize("on_path", ["/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg", None])
+    def test_uses_path_without_jellyfin_override(self, monkeypatch, on_path):
+        from media_preview_generator.config import _resolve_ffmpeg_path
 
-    @pytest.mark.parametrize(
-        "jellyfin_exists, jellyfin_executable, which_returns, expected",
-        [
-            # Jellyfin FFmpeg present and executable — always wins.
-            (True, True, "/usr/bin/ffmpeg", "/usr/lib/jellyfin-ffmpeg/ffmpeg"),
-            # Jellyfin path exists but is not executable — fall through to PATH.
-            (True, False, "/usr/bin/ffmpeg", "/usr/bin/ffmpeg"),
-            # Jellyfin missing — fall through to PATH.
-            (False, False, "/usr/bin/ffmpeg", "/usr/bin/ffmpeg"),
-            # Nothing found — return None for the caller to error on.
-            (False, False, None, None),
-        ],
-    )
-    def test_resolve_ffmpeg_path_precedence(
-        self,
-        monkeypatch,
-        jellyfin_exists,
-        jellyfin_executable,
-        which_returns,
-        expected,
-    ):
-        from media_preview_generator.config import (
-            _JELLYFIN_FFMPEG_PATH,
-            _resolve_ffmpeg_path,
-        )
-
-        def fake_isfile(p):
-            return p == _JELLYFIN_FFMPEG_PATH and jellyfin_exists
-
-        def fake_access(p, mode):
-            return p == _JELLYFIN_FFMPEG_PATH and jellyfin_executable
-
-        monkeypatch.setattr("media_preview_generator.config.os.path.isfile", fake_isfile)
-        monkeypatch.setattr("media_preview_generator.config.os.access", fake_access)
-        monkeypatch.setattr("media_preview_generator.config.shutil.which", lambda name: which_returns)
-
-        assert _resolve_ffmpeg_path() == expected
+        monkeypatch.setattr("media_preview_generator.config.shutil.which", lambda name: on_path)
+        assert _resolve_ffmpeg_path() == on_path
 
 
 class TestDockerHelp:

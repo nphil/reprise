@@ -11,14 +11,12 @@ from media_preview_generator.reprise import analysis, media, recurrence
 from media_preview_generator.reprise.identity import media_version
 
 
-def frame(pts=0, *, chroma_change=False, flags=()):
+def frame(pts=0, *, flags=()):
     arrays = [
         np.full((32, 32), 100, dtype=np.uint8),
         np.full((16, 16), 128, dtype=np.uint8),
         np.full((16, 16), 128, dtype=np.uint8),
     ]
-    if chroma_change:
-        arrays[1][7:9, 7:9] = 250
     planes = tuple(media.NativePlane(memoryview(a.tobytes()), a.shape[1], a.shape[0], a.shape[1], 1) for a in arrays)
     return media.NativeFrame(
         Fraction(pts),
@@ -37,9 +35,14 @@ def frame(pts=0, *, chroma_change=False, flags=()):
     )
 
 
-def test_native_chroma_and_small_concentrated_change_are_not_averaged_away():
-    assert recurrence.video_matches(frame(), frame())
-    assert not recurrence.video_matches(frame(), frame(chroma_change=True))
+@pytest.mark.parametrize("plane_index", [1, 2])
+def test_chroma_only_scene_change_is_rejected(plane_index):
+    original = frame()
+    source = original.planes[plane_index]
+    data = np.full((source.height, source.width), 250, dtype=np.uint8)
+    planes = list(original.planes)
+    planes[plane_index] = media.NativePlane(memoryview(data.tobytes()), source.width, source.height, source.width, 1)
+    assert not recurrence.video_matches(original, replace(original, planes=tuple(planes)))
 
 
 def test_matching_unspecified_is_not_guessed_rendering_and_asymmetry_fails():
@@ -49,13 +52,17 @@ def test_matching_unspecified_is_not_guessed_rendering_and_asymmetry_fails():
 
 
 def test_opposite_sign_stereo_change_cannot_cancel_in_verifier():
-    t = np.arange(960) / 48000
+    t = np.arange(48000) / 48000
     baseline = np.column_stack((0.1 * np.sin(2 * np.pi * 220 * t), 0.1 * np.sin(2 * np.pi * 220 * t)))
     voice = 0.03 * np.sin(2 * np.pi * 1600 * t)
     changed = baseline + np.column_stack((voice, -voice))
     np.testing.assert_allclose(changed.sum(axis=1), baseline.sum(axis=1), atol=1e-16)
-    assert recurrence.audio_matches(baseline, baseline, 48000)
-    assert not recurrence.audio_matches(baseline, changed, 48000)
+    equal = recurrence.AudioVerifier(48000, Fraction(0))
+    equal.feed(baseline, baseline)
+    assert equal.finish() == [(40, 960)]
+    different = recurrence.AudioVerifier(48000, Fraction(0))
+    different.feed(baseline, changed)
+    assert different.finish() == []
 
 
 def test_entire_failed_overlap_is_removed_without_gap_filling():
@@ -74,7 +81,7 @@ def test_failure_after_last_native_yield_discards_all_staged_video(tmp_path, mon
     exhausted = []
 
     @contextmanager
-    def native(item, *args):
+    def native(item, *args, **kwargs):
         side = next(k for k, v in items.items() if v.id == item.id)
 
         def records():
@@ -104,7 +111,77 @@ def test_failure_after_last_native_yield_discards_all_staged_video(tmp_path, mon
 
 
 def test_fractional_offsets_remain_exact_proposal_hints():
-    features = [(Fraction(i * 1000, 24), np.arange(48, dtype=np.float32) + i * 20) for i in range(20)]
+    features = [(Fraction(i * 1000, 24), np.arange(48, dtype=np.float32) + i * 20, 20) for i in range(20)]
     offset = Fraction(1000, 24)
-    shifted = [(pts + offset, feature) for pts, feature in features]
+    shifted = [(pts + offset, feature, std) for pts, feature, std in features]
     assert offset in recurrence.perceptual_shifts(features, shifted)
+
+
+@pytest.mark.parametrize("chunk_size", [137, 441, 4410, 22050])
+def test_audio_chunk_boundaries_preserve_global_window_grid(chunk_size):
+    rate = 44100
+    t = np.arange(rate * 2) / rate
+    baseline = np.column_stack([0.1 * np.sin(2 * np.pi * f * t) for f in (220, 330, 440)])
+    changed = baseline.copy()
+    changed[rate : rate + 1455, 2] += 0.015 * np.sin(2 * np.pi * 1600 * t[:1455])
+    whole = recurrence.AudioVerifier(rate, Fraction(1, 3))
+    whole.feed(baseline, changed)
+    chunks = recurrence.AudioVerifier(rate, Fraction(1, 3))
+    for start in range(0, len(t), chunk_size):
+        chunks.feed(baseline[start : start + chunk_size], changed[start : start + chunk_size])
+    assert chunks.finish() == whole.finish()
+    assert chunks.bad == whole.bad
+    assert chunks.windows == whole.windows
+    assert not any(lo < Fraction(1033) and hi > 1000 for lo, hi in chunks.finish())
+
+
+def test_phase_branch_preserves_quiet_opposite_phase_channel():
+    rate = 48000
+    t = np.arange(rate) / rate
+    carrier = 0.1 * np.sin(2 * np.pi * 220 * t)
+    quiet = 0.01 * np.sin(2 * np.pi * 1600 * t)
+    left = np.column_stack((carrier, carrier + quiet))
+    right = np.column_stack((carrier, carrier - quiet))
+    verifier = recurrence.AudioVerifier(rate, Fraction(0))
+    verifier.feed(left, right)
+    assert verifier.finish() == []
+
+
+def test_anchors_require_disjoint_native_groups_and_real_span():
+    rows = [(Fraction(i * 1000, 24), np.full(48, i, dtype=np.float32), 20) for i in range(30)]
+    anchored = recurrence.anchor(rows, rows, 0, 1250, 0)
+    assert anchored is not None
+    start, end, proof = anchored
+    assert start == 0 and end == 1208
+    assert set(proof["start_pts_ms"]).isdisjoint(proof["end_pts_ms"])
+    assert max(map(Fraction, proof["start_pts_ms"])) < min(map(Fraction, proof["end_pts_ms"]))
+    assert recurrence.anchor(rows, rows, 0, 500, 0) is None
+    flat = [(t, feature, 0) for t, feature, _ in rows]
+    assert recurrence.anchor(flat, flat, 0, 1250, 0) is None
+
+
+def test_reserved_color_declarations_are_not_unspecified():
+    with pytest.raises(ValueError, match="declaration"):
+        recurrence.frame_declarations(replace(frame(), color_space="reserved"))
+
+
+def test_variable_pts_and_inserted_reference_record_veto_native_support(tmp_path, monkeypatch):
+    paths = [tmp_path / name for name in ("target", "reference")]
+    for path in paths:
+        path.write_bytes(path.name.encode())
+    target, reference = [media_version(str(path), 3000, "{}") for path in paths]
+    times = [0]
+    for i in range(29):
+        times.append(times[-1] + (80 if i % 2 else 120))
+    ref_times = sorted([*times, 1450])
+
+    @contextmanager
+    def native(item, *args, **kwargs):
+        yield iter(frame(t) for t in (times if item.id == target.id else ref_times))
+
+    monkeypatch.setattr(media, "native_frames", native)
+    support = analysis._video_support(
+        target, reference, 0, 0, Fraction(0), Fraction(2900), Fraction(0), lambda: False, lambda: False, 1
+    )
+    assert support
+    assert not any(lo < 1500 and hi > 1400 for lo, hi in support)

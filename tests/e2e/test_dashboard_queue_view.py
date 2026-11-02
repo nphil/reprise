@@ -118,7 +118,7 @@ def queue_view(authed_page: Page, app_url: str):
 def test_unfinished_default_keeps_paused_and_retries_with_accessible_history(queue_view, width: int, tmp_path) -> None:
     page, app_url, queries = queue_view
     page.set_viewport_size({"width": width, "height": 1000})
-    page.goto(f"{app_url}/")
+    page.goto(f"{app_url}/dashboard")
     expect(page.locator("#job-row-running-preview")).to_be_visible()
     page.locator(".card").filter(has=page.locator("#jobQueue")).screenshot(
         path=str(tmp_path / f"queue-initial-{width}.png"),
@@ -147,7 +147,7 @@ def test_unfinished_default_keeps_paused_and_retries_with_accessible_history(que
 
 def test_unfinished_retry_never_claims_completed_progress_before_or_after_live_update(queue_view) -> None:
     page, app_url, _ = queue_view
-    page.goto(f"{app_url}/")
+    page.goto(f"{app_url}/dashboard")
     row = page.locator("#job-row-retry-preview")
     expect(row).to_be_visible()
     cell = row.locator(".queue-progress-cell")
@@ -164,6 +164,6 @@ def test_unfinished_retry_never_claims_completed_progress_before_or_after_live_u
 def test_default_empty_queue_explains_how_to_find_finished_jobs(queue_view) -> None:
     page, app_url, _ = queue_view
     page.route("**/api/jobs?**", lambda route: _fulfill_json(route, {"jobs": [], "total": 0, "page": 1, "pages": 1}))
-    page.goto(f"{app_url}/")
+    page.goto(f"{app_url}/dashboard")
     expect(page.locator("#jobQueue")).to_contain_text("Nothing queued")
     expect(page.locator("#jobQueue")).to_contain_text("All jobs and history")

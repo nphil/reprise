@@ -307,6 +307,17 @@ def test_ffprobe_path_prefers_sibling_of_ffmpeg(tmp_path):
     assert ffprobe_path_for(str(ffmpeg)) == str(ffprobe)
 
 
+def test_ffprobe_follows_selected_command_on_path(tmp_path, monkeypatch):
+    ffmpeg = tmp_path / "ffmpeg"
+    ffprobe = tmp_path / "ffprobe"
+    ffmpeg.touch()
+    ffprobe.touch()
+    ffmpeg.chmod(0o755)
+    ffprobe.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert ffprobe_path_for("ffmpeg") == str(ffprobe)
+
+
 def test_ffprobe_path_falls_back_to_path_lookup(tmp_path):
     with patch("media_preview_generator.markers.probe.shutil.which", return_value="/usr/bin/ffprobe"):
         assert ffprobe_path_for(str(tmp_path / "ffmpeg")) == "/usr/bin/ffprobe"

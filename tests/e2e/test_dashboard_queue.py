@@ -86,7 +86,7 @@ class TestStatusTabs:
                 r, {"pending": 15, "running": 4, "completed": 588, "failed": 20, "cancelled": 500, "total": 1127}
             ),
         )
-        authed_page.goto(app_url + "/")
+        authed_page.goto(app_url + "/dashboard")
         tabs = authed_page.locator("#jobStatusTabs")
         expect(tabs.get_by_role("button", name="Failed 20")).to_be_visible()
         expect(tabs.get_by_role("button", name="Unfinished 19")).to_have_attribute("aria-pressed", "true")
@@ -118,7 +118,7 @@ class TestClearJobsMenu:
             _fulfill_json(route, {"cleared": 20})
 
         authed_page.route("**/api/jobs/clear", clear)
-        authed_page.goto(app_url + "/")
+        authed_page.goto(app_url + "/dashboard")
         authed_page.get_by_role("button", name="Clear jobs", exact=True).click()
         button = authed_page.locator("#clearJobsButton")
         expect(button).to_have_text("Clear 1,108 jobs")

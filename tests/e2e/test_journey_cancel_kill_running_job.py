@@ -78,7 +78,7 @@ class TestCancelKillRunningJob:
         """
         app_url, _ = backend_real_app
 
-        backend_real_page.goto(f"{app_url}/")
+        backend_real_page.goto(f"{app_url}/dashboard")
         backend_real_page.wait_for_load_state("domcontentloaded")
         backend_real_page.wait_for_function("() => typeof io === 'function'", timeout=5000)
 
@@ -121,7 +121,7 @@ class TestCancelKillRunningJob:
         """
         app_url, _ = backend_real_app
 
-        backend_real_page.goto(f"{app_url}/")
+        backend_real_page.goto(f"{app_url}/dashboard")
         backend_real_page.wait_for_load_state("domcontentloaded")
 
         job_id = _post_manual_job(app_url, "/tmp/cancel_log_target.mkv")
@@ -168,7 +168,7 @@ class TestCancelKillRunningJob:
 
         app_url, _ = backend_real_app
 
-        backend_real_page.goto(f"{app_url}/")
+        backend_real_page.goto(f"{app_url}/dashboard")
         backend_real_page.wait_for_load_state("domcontentloaded")
         backend_real_page.wait_for_function("() => typeof io === 'function'", timeout=5000)
 

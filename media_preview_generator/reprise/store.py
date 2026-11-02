@@ -8,10 +8,11 @@ import secrets
 import uuid
 from dataclasses import asdict, replace
 
+from .admission import pair_provenance
 from .identity import is_current
 from .models import AnalysisResult, ClientPrincipal, DecisionRange, Evidence, MediaVersion, PlaybackIdentity
+from .verification_profile import POLICY_VERSION, is_current_profile
 
-POLICY_VERSION = "1"
 DEFAULT_SCOPES = ("results:read", "jobs:read")
 ALLOWED_SCOPES = frozenset((*DEFAULT_SCOPES, "analysis:request"))
 
@@ -70,6 +71,26 @@ class RepriseStore:
     def transaction(self):
         return self.marker_store._tx()
 
+    @staticmethod
+    def _invalidate_binding_change(c, version_id):
+        affected = {version_id}
+        affected.update(
+            row["version_id"] for row in c.execute(
+                "SELECT version_id,data FROM reprise_evidence_windows"
+            ) if json.loads(row["data"]).get("reference_version_id") == version_id
+        )
+        for affected_id in affected:
+            if not c.execute("SELECT 1 FROM reprise_decision_results WHERE version_id=?", (affected_id,)).fetchone():
+                continue
+            c.execute("UPDATE reprise_manual_overrides SET quarantined=1 WHERE version_id=?", (affected_id,))
+            for row in c.execute("SELECT id,data FROM reprise_ranges WHERE version_id=?", (affected_id,)).fetchall():
+                item = _range(json.loads(row["data"]))
+                if item.action == "skip" and item.review_status == "approved":
+                    c.execute("UPDATE reprise_ranges SET data=? WHERE version_id=? AND id=?",
+                              (_json(asdict(replace(item, review_status="proposed"))), affected_id, item.id))
+            c.execute("UPDATE reprise_decision_results SET policy_version=?,revision=revision+1 WHERE version_id=?",
+                      ("binding-changed", affected_id))
+
     def register_media(
         self, version: MediaVersion, identity: PlaybackIdentity, *, server_id: str, metadata: dict | None = None
     ) -> MediaVersion:
@@ -98,9 +119,12 @@ class RepriseStore:
                 raise ValueError("media version IDs are immutable")
             c.execute("INSERT OR IGNORE INTO reprise_media_versions VALUES (?,?)", (version.id, _json(asdict(version))))
             prior = c.execute(
-                "SELECT metadata,active,server_id FROM reprise_bindings WHERE machine=? AND rating_key=? AND media_id=? AND part_id=? AND audio_id=? AND version_id=?",
+                "SELECT metadata,identity,active,server_id FROM reprise_bindings WHERE machine=? AND rating_key=? AND media_id=? AND part_id=? AND audio_id=? AND version_id=?",
                 (*binding, identity.audio_stream_id, version.id),
             ).fetchone()
+            if old and (not prior or not prior["active"] or prior["server_id"] != server_id
+                        or prior["identity"] != _json(asdict(identity)) or prior["metadata"] != _json(metadata or {})):
+                self._invalidate_binding_change(c, version.id)
             keys = ("remote_part_path", "mapping_fingerprint")
             if prior and (
                 not prior["active"]
@@ -127,6 +151,7 @@ class RepriseStore:
                 )
             ]
             for old_id in old_ids:
+                self._invalidate_binding_change(c, old_id)
                 c.execute("UPDATE reprise_manual_overrides SET quarantined=1 WHERE version_id=?", (old_id,))
             c.execute(
                 "UPDATE reprise_bindings SET active=0 WHERE machine=? AND rating_key=? AND media_id=? AND part_id=? AND version_id<>?",
@@ -160,6 +185,7 @@ class RepriseStore:
                     and row["identity"] not in seen
                 ):
                     c.execute("UPDATE reprise_bindings SET active=0 WHERE rowid=?", (row["rowid"],))
+                    self._invalidate_binding_change(c, row["version_id"])
                     removed += 1
             return removed
 
@@ -170,10 +196,14 @@ class RepriseStore:
 
     def get_bindings(self, media_version_id):
         with self.marker_store._reading() as c:
-            rows = c.execute(
-                "SELECT identity,server_id,metadata FROM reprise_bindings WHERE version_id=? AND active=1",
-                (media_version_id,),
-            ).fetchall()
+            return self._bindings_in_transaction(c, media_version_id)
+
+    @staticmethod
+    def _bindings_in_transaction(c, media_version_id):
+        rows = c.execute(
+            "SELECT identity,server_id,metadata FROM reprise_bindings WHERE version_id=? AND active=1",
+            (media_version_id,),
+        ).fetchall()
         return [
             (PlaybackIdentity(**json.loads(r["identity"])), r["server_id"], json.loads(r["metadata"])) for r in rows
         ]
@@ -239,6 +269,7 @@ class RepriseStore:
         freshness = (
             "current"
             if r["policy_version"] == POLICY_VERSION
+            and all(is_current_profile(entry.metrics) for entry in evidence)
             and v
             and is_current(MediaVersion(**json.loads(v["data"])))
             and c.execute(
@@ -247,12 +278,22 @@ class RepriseStore:
             else "stale"
         )
         if freshness == "current":
-            for reference_id in {e.reference_version_id for e in evidence if e.reference_version_id}:
+            target = MediaVersion(**json.loads(v["data"]))
+            target_bindings = self._bindings_in_transaction(c, media_version_id)
+            for entry in evidence:
+                if entry.verdict.lower() != "match":
+                    continue
+                reference_id = entry.reference_version_id
                 ref = c.execute(
                     "SELECT data FROM reprise_media_versions WHERE id=? AND EXISTS (SELECT 1 FROM reprise_bindings WHERE version_id=? AND active=1)",
                     (reference_id, reference_id),
                 ).fetchone()
-                if not ref or not is_current(MediaVersion(**json.loads(ref["data"]))):
+                snapshot = (
+                    pair_provenance(target, target_bindings, MediaVersion(**json.loads(ref["data"])),
+                                    self._bindings_in_transaction(c, reference_id))
+                    if ref else None
+                )
+                if not snapshot or entry.metrics.get("admission_provenance") != snapshot:
                     freshness = "stale"
                     break
         return AnalysisResult(
@@ -319,6 +360,8 @@ class RepriseStore:
             if len({e.id for e in evidence}) != len(evidence) or len({r.id for r in ranges}) != len(ranges):
                 raise ValueError("duplicate evidence or range ID")
             for e in evidence:
+                if not is_current_profile(e.metrics):
+                    raise ValueError("evidence verification profile is not current")
                 if (
                     type(e.start_ms) is not int
                     or type(e.end_ms) is not int
@@ -359,6 +402,7 @@ class RepriseStore:
                 previous
                 and previous.result_revision > 0
                 and previous.policy_version == POLICY_VERSION
+                and previous.freshness == "current"
                 and previous.evidence_signature == run["signature"]
                 and semantic_evidence(previous.evidence) == semantic_evidence(evidence)
                 and semantic_ranges(baseline) == semantic_ranges(ranges)

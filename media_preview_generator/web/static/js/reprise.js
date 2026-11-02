@@ -3,7 +3,7 @@
     const $ = id => document.getElementById(id);
     const state = { items: [], selected: new Set(), item: null, result: null, edits: [], cursor: null, request: 0, dirty: false, secret: false, changes: [], libraries: [], settings: null };
     const activeRefreshes = new Set(), rangeViews = new WeakMap();
-    let reviewRequest = 0;
+    let reviewRequest = 0, referenceRequest = 0;
     const terminalJob = status => ['completed', 'failed', 'cancelled'].includes(status);
     const analysisLabel = status => !status || status === 'missing' ? 'Not analyzed' : status;
     const el = (tag, text, cls) => { const n = document.createElement(tag); if (text != null) n.textContent = text; if (cls) n.className = cls; return n; };
@@ -49,7 +49,18 @@
         ids.forEach(id => select.append(option(id, 'Audio ' + id))); if (ids.length === 1) select.value = ids[0];
         $(select.id === 'rpVideoAudio' ? 'rpVideoPreview' : 'rpReferencePreview').hidden = !select.value;
     }
-    async function loadReference(id) { const video = $('rpReferenceVideo'); video.dataset.mediaId = id; video.dataset.origin = '0'; video.dataset.preview = 'false'; video.dataset.desired = '0'; $('rpReferenceOrigin').textContent = ''; $('rpReferencePreview').hidden = true; video.src = '/api/reprise/media/' + encodeURIComponent(id) + '/stream'; video.hidden = false; video.load(); const result = await api('/api/reprise/media/' + encodeURIComponent(id) + '/result'); if (video.dataset.mediaId !== id) return; video.dataset.duration = result.duration_ms || '0'; setAudio($('rpReferenceAudio'), result.identities); }
+    async function loadReference(id) {
+        const request = ++referenceRequest, video = $('rpReferenceVideo'), audio = $('rpReferenceAudio');
+        video.pause(); video.hidden = true; audio.replaceChildren(option('', 'Select audio')); audio.disabled = true;
+        video.dataset.mediaId = id; video.dataset.duration = '0'; video.dataset.origin = '0'; video.dataset.preview = 'false'; video.dataset.desired = '0';
+        $('rpReferenceOrigin').textContent = ''; $('rpReferencePreview').hidden = true;
+        video.src = '/api/reprise/media/' + encodeURIComponent(id) + '/stream'; video.load();
+        try {
+            const result = await api('/api/reprise/media/' + encodeURIComponent(id) + '/result');
+            if (request !== referenceRequest) return false;
+            video.dataset.duration = result.duration_ms || '0'; setAudio(audio, result.identities); audio.disabled = false; video.hidden = false; return true;
+        } catch (error) { if (request !== referenceRequest) return false; throw error; }
+    }
     async function makePreview(video, audio, button, note) {
         const mediaId = video.dataset.mediaId, duration = Number(video.dataset.duration), desired = Number(video.dataset.desired || fileTime(video));
         if (!mediaId || !duration || !audio.value) { message('Select an audio track and a valid episode before creating a preview.', true); return; }
@@ -107,6 +118,7 @@
     async function openItem(item, force = false) {
         if (!force && state.dirty && !confirm('Discard unsaved review changes?')) return;
         const request = ++reviewRequest;
+        ++referenceRequest;
         state.item = item; state.result = null; state.edits = []; state.dirty = false; state.changes = [];
         document.querySelectorAll('.rp-episode-open').forEach(row => { if (row.dataset.mediaId === item.id) row.setAttribute('aria-current', 'true'); else row.removeAttribute('aria-current'); });
         $('rpReferenceVideo').pause(); $('rpReferenceVideo').removeAttribute('src'); $('rpReferenceVideo').dataset.mediaId = ''; $('rpReferenceVideo').hidden = true; $('rpReferencePreview').hidden = true; $('rpReference').value = ''; $('rpReferenceAudio').replaceChildren(option('', 'Select audio')); $('rpReferenceState').textContent = 'Choose an episode to compare.';
@@ -117,14 +129,14 @@
         try {
             const result = await api(`/api/reprise/media/${encodeURIComponent(item.id)}/result`); if (request !== reviewRequest) return;
             state.result = result; setAudio($('rpVideoAudio'), result.identities); state.edits = (result.ranges || [...(result.proposed_ranges || []), ...(result.protected_keep_ranges || []), ...(result.eligible_skip_ranges || [])]).filter((r,i,a) => a.findIndex(x => x.id === r.id) === i).map(r => ({...r, originalAction:r.action}));
-            $('rpReviewSubtitle').textContent = (result.reasons || []).join(' · ') || 'Review this file before approving any ranges.'; renderReview(); $('rpReview').hidden = false;
+            $('rpReviewSubtitle').textContent = (result.reasons || []).map(reason => reason === 'unapproved_or_unverified' ? 'No skips are ready for playback. Review the evidence below.' : /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/.test(reason) ? 'Review needs attention. See Evidence for details.' : reason).join(' · ') || 'Review this file before approving any ranges.'; renderReview(); $('rpReview').hidden = false;
             await loadHistory(item.id, request);
         } catch (e) { if (request !== reviewRequest) return; $('rpReviewSubtitle').textContent = e.message; $('rpAnalysisStatus').textContent = 'Unavailable'; $('rpFreshness').textContent = ''; fail(e); }
     }
     async function loadHistory(id, request) { if (!state.settings?.publication_available) return; try { const history = await api('/api/reprise/publications?media_version_id=' + encodeURIComponent(id)); if (request === reviewRequest && Array.isArray(history.items)) { state.changes = history.items; renderPublication(); } } catch (error) { if (request === reviewRequest) message('Publication history unavailable: ' + error.message, true); } }
     function renderReferences() {
         const select = $('rpReference'), previous = select.value; select.replaceChildren(option('', 'Choose an episode'));
-        state.items.filter(i => i.id !== state.item?.id && (!state.item?.show_title || i.show_title === state.item.show_title)).forEach(i => select.append(option(i.id, title(i))));
+        state.items.filter(i => i.id !== state.item?.id && (!state.item?.show_title || i.show_title === state.item.show_title)).forEach(i => select.append(option(i.id, title(i) + ' · ' + versionLabel(i))));
         if ([...select.options].some(o => o.value === previous)) select.value = previous;
     }
     function renderReview(rebuild = true) {
@@ -139,7 +151,9 @@
         if (!state.edits.length) list.append(el('p', r.analysis_status === 'complete' ? 'No ranges found. Nothing is approved for skipping.' : 'No review ranges are available.', 'rp-state'));
         state.edits.forEach(range => renderRange(list, range));
         const ev = $('rpEvidence'); clear(ev); const evidence = r.evidence || [];
-        if (!evidence.length) ev.append(el('p', 'No evidence available.', 'rp-state')); else evidence.forEach(e => { const row = el('div', null, 'rp-range'); row.append(el('p', ms(e.start_ms) + '–' + ms(e.end_ms) + ' · ' + (e.modality || 'Evidence') + ' · ' + (e.verdict || 'unknown') + ' · ' + (e.reason || ''), 'rp-note')); if (e.reference_version_id && e.reference_start_ms != null && e.reference_end_ms != null) row.append(button('Compare this evidence', async () => { try { await loadReference(e.reference_version_id); $('rpReferenceState').textContent = 'Showing aligned evidence from the reference episode.'; playBounded($('rpVideo'), e.start_ms, e.end_ms); playBounded($('rpReferenceVideo'), e.reference_start_ms, e.reference_end_ms); } catch(error) { fail(error); } })); ev.append(row); });
+        const reasonCodes = (r.reasons || []).filter(reason => typeof reason === 'string' && /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/.test(reason));
+        if (reasonCodes.length) ev.append(el('p', 'Reason codes: ' + reasonCodes.join(', '), 'rp-note'));
+        if (!evidence.length) ev.append(el('p', 'No evidence available.', 'rp-state')); else evidence.forEach(e => { const row = el('div', null, 'rp-range'); row.append(el('p', ms(e.start_ms) + '–' + ms(e.end_ms) + ' · ' + (e.modality || 'Evidence') + ' · ' + (e.verdict || 'unknown') + ' · ' + (e.reason || ''), 'rp-note')); if (e.reference_version_id && e.reference_start_ms != null && e.reference_end_ms != null) row.append(button('Compare this evidence', async () => { try { if (!await loadReference(e.reference_version_id)) return; $('rpReferenceState').textContent = 'Showing aligned evidence from the reference episode.'; playBounded($('rpVideo'), e.start_ms, e.end_ms); playBounded($('rpReferenceVideo'), e.reference_start_ms, e.reference_end_ms); } catch(error) { fail(error); } })); ev.append(row); });
         }
         $('rpSave').disabled = !state.dirty || r.result_revision == null || r.freshness !== 'current'; $('rpAddKeep').disabled = r.result_revision == null || r.freshness !== 'current'; $('rpSaveState').textContent = r.freshness !== 'current' ? 'This file is not current. Refresh its analysis before saving.' : state.dirty ? 'Unsaved changes' : 'Review saved separately from publication.';
         if (rebuild) renderPublication();
@@ -231,7 +245,7 @@
         } catch(error) { $('rpRefreshState').textContent = error.message; } finally { submit.disabled = false; }
     });
     $('rpAnalyze').addEventListener('click',async () => { try { await api('/api/reprise/analyses',{method:'POST',body:{media_version_ids:[...state.selected]}}); state.selected.clear(); renderLibrary(); await loadQueue(); message('Analysis queued.'); } catch(e){fail(e);} });
-    $('rpVideo').addEventListener('error',() => { $('rpVideoError').hidden = false; $('rpVideoPreview').hidden = false; }); $('rpReference').addEventListener('change',e => { const video = $('rpReferenceVideo'); if (!e.target.value) {video.hidden = true; video.dataset.mediaId = ''; video.removeAttribute('src'); video.load(); $('rpReferenceState').textContent = 'Choose an episode to compare.'; return;} $('rpReferenceState').textContent = 'Reference time is shown on its own file timeline.'; loadReference(e.target.value).catch(fail); }); $('rpReferenceVideo').addEventListener('error',() => { $('rpReferenceState').textContent = 'This reference cannot be played directly by your browser.'; $('rpReferencePreview').hidden = false; });
+    $('rpVideo').addEventListener('error',() => { $('rpVideoError').hidden = false; $('rpVideoPreview').hidden = false; }); $('rpReference').addEventListener('change',e => { const video = $('rpReferenceVideo'); if (!e.target.value) {++referenceRequest; $('rpReferenceAudio').replaceChildren(option('', 'Select audio')); $('rpReferenceAudio').disabled = true; $('rpReferencePreview').hidden = true; video.pause(); video.hidden = true; video.dataset.mediaId = ''; video.removeAttribute('src'); video.load(); $('rpReferenceState').textContent = 'Choose an episode to compare.'; return;} $('rpReferenceState').textContent = 'Reference time is shown on its own file timeline.'; loadReference(e.target.value).catch(fail); }); $('rpReferenceVideo').addEventListener('error',() => { $('rpReferenceState').textContent = 'This reference cannot be played directly by your browser.'; $('rpReferencePreview').hidden = false; });
     $('rpVideoPreview').addEventListener('click',() => makePreview($('rpVideo'), $('rpVideoAudio'), $('rpVideoPreview'), $('rpVideoOrigin'))); $('rpReferencePreview').addEventListener('click',() => makePreview($('rpReferenceVideo'), $('rpReferenceAudio'), $('rpReferencePreview'), $('rpReferenceOrigin')));
     $('rpSave').addEventListener('click',saveReview); $('rpDiscard').addEventListener('click',() => { if (state.item && (!state.dirty || confirm('Discard unsaved review changes?'))) openItem(state.item,true); }); $('rpAddKeep').addEventListener('click',() => { const duration = Number(state.result?.duration_ms || state.item?.duration_ms || 0), start = fileTime($('rpVideo')); state.edits.push({kind:'credits',action:'keep',start_ms:start,end_ms:Math.min(duration || start+1000,start+1000),review_status:'proposed',locked:true,origin:'manual',reason:'Protected by reviewer'}); state.dirty = true; renderReview(); });
     $('rpQueueRefresh').addEventListener('click',loadQueue); $('rpClientOpen').addEventListener('click',() => { $('rpClientForm').hidden = false; }); $('rpClientCancel').addEventListener('click',() => { $('rpClientForm').hidden = true; });

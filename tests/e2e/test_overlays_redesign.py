@@ -69,7 +69,7 @@ def overlay_page(authed_page: Page, app_url: str) -> tuple[Page, list[dict]]:
             route.fallback()
 
     page.route("**/api/**", capture)
-    page.goto(f"{app_url}/")
+    page.goto(f"{app_url}/dashboard")
     page.wait_for_function("libraries.length === 3")
     return page, writes
 

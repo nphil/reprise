@@ -75,7 +75,7 @@ APP_GPU_WORKERS = 1
 APP_FFMPEG_THREADS = 2
 # Plex's transcoder writes preview JPEGs with `-q 3`; the app's thumbnail_quality is the same -q:v scale.
 PLEX_JPEG_QUALITY = 3
-APP_FFMPEG = "/usr/lib/jellyfin-ffmpeg/ffmpeg"  # the binary the app runs (config._JELLYFIN_FFMPEG_PATH)
+APP_FFMPEG = "/usr/local/bin/ffmpeg"  # the bundled binary on the container PATH
 LAB_APPS = ((18080, "MLAB_APP_TOKEN"), (18081, "MLAB_APP_REMOTE_TOKEN"), (18082, "MLAB_APP_HEALTH_TOKEN"))
 SITE_APP_OTHER_SERVERS = ("site-jellyfin", "site-emby")
 APP_KEYS = ("thumbnail_interval", "thumbnail_quality", "cpu_threads", "gpu_config")

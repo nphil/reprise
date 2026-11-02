@@ -21,7 +21,7 @@ class TestLoginPage:
 
     def test_login_page_shows_title_and_concise_subtitle(self, page: Page, app_url: str) -> None:
         page.goto(f"{app_url}/login")
-        expect(page.locator("h1")).to_have_text("Media Preview Generator")
+        expect(page.locator("h1")).to_have_text("Reprise")
         expect(page.locator(".logo-container p")).to_have_text("Enter your token to continue")
 
     def test_token_field_and_reveal_button_are_touch_sized_when_viewport_is_phone(

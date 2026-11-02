@@ -17,7 +17,6 @@ from loguru import logger
 
 from media_preview_generator.gpu import VulkanProbeResult
 from media_preview_generator.processing import (
-    DV5_PATH_INTEL_OPENCL,
     DV5_PATH_LIBPLACEBO,
     DV5_PATH_VAAPI_VULKAN,
     FFMPEG_STALL_TIMEOUT_SEC,
@@ -37,7 +36,7 @@ from media_preview_generator.processing import (
     parse_ffmpeg_progress_line,
     record_failure,
 )
-from media_preview_generator.processing.generator import _video_details_from_ffprobe, read_media_info
+from media_preview_generator.processing.generator import _has_dv5_libplacebo, _video_details_from_ffprobe, read_media_info
 from media_preview_generator.processing.hdr_detection import (
     detect_dolby_vision_rpu_error as _detect_dolby_vision_rpu_error,
 )
@@ -70,6 +69,34 @@ def _safe_keyframe_probe(monkeypatch):
 
     monkeypatch.setattr(_gen, "_probe_max_keyframe_gap", lambda *_a, **_kw: 0.5)
     monkeypatch.setattr(_gen, "_has_duplicate_thumbnails", lambda *_a, **_kw: False)
+    monkeypatch.setattr(_gen, "_has_dv5_libplacebo", lambda *_a, **_kw: True)
+
+
+@pytest.mark.parametrize(
+    ("returncode", "output", "expected"),
+    [(0, "apply_dolbyvision", True), (0, "Unknown filter", False), (1, "apply_dolbyvision", False)],
+)
+def test_dv5_capability_requires_option_in_selected_ffmpeg(returncode, output, expected):
+    with patch("media_preview_generator.processing.generator.subprocess.run") as run:
+        run.return_value = subprocess.CompletedProcess([], returncode, stdout=output)
+        assert _has_dv5_libplacebo("/selected/ffmpeg") is expected
+        assert run.call_args.args[0] == ["/selected/ffmpeg", "-hide_banner", "-h", "filter=libplacebo"]
+
+
+def test_dv5_capability_fails_closed_on_timeout():
+    with patch("media_preview_generator.processing.generator.subprocess.run", side_effect=subprocess.TimeoutExpired("ffmpeg", 10)):
+        assert not _has_dv5_libplacebo("ffmpeg")
+
+
+@pytest.mark.parametrize(("output", "expected"), [("apply_dovi", True), ("tonemap_opencl", False)])
+def test_intel_dolby_requires_opencl_metadata_option(output, expected):
+    from media_preview_generator.processing.generator import _has_dv5_opencl
+
+    with patch("media_preview_generator.processing.generator.subprocess.run") as run:
+        run.return_value = subprocess.CompletedProcess([], 0, stdout=output)
+        assert _has_dv5_opencl("/selected/ffmpeg") is expected
+        assert run.call_args.args[0] == ["/selected/ffmpeg", "-hide_banner", "-h", "filter=tonemap_opencl"]
+
 
 
 class TestBIFGeneration:
@@ -1765,9 +1792,9 @@ class TestProactiveDVSkip:
                 is_software=vulkan_device_info.get("is_software", False),
             )
 
-        with patch(
-            "media_preview_generator.gpu.vulkan_probe.get_vulkan_device_info",
-            return_value=default_vulkan,
+        with (
+            patch("media_preview_generator.gpu.vulkan_probe.get_vulkan_device_info", return_value=default_vulkan),
+            patch("media_preview_generator.processing.generator._has_dv5_libplacebo", return_value=True),
         ):
             success, image_count, hw_used, seconds, speed, *_ = generate_images(
                 video_filename, temp_dir, gpu, gpu_device_path, mock_config
@@ -1804,16 +1831,7 @@ class TestProactiveDVSkip:
         temp_dir,
         mock_config,
     ):
-        """DV Profile 5 on an Intel host with a VAAPI render device
-        uses VAAPI hardware decode + OpenCL tonemap_opencl via
-        jellyfin-ffmpeg's DV-aware patch.
-
-        Intel's VAAPI→Vulkan libplacebo path is broken upstream on
-        Mesa ANV (libplacebo vkCreateImage returns VK_ERROR_OUT_OF_
-        DEVICE_MEMORY).  Jellyfin-ffmpeg's tonemap_opencl reads DV RPU
-        side-data correctly and produces correct colours at ~17x on
-        Intel UHD 770.  See issue #212.
-        """
+        """Intel uses the generic libplacebo upload path, never the patched OpenCL filter."""
         args = self._run_generate(
             "Dolby Vision",
             "/test/dv_profile5.mkv",
@@ -1833,52 +1851,13 @@ class TestProactiveDVSkip:
             gpu_device_path="/dev/dri/renderD128",
         )
 
-        # Intel DV5 path initialises VAAPI on the render node and an
-        # OpenCL context derived from that VAAPI device (ocl@va).
-        init_indices = [i for i, a in enumerate(args) if a == "-init_hw_device"]
-        assert len(init_indices) == 2, "Intel DV5 path must initialise VAAPI + derived OpenCL (2 devices)"
-        assert args[init_indices[0] + 1] == "vaapi=va:/dev/dri/renderD128"
-        assert args[init_indices[1] + 1] == "opencl=ocl@va"
-        assert "-filter_hw_device" in args
-        assert args[args.index("-filter_hw_device") + 1] == "ocl"
-
-        # -hwaccel must be vaapi, output format kept on-device (vaapi),
-        # device reference must match the named "va" VAAPI context.
-        assert "-hwaccel" in args
-        assert args[args.index("-hwaccel") + 1] == "vaapi"
-        assert "-hwaccel_device" in args
-        assert args[args.index("-hwaccel_device") + 1] == "va"
-        assert "-hwaccel_output_format" in args
-        assert args[args.index("-hwaccel_output_format") + 1] == "vaapi"
-
-        # Hardware-decoded DV5, so -threads:v 1.
-        assert "-threads:v" in args
-        assert args[args.index("-threads:v") + 1] == "1"
-
-        # Skip-frame stays disabled on DV5 because RPU side data has
-        # inter-frame dependencies.
+        assert "vulkan=vk" in args
+        assert "opencl=ocl@va" not in args
+        assert "-hwaccel" not in args
         assert "-skip_frame:v" not in args
-
-        # Filter chain: fps first (drop frames BEFORE the expensive tonemap
-        # step), then setparams to tag the base layer as BT.2020/PQ, then
-        # hwmap to OpenCL and tonemap_opencl, then hwdownload for mjpeg.
         vf = args[args.index("-vf") + 1]
-        assert "hwmap=derive_device=opencl:mode=read" in vf
-        assert "tonemap_opencl=" in vf
-        assert "hwmap=derive_device=vulkan" not in vf, (
-            "Intel DV5 uses OpenCL, not Vulkan (libplacebo interop is broken)"
-        )
-        assert "libplacebo=" not in vf, "Intel DV5 path uses tonemap_opencl, not libplacebo"
-        assert "hwupload" not in vf
-        assert "hwdownload" in vf
-        assert "zscale" not in vf
-        # fps filter must come BEFORE hwmap — that's the 6x speed-up
-        # (benchmarked 2.71x→17.3x on UHD 770).
-        fps_pos = vf.find("fps=fps=")
-        hwmap_pos = vf.find("hwmap=")
-        assert 0 <= fps_pos < hwmap_pos, (
-            "fps filter must run BEFORE hwmap so we drop frames at the VAAPI surface and don't waste tonemap cycles"
-        )
+        assert "hwupload" in vf and "libplacebo=" in vf
+        assert "tonemap_opencl" not in vf
 
     @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
@@ -3706,9 +3685,8 @@ class TestRotatedVideo:
     @pytest.mark.parametrize(("matrix", "turn", "box"), TURNS)
     @pytest.mark.parametrize(
         ("gpu", "device", "download"),
-        [("INTEL", "/dev/dri/renderD128", "hwdownload,format=nv12,format=yuv420p"),
-         ("AMD", "/dev/dri/renderD128", "hwdownload,format=yuv420p")],
-        ids=["intel-opencl", "amd-vulkan"],
+        [("AMD", "/dev/dri/renderD128", "hwdownload,format=yuv420p")],
+        ids=["amd-vulkan"],
     )  # fmt: skip
     def test_dolby_vision_profile_5_on_vaapi_is_turned_after_its_download(
         self, mock_config, gpu, device, download, matrix, turn, box
@@ -3781,7 +3759,7 @@ class TestRotatedVideo:
         assert all(command[command.index("-vf") + 1].count(turn) == 1 for command in commands)
 
     @pytest.mark.parametrize(("matrix", "turn", "box"), TURNS)
-    def test_dolby_vision_profile_5s_software_retry_leaves_the_turn_to_ffmpeg(self, mock_config, matrix, turn, box):
+    def test_dolby_vision_profile_5_software_decode_leaves_the_turn_to_ffmpeg(self, mock_config, matrix, turn, box):
         commands = self._retried_commands(mock_config, "INTEL", "/dev/dri/renderD128", matrix, "Dolby Vision")
         software = [command for command in commands if "-hwaccel" not in command]
         vfs = [command[command.index("-vf") + 1] for command in commands]
@@ -3789,8 +3767,33 @@ class TestRotatedVideo:
         assert len(software) == 1, "the software decode + libplacebo tier ran"
         software_vf = software[0][software[0].index("-vf") + 1]
         assert "libplacebo" in software_vf and turn not in software_vf, "its frames are in memory: FFmpeg turns them"
-        assert vfs[0].endswith(f",{turn},{CPU_SCALE}"), "the OpenCL tier downloads surfaces and turns them"
+        assert turn not in vfs[0], "the first software decode is turned by FFmpeg"
         assert vfs[-1].endswith(f",{turn},{CPU_SCALE}") and "tonemap" not in vfs[-1], "the DV-safe tier too"
+
+    def test_missing_dolby_filter_never_selects_a_patched_gpu_filter(self, mock_config):
+        with patch("media_preview_generator.processing.generator._has_dv5_libplacebo", return_value=False):
+            args = self._command(mock_config, "INTEL", "/dev/dri/renderD128", _matrix(0, -ONE, ONE, 0), hdr_fmt="Dolby Vision")
+        vf = args[args.index("-vf") + 1]
+        assert "libplacebo" not in vf and "tonemap_opencl" not in vf
+        assert "opencl=ocl@va" not in args
+
+    def test_intel_uses_opencl_only_when_dolby_option_is_present(self, mock_config):
+        with patch("media_preview_generator.processing.generator._has_dv5_opencl", return_value=True):
+            args = self._command(mock_config, "INTEL", "/dev/dri/renderD128", _matrix(0, -ONE, ONE, 0), hdr_fmt="Dolby Vision")
+        vf = args[args.index("-vf") + 1]
+        assert "opencl=ocl@va" in args
+        assert "tonemap_opencl=apply_dovi=1" in vf
+
+    def test_selected_ffmpeg_sibling_probes_are_used(self, mock_config, tmp_path):
+        ffmpeg = tmp_path / "ffmpeg"
+        ffprobe = tmp_path / "ffprobe"
+        ffmpeg.touch()
+        ffprobe.touch()
+        ffprobe.chmod(0o755)
+        mock_config.ffmpeg_path = str(ffmpeg)
+        probes = []
+        self._command(mock_config, "INTEL", "/dev/dri/renderD128", _matrix(0, -ONE, ONE, 0), probes=probes)
+        assert probes and probes[0][0] == str(ffprobe)
 
 
 class TestFfmpegThreadFlags:
@@ -4623,23 +4626,6 @@ class TestBuildDV5Vf:
 
     _BASE_SCALE = "scale=w=320:h=240:force_original_aspect_ratio=decrease"
 
-    def test_intel_opencl_chain_is_byte_identical(self):
-        got = build_dv5_vf(
-            path_kind=DV5_PATH_INTEL_OPENCL,
-            tonemap_algorithm="reinhard",
-            fps_value=0.5,
-            base_scale=self._BASE_SCALE,
-        )
-        assert got == (
-            "fps=fps=0.5:round=up:start_time=0,"
-            "setparams=color_primaries=bt2020:"
-            "color_trc=smpte2084:colorspace=bt2020nc,"
-            "hwmap=derive_device=opencl:mode=read,"
-            "tonemap_opencl=format=nv12:p=bt709:t=bt709:"
-            "m=bt709:tonemap=reinhard"
-            ":peak=100:desat=0,"
-            f"hwdownload,format=nv12,format=yuv420p,{self._BASE_SCALE}"
-        )
 
     def test_vaapi_vulkan_chain_is_byte_identical(self):
         got = build_dv5_vf(
@@ -4683,11 +4669,8 @@ class TestBuildDV5Vf:
             )
 
     def test_fps_appears_first_in_every_variant(self):
-        """fps-first ordering is required on NVIDIA Turing (VK OOM fix)
-        and significantly faster on Intel OpenCL.  All three variants
-        must place the fps dropper at the head of the chain."""
+        """All supported variants place the fps dropper first."""
         for path in (
-            DV5_PATH_INTEL_OPENCL,
             DV5_PATH_VAAPI_VULKAN,
             DV5_PATH_LIBPLACEBO,
         ):

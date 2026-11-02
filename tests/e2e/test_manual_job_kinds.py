@@ -50,7 +50,7 @@ def creation_page(authed_page: Page, app_url: str) -> tuple[Page, list[dict]]:
             route.fallback()
 
     page.route("**/api/**", capture_write)
-    page.goto(f"{app_url}/")
+    page.goto(f"{app_url}/dashboard")
     expect(page.get_by_role("button", name="Process a file or folder", exact=True)).to_be_visible()
     return page, writes
 

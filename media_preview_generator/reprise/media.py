@@ -11,6 +11,7 @@ import os
 import queue
 import re
 import select
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -19,6 +20,8 @@ import time
 from dataclasses import dataclass
 from fractions import Fraction
 
+from ..gpu.ffmpeg_capabilities import ffmpeg_binary
+from ..markers.probe import ffprobe_path_for
 from .identity import is_current
 
 MAX_OUTPUT = 128 * 1024 * 1024
@@ -30,6 +33,15 @@ class DecodeError(Exception):
 
 class Cancelled(DecodeError):
     pass
+
+
+def paired_ffprobe(ffmpeg_path):
+    """Require the selected FFmpeg's sibling rather than a PATH fallback."""
+    ffprobe = ffprobe_path_for(ffmpeg_path)
+    ffmpeg = shutil.which(ffmpeg_path) or ffmpeg_path
+    if os.path.dirname(os.path.abspath(ffprobe)) != os.path.dirname(os.path.abspath(ffmpeg)):
+        raise DecodeError("Selected FFmpeg has no matching sibling ffprobe")
+    return ffprobe
 
 
 def check_current(media):
@@ -105,10 +117,11 @@ def run(command, cancel_check, pause_check, limit=MAX_OUTPUT, *, reject_stderr=F
             proc.stderr.close()
 
 
-def probe(media, cancel_check, pause_check):
+def probe(media, cancel_check, pause_check, *, ffmpeg_path=None):
     check_current(media)
+    selected = ffmpeg_path if ffmpeg_path is not None else ffmpeg_binary()
     raw = run(
-        ["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", media.canonical_path],
+        [paired_ffprobe(selected), "-v", "error", "-show_streams", "-show_format", "-of", "json", media.canonical_path],
         cancel_check,
         pause_check,
         2 * 1024 * 1024,
@@ -145,11 +158,11 @@ def probe(media, cancel_check, pause_check):
     return videos[0]["index"], result, origin
 
 
-def video_frames(media, stream, start, end, cancel_check, pause_check, threads):
+def video_frames(media, stream, start, end, cancel_check, pause_check, threads, *, ffmpeg_path=None):
     # With copyts, the output endpoint is on the normalized media timeline.
     # A duration limit can cut off a nonzero seek before any frames appear.
     command = [
-        "ffmpeg",
+        ffmpeg_path if ffmpeg_path is not None else ffmpeg_binary(),
         "-nostdin",
         "-v",
         "error",
@@ -193,12 +206,14 @@ def video_frames(media, stream, start, end, cancel_check, pause_check, threads):
     return frames
 
 
-def audio_pcm(media, track, start, end, origin, cancel_check, pause_check, threads):
+def audio_pcm(media, track, start, end, origin, cancel_check, pause_check, threads, *, ffmpeg_path=None):
+    selected = ffmpeg_path if ffmpeg_path is not None else ffmpeg_binary()
     _, idx, rate, channels = track
     # Raw PCM has no timestamps; independently check the input timeline.
-    interval = f"{float(origin):.6f}%{float(origin + Fraction(end, 1000)):.6f}"
+    # A start timestamp causes a seek, which can skip the first decoded frame.
+    interval = f"%{float(origin + Fraction(end, 1000)):.6f}"
     cmd = [
-        "ffprobe",
+        paired_ffprobe(selected),
         "-v",
         "error",
         "-select_streams",
@@ -231,7 +246,7 @@ def audio_pcm(media, track, start, end, origin, cancel_check, pause_check, threa
     # timestamps have coarser precision than the audio sample clock.
     trim = f"atrim=start_sample={start * rate // 1000}:end_sample={end * rate // 1000},asetpts=PTS-STARTPTS"
     command = [
-        "ffmpeg",
+        selected,
         "-nostdin",
         "-v",
         "error",
@@ -301,11 +316,12 @@ _NATIVE_FRAME_LIMIT = 64 * 1024 * 1024
 _NATIVE_PROTOCOL_TIMEOUT = 30.0  # Fail closed if paired decoder pipes stop making progress.
 
 
-def _native_audit(media, stream, start, end, cancel, pause, threads):
+def _native_audit(media, stream, start, end, cancel, pause, threads, ffmpeg_path):
     """Verify one window-constant chroma location; this does not pair frames."""
     check_current(media)
     versions = []
-    for binary in ("ffmpeg", "ffprobe"):
+    ffprobe = paired_ffprobe(ffmpeg_path)
+    for binary in (ffmpeg_path, ffprobe):
         lines = run([binary, "-version"], cancel, pause, 65536, reject_stderr=True).decode("utf-8").splitlines()
         try:
             versions.append(
@@ -320,7 +336,7 @@ def _native_audit(media, stream, start, end, cancel, pause, threads):
     if versions[0] != versions[1]:
         raise DecodeError("FFmpeg and ffprobe builds differ")
     base = [
-        "ffprobe",
+        ffprobe,
         "-v",
         "error",
         "-err_detect",
@@ -408,9 +424,15 @@ def _native_audit(media, stream, start, end, cancel, pause, threads):
                 or (int(frame["width"]), int(frame["height"])) != (width, height)
                 or any(int(frame.get(key, 0)) for key in ("crop_top", "crop_bottom", "crop_left", "crop_right"))
                 or not isinstance(side_data, list)
+                # FFmpeg 8 also attaches the stream display matrix to decoded
+                # frames. Allow it only when the stream is already flagged;
+                # consumers reject that flag rather than interpreting pixels.
                 or any(
                     not isinstance(side, dict)
-                    or side.get("side_data_type") != "H.26[45] User Data Unregistered SEI message"
+                    or not (
+                        side.get("side_data_type") == "H.26[45] User Data Unregistered SEI message"
+                        or (side.get("side_data_type") == "3x3 displaymatrix" and "display_matrix" in flags)
+                    )
                     for side in side_data
                 )
             ):
@@ -424,8 +446,8 @@ def _native_audit(media, stream, start, end, cancel, pause, threads):
     return pix, width, height, sample, cw, ch, size, chroma, sar, flags, pts, tb
 
 
-def _bounded_log_lines(pipe):
-    """Read diagnostics without allowing unbounded lines or total output."""
+def _bounded_log_lines(pipe, total_limit=16 * 1024 * 1024):
+    """Read records with bounded lines and an optional total byte cap."""
     buffer = bytearray()
     total = 0
     while True:
@@ -435,7 +457,7 @@ def _bounded_log_lines(pipe):
                 raise DecodeError("Truncated decoder diagnostic record")
             return
         total += len(chunk)
-        if total > 16 * 1024 * 1024:
+        if total_limit is not None and total > total_limit:
             raise DecodeError("Decoder diagnostics exceed resource limit")
         buffer.extend(chunk)
         while True:
@@ -459,12 +481,13 @@ class NativeFrameReader:
     iterator leaves termination unset and kills/reaps the decoder on exit.
     """
 
-    def __init__(self, media, stream, start, end, cancel, pause, threads):
+    def __init__(self, media, stream, start, end, cancel, pause, threads, ffmpeg_path):
         if not (0 <= start < end) or threads < 1:
             raise DecodeError("Invalid native frame window")
         self.media, self.stream = media, stream
         self.request_start_ms, self.request_end_ms = start, end
         self.cancel, self.pause, self.threads = cancel, pause, threads
+        self.ffmpeg_path = ffmpeg_path if ffmpeg_path is not None else ffmpeg_binary()
         self.termination = None
         self.observed_end = None
         self.proc = None
@@ -496,12 +519,19 @@ class NativeFrameReader:
             self.audit_pts,
             self.time_base,
         ) = _native_audit(
-            self.media, self.stream, self.request_start_ms, self.request_end_ms, self.cancel, self.pause, self.threads
+            self.media,
+            self.stream,
+            self.request_start_ms,
+            self.request_end_ms,
+            self.cancel,
+            self.pause,
+            self.threads,
+            self.ffmpeg_path,
         )
         check_current(self.media)
         cap = (self.request_end_ms + 2000) / 1000
         command = [
-            "ffmpeg",
+            self.ffmpeg_path,
             "-nostdin",
             "-nostats",
             "-hide_banner",
@@ -810,8 +840,8 @@ class NativeFrameReader:
         return False
 
 
-def native_frames(media, stream, start_ms, end_ms, cancel_check, pause_check, threads):
-    return NativeFrameReader(media, stream, start_ms, end_ms, cancel_check, pause_check, threads)
+def native_frames(media, stream, start_ms, end_ms, cancel_check, pause_check, threads, *, ffmpeg_path=None):
+    return NativeFrameReader(media, stream, start_ms, end_ms, cancel_check, pause_check, threads, ffmpeg_path)
 
 
 @dataclass(frozen=True)
@@ -866,21 +896,424 @@ def _native_audio_side_record(text):
     return "downmix", match.groups()
 
 
-def native_audio_pcm(media, stream_index, start_ms, end_ms, cancel_check, pause_check, threads):
+class _AudioLines:
+    """Drain a child protocol through a bounded queue; output remains file-bounded."""
+
+    def __init__(self, command, *, decoder, output=None):
+        self.stop = threading.Event()
+        self.events = queue.Queue(maxsize=16)
+        self.proc = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=output if decoder else subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+            bufsize=0,
+        )
+        self.paused = False
+        self.error = None
+        self.threads = []
+        protocol = self.proc.stderr if decoder else self.proc.stdout
+
+        def produce():
+            try:
+                for line in _bounded_log_lines(protocol, None):
+                    if not self._put(line):
+                        return
+                self._put(None)
+            except Exception as exc:
+                self._put(exc)
+
+        def reject_probe_errors():
+            try:
+                for _line in _bounded_log_lines(self.proc.stderr):
+                    self.error = DecodeError("Native audio probe reported an error")
+                    self._put(DecodeError("Native audio probe reported an error"))
+                    return
+            except Exception as exc:
+                self.error = exc
+                self._put(exc)
+
+        self.threads.append(threading.Thread(target=produce, daemon=True))
+        if not decoder:
+            self.threads.append(threading.Thread(target=reject_probe_errors, daemon=True))
+        started = []
+        try:
+            for thread in self.threads:
+                thread.start()
+                started.append(thread)
+        except BaseException:
+            self.threads = started
+            self.close()
+            raise
+
+    def _put(self, event):
+        while not self.stop.is_set():
+            try:
+                self.events.put(event, timeout=0.05)
+                return True
+            except queue.Full:
+                pass
+        return False
+
+    def next_line(self, processes, cancel, pause, output=None, limit=0):
+        deadline = time.monotonic() + 30
+        while True:
+            if cancel():
+                raise Cancelled("Analysis cancelled")
+            want_pause = bool(pause())
+            if want_pause:
+                deadline = time.monotonic() + 30
+            elif time.monotonic() > deadline:
+                raise DecodeError("Native audio metadata stalled")
+            for process in processes:
+                if process.proc.poll() is None and want_pause != process.paused:
+                    try:
+                        os.killpg(process.proc.pid, signal.SIGSTOP if want_pause else signal.SIGCONT)
+                    except ProcessLookupError:
+                        pass
+                    process.paused = want_pause
+            if want_pause:
+                time.sleep(0.05)
+                continue
+            if output is not None and os.fstat(output.fileno()).st_size > limit:
+                raise DecodeError("Decode output exceeded resource limit")
+            try:
+                event = self.events.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            if isinstance(event, Exception):
+                raise DecodeError("Native audio streaming protocol failed") from event
+            return event
+
+    def finish(self, processes, cancel, pause, output=None, limit=0):
+        deadline = time.monotonic() + 30
+        while True:
+            if cancel():
+                raise Cancelled("Analysis cancelled")
+            want_pause = bool(pause())
+            if not want_pause and self.proc.poll() is not None:
+                break
+            if want_pause:
+                deadline = time.monotonic() + 30
+            elif time.monotonic() > deadline:
+                raise DecodeError("Native audio subprocess did not terminate")
+            for process in processes:
+                if process.proc.poll() is None and want_pause != process.paused:
+                    try:
+                        os.killpg(process.proc.pid, signal.SIGSTOP if want_pause else signal.SIGCONT)
+                    except ProcessLookupError:
+                        pass
+                    process.paused = want_pause
+            if output is not None and os.fstat(output.fileno()).st_size > limit:
+                raise DecodeError("Decode output exceeded resource limit")
+            time.sleep(0.05)
+        for thread in self.threads:
+            while thread.is_alive():
+                if cancel():
+                    raise Cancelled("Analysis cancelled")
+                if time.monotonic() > deadline:
+                    raise DecodeError("Native audio diagnostics did not terminate")
+                thread.join(timeout=0.05)
+        if cancel():
+            raise Cancelled("Analysis cancelled")
+        if self.error is not None or self.proc.returncode:
+            raise DecodeError("Native audio subprocess failed") from self.error
+
+    def close(self):
+        self.stop.set()
+        try:
+            os.killpg(self.proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        self.proc.wait()
+        for thread in self.threads:
+            thread.join(timeout=1)
+        if self.proc.stdout is not None:
+            self.proc.stdout.close()
+        self.proc.stderr.close()
+
+
+@dataclass(frozen=True)
+class NativeAudioChunk:
+    """Provisional native PCM; accept only after the reader context succeeds."""
+
+    data: object
+    sample_rate: int
+    channel_layout: str
+    channel_ids: tuple[str, ...]
+    support_start_ms: Fraction
+    support_end_ms: Fraction
+
+
+class NativeAudioChunkReader:
+    """One-pass bounded PCM stream; successful full context exit commits evidence."""
+
+    def __init__(self, media, stream_index, start_ms, end_ms, cancel, pause, threads, chunk_samples, ffmpeg_path):
+        if not isinstance(chunk_samples, int) or chunk_samples <= 0 or chunk_samples > MAX_OUTPUT // 8:
+            raise DecodeError("Invalid native audio chunk size")
+        self.args = (media, stream_index, start_ms, end_ms, cancel, pause, threads)
+        self.ffmpeg_path = ffmpeg_path if ffmpeg_path is not None else ffmpeg_binary()
+        self.cancel, self.pause = cancel, pause
+        self.chunk_samples = chunk_samples
+        self.events = queue.Queue(maxsize=2)
+        self.stop = threading.Event()
+        self.output_abort = threading.Event()
+        self.process_lock = threading.Lock()
+        self.processes = []
+        self.worker = None
+        self.output_worker = None
+        self.output_error = None
+        self.output_count = 0
+        self._declarations = None
+        self.declarations = None
+        self.exhausted = False
+        self.exited = False
+
+    def _put(self, value):
+        while not self.stop.is_set() and (value[0] != "chunk" or not self.output_abort.is_set()):
+            try:
+                self.events.put(value, timeout=0.05)
+                return
+            except queue.Full:
+                pass
+
+    def _register(self, process):
+        with self.process_lock:
+            self.processes.append(process)
+            if self.stop.is_set():
+                try:
+                    os.killpg(process.proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+    def __enter__(self):
+        if self.worker is not None:
+            raise DecodeError("Native audio stream cannot be reused")
+
+        def work():
+            try:
+                result = _native_audio_stream(*self.args, self, self.ffmpeg_path)
+                self._put(("done", result))
+            except BaseException as exc:
+                if self.output_error is not None and str(exc) in {
+                    "Native audio subprocess failed",
+                    "Native audio output failed",
+                }:
+                    exc = self.output_error
+                self._put(("error", exc))
+
+        self.worker = threading.Thread(target=work, name="reprise-audio-stream", daemon=True)
+        self.worker.start()
+        return self
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.exhausted:
+            raise StopIteration
+        if self.worker is None or self.exited:
+            raise DecodeError("Native audio stream is not active")
+        while True:
+            if self.cancel():
+                raise Cancelled("Analysis cancelled")
+            if self.pause():
+                time.sleep(0.05)
+                continue
+            try:
+                kind, value = self.events.get(timeout=0.05)
+                break
+            except queue.Empty:
+                if not self.worker.is_alive():
+                    raise DecodeError("Native audio stream ended without final verification") from None
+        if kind == "error":
+            raise value
+        if kind == "done":
+            self._declarations = value
+            self.exhausted = True
+            raise StopIteration
+        return value
+
+    def _start_output(self, decoder, expected, rate, layout, ids, start):
+        import numpy as np
+
+        channels = len(ids)
+        chunk_bytes = self.chunk_samples * channels * 8
+        if chunk_bytes > MAX_OUTPUT:
+            raise DecodeError("Native audio chunk exceeds resource limit")
+
+        def drain():
+            try:
+                buffer = bytearray()
+                total = 0
+                while True:
+                    part = os.read(decoder.proc.stdout.fileno(), min(65536, expected - total + 1))
+                    if not part:
+                        break
+                    total += len(part)
+                    if total > expected:
+                        raise DecodeError("Decode output exceeded resource limit")
+                    buffer.extend(part)
+                    while len(buffer) >= chunk_bytes:
+                        payload = bytes(buffer[:chunk_bytes])
+                        del buffer[:chunk_bytes]
+                        samples = np.frombuffer(payload, dtype="<f8").reshape(-1, channels)
+                        if not np.isfinite(samples).all():
+                            raise DecodeError("Native audio contains nonfinite samples")
+                        first = self.output_count
+                        self.output_count += len(samples)
+                        self._put(
+                            (
+                                "chunk",
+                                NativeAudioChunk(
+                                    samples,
+                                    rate,
+                                    layout,
+                                    ids,
+                                    (start + Fraction(first, rate)) * 1000,
+                                    (start + Fraction(self.output_count, rate)) * 1000,
+                                ),
+                            )
+                        )
+                        if self.stop.is_set():
+                            return
+                if total != expected or len(buffer) % (channels * 8):
+                    raise DecodeError("Native audio output does not cover the window")
+                if buffer:
+                    samples = np.frombuffer(bytes(buffer), dtype="<f8").reshape(-1, channels)
+                    if not np.isfinite(samples).all():
+                        raise DecodeError("Native audio contains nonfinite samples")
+                    first = self.output_count
+                    self.output_count += len(samples)
+                    self._put(
+                        (
+                            "chunk",
+                            NativeAudioChunk(
+                                samples,
+                                rate,
+                                layout,
+                                ids,
+                                (start + Fraction(first, rate)) * 1000,
+                                (start + Fraction(self.output_count, rate)) * 1000,
+                            ),
+                        )
+                    )
+            except BaseException as exc:
+                self.output_error = exc
+                try:
+                    os.killpg(decoder.proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+        self.output_worker = threading.Thread(target=drain, name="reprise-audio-output", daemon=True)
+        self.output_worker.start()
+
+    def _finish_output(self, expected, channels):
+        deadline = time.monotonic() + 30
+        while self.output_worker.is_alive():
+            if self.stop.is_set() or self.cancel():
+                raise Cancelled("Analysis cancelled")
+            if self.pause() or self.events.full():
+                deadline = time.monotonic() + 30
+            elif time.monotonic() > deadline:
+                raise DecodeError("Native audio output did not terminate")
+            self.output_worker.join(timeout=0.05)
+        if self.output_error is not None:
+            raise DecodeError("Native audio output failed") from self.output_error
+        if self.output_count * channels * 8 != expected:
+            raise DecodeError("Incomplete native audio window")
+
+    def __exit__(self, exc_type, exc, tb):
+        self.exited = True
+        if exc_type is not None or not self.exhausted:
+            self.stop.set()
+            self.output_abort.set()
+            with self.process_lock:
+                for process in self.processes:
+                    if process.proc.poll() is not None:
+                        continue
+                    try:
+                        os.killpg(process.proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+        if self.worker is not None:
+            self.worker.join()
+        if exc_type is not None:
+            return False
+        if not self.exhausted or self.worker is None or self.worker.is_alive() or self._declarations is None:
+            raise DecodeError("Native audio stream not exhausted or verified")
+        while self.pause():
+            if self.cancel():
+                raise Cancelled("Analysis cancelled")
+            time.sleep(0.05)
+        if self.cancel():
+            raise Cancelled("Analysis cancelled")
+        check_current(self.args[0])
+        if self.cancel():
+            raise Cancelled("Analysis cancelled")
+        self.declarations = self._declarations
+        return False
+
+
+def native_audio_chunks(
+    media, stream_index, start_ms, end_ms, cancel_check, pause_check, threads, *, chunk_samples=480000, ffmpeg_path=None
+):
+    return NativeAudioChunkReader(
+        media, stream_index, start_ms, end_ms, cancel_check, pause_check, threads, chunk_samples, ffmpeg_path
+    )
+
+
+def native_audio_pcm(media, stream_index, start_ms, end_ms, cancel_check, pause_check, threads, *, ffmpeg_path=None):
+    """Collect a bounded native window after complete stream verification."""
+    import numpy as np
+
+    chunks = []
+    with native_audio_chunks(
+        media, stream_index, start_ms, end_ms, cancel_check, pause_check, threads, ffmpeg_path=ffmpeg_path
+    ) as reader:
+        size = 0
+        for chunk in reader:
+            size += chunk.data.nbytes
+            if size > MAX_OUTPUT:
+                raise DecodeError("Native audio window exceeds resource limit")
+            chunks.append(chunk)
+    if not chunks:
+        raise DecodeError("Incomplete native audio window")
+    data = chunks[0].data if len(chunks) == 1 else np.concatenate([chunk.data for chunk in chunks])
+    data.setflags(write=False)
+    return NativeAudio(
+        data,
+        chunks[0].sample_rate,
+        chunks[0].channel_layout,
+        chunks[0].channel_ids,
+        chunks[0].support_start_ms,
+        chunks[-1].support_end_ms,
+        reader.declarations,
+    )
+
+
+def _native_audio_stream(media, stream_index, start_ms, end_ms, cancel_check, pause_check, threads, sink, ffmpeg_path):
     """Return all native channels on inward sample boundaries, or fail closed.
 
     Audit source timestamps at their native time base and check the very same
     FFmpeg decode's sample rate, channel layout, frame timing and count. A
     container timestamp can only attest continuity to its own tick precision.
     """
-    import numpy as np
+    original_cancel, original_pause = cancel_check, pause_check
+
+    def cancel_check():
+        return sink.stop.is_set() or original_cancel()
+
+    def pause_check():
+        return original_pause() or sink.events.full()
 
     start_ms, end_ms = Fraction(start_ms), Fraction(end_ms)
     if not (0 <= start_ms < end_ms) or threads < 1:
         raise DecodeError("Invalid native audio window")
     check_current(media)
     base = [
-        "ffprobe",
+        paired_ffprobe(ffmpeg_path),
         "-v",
         "error",
         "-err_detect",
@@ -913,191 +1346,222 @@ def native_audio_pcm(media, stream_index, start_ms, end_ms, cancel_check, pause_
         raise DecodeError("Missing or unsupported native audio layout or timing") from exc
     if not 0 < rate <= 192000 or len(ids) != channels or tb <= 0:
         raise DecodeError("Unsupported native audio rate or layout")
-    requested_samples = (end_ms - start_ms) * rate / 1000
-    upper = -(-requested_samples.numerator // requested_samples.denominator)
-    if upper * channels * 8 > MAX_OUTPUT:
-        raise DecodeError("Native audio window exceeds resource limit")
-    # Audit from the beginning: atrim's sample ordinals then refer to the
-    # exact same decoded sample sequence. Read one extra second for a frame
-    # that straddles the requested end; both metadata and output are bounded.
-    audit_end = origin + end_ms / 1000 + 1
-    interval = f"%{float(audit_end):.6f}"
     audit_cmd = base + [
         "-read_intervals",
-        interval,
+        f"%{float(origin + end_ms / 1000 + 1):.6f}",
         "-show_frames",
         "-show_entries",
-        "frame=pts,nb_samples,channels,channel_layout,decode_error_flags",
+        "frame=pts,nb_samples,channels,channel_layout,decode_error_flags:frame_side_data=",
         "-of",
-        "json",
+        "compact=p=0",
         media.canonical_path,
     ]
-    audit = json.loads(run(audit_cmd, cancel_check, pause_check, 16 * 1024 * 1024, reject_stderr=True))
-    frames = audit.get("frames", [])
-    if not isinstance(frames, list) or len(frames) > 100000:
-        raise DecodeError("Native audio audit record limit exceeded or invalid")
-    if not frames:
-        raise DecodeError("Missing native audio timing")
+    probe_stream = _AudioLines(audit_cmd, decoder=False)
+    sink._register(probe_stream)
+    processes = [probe_stream]
+    decoder = None
+    count = 0
+    first = None
+    separator_count = 0
     try:
-        first = int(frames[0]["pts"]) * tb - origin
-        if (first * rate).denominator != 1:
-            raise DecodeError("Native audio start is not on the media sample grid")
-        count = 0
-        for frame in frames:
-            pts, n = int(frame["pts"]) * tb - origin, int(frame["nb_samples"])
-            if (
-                n <= 0
-                or int(frame["channels"]) != channels
-                or frame["channel_layout"] != layout
-                or int(frame.get("decode_error_flags", 0))
-            ):
-                raise DecodeError("Dynamic or invalid native audio format")
-            # Quantization is inherent in container timestamps. The source PTS
-            # must be the nearest tick to the uninterrupted native sample clock.
-            if abs(pts - (first + Fraction(count, rate))) > tb / 2:
-                raise DecodeError("Native audio timestamps are discontinuous")
-            count += n
-    except (KeyError, TypeError, ValueError) as exc:
-        raise DecodeError("Missing native audio frame timing or layout") from exc
-    start_fraction = (start_ms / 1000 - first) * rate
-    first_sample = -(-start_fraction.numerator // start_fraction.denominator)
-    end_fraction = (end_ms / 1000 - first) * rate
-    last_sample = end_fraction.numerator // end_fraction.denominator
-    if first_sample < 0 or last_sample <= first_sample or last_sample > count:
-        raise DecodeError("Native audio does not continuously cover the window")
-    expected = (last_sample - first_sample) * channels * 8
-    if expected > MAX_OUTPUT:
-        raise DecodeError("Native audio window exceeds resource limit")
-    check_current(media)
-    command = [
-        "ffmpeg",
-        "-nostdin",
-        "-nostats",
-        "-hide_banner",
-        "-loglevel",
-        "level+info",
-        "-xerror",
-        "-err_detect",
-        "explode",
-        "-threads",
-        str(threads),
-        "-copyts",
-        "-start_at_zero",
-        "-i",
-        media.canonical_path,
-        "-map",
-        f"0:{stream_index}",
-        "-vn",
-        "-sn",
-        "-dn",
-        "-af",
-        f"asettb=1/{rate},ashowinfo,atrim=start_sample={first_sample}:end_sample={last_sample}",
-        "-c:a",
-        "pcm_f64le",
-        "-f",
-        "f64le",
-        "-",
-    ]
-    data, messages = run(command, cancel_check, pause_check, expected, capture_stderr=True)
-    if len(data) != expected:
-        raise DecodeError("Incomplete native audio window")
-    lines = messages.decode("utf-8", "replace").splitlines()
-    if any(re.match(r"^(?:\[[^\]\r\n]*\]\s*)?\[(?:warning|error|fatal|panic)\]", line) for line in lines):
-        raise DecodeError("Native audio decoder reported an error")
-    decoded = []
-    sample_format = None
-    frame_declarations = None
-    uniform_declarations = None
-    initial_service = None
-    service_count = 0
-    frame_has_service = False
-    audio_filter_id = None
 
-    def finish_frame():
-        nonlocal uniform_declarations
-        if frame_declarations is None:
-            return
-        if uniform_declarations is None:
-            uniform_declarations = frame_declarations
-        elif frame_declarations != uniform_declarations:
-            raise DecodeError("Native audio frame declarations changed")
+        def audit_frames():
+            nonlocal first, count, separator_count
+            while True:
+                line = probe_stream.next_line(processes, cancel_check, pause_check)
+                if line is None:
+                    return
+                if not line:
+                    separator_count += 1
+                    if separator_count > 8:
+                        raise DecodeError("Native audio probe protocol has excess separators")
+                    continue
+                separator_count = 0
+                try:
+                    fields = {}
+                    for entry in line.decode("utf-8", "strict").rstrip("|").split("|"):
+                        key, value = entry.split("=", 1)
+                        if key in fields or key not in {
+                            "pts",
+                            "nb_samples",
+                            "channels",
+                            "channel_layout",
+                            "decode_error_flags",
+                        }:
+                            raise ValueError("invalid frame field")
+                        fields[key] = value
+                    pts = int(fields["pts"]) * tb - origin
+                    n = int(fields["nb_samples"])
+                    if (
+                        n <= 0
+                        or int(fields["channels"]) != channels
+                        or fields["channel_layout"] != layout
+                        or int(fields.get("decode_error_flags", 0))
+                    ):
+                        raise DecodeError("Dynamic or invalid native audio format")
+                    if first is None:
+                        first = pts
+                        if (first * rate).denominator != 1:
+                            raise DecodeError("Native audio start is not on the media sample grid")
+                    if abs(pts - (first + Fraction(count, rate))) > tb / 2:
+                        raise DecodeError("Native audio timestamps are discontinuous")
+                    count += n
+                    yield pts, n
+                except (KeyError, TypeError, ValueError, UnicodeError) as exc:
+                    raise DecodeError("Missing native audio frame timing or layout") from exc
 
-    for line in lines:
-        if "Parsed_ashowinfo_" not in line:
-            continue
-        source = re.fullmatch(r"\[Parsed_ashowinfo_(\d+)\s+@[^]]+\]\s+\[info\]\s?(.*)", line)
-        if not source:
-            raise DecodeError("Malformed native audio decoder metadata")
-        if audio_filter_id is None:
-            audio_filter_id = source.group(1)
-        elif source.group(1) != audio_filter_id:
-            raise DecodeError("Ambiguous native audio metadata source")
-        text = source.group(2).strip()
-        if text.startswith("side data - "):
-            if frame_declarations is None:
-                raise DecodeError("Native audio declaration precedes its frame")
-            name, value = _native_audio_side_record(text)
-            if name == "audio_service_initial":
-                if frame_has_service or frame_declarations or (initial_service is None and len(decoded) != 1):
-                    raise DecodeError("Ambiguous native audio service declaration")
-                if initial_service is not None and value != initial_service:
-                    raise DecodeError("Native audio service declaration changed")
-                initial_service = value
-                frame_has_service = True
-                service_count += 1
-            else:
-                if name == "matrix_encoding" and "downmix" in frame_declarations:
-                    raise DecodeError("Ambiguous native audio declaration order")
-                if name in frame_declarations:
-                    raise DecodeError("Duplicate native audio frame declaration")
-                frame_declarations[name] = value
-            continue
-        finish_frame()
-        frame_declarations = {}
+        audit = audit_frames()
+        first_frame = next(audit, None)
+        if first_frame is None or first is None:
+            raise DecodeError("Missing native audio timing")
+        start_fraction = (start_ms / 1000 - first) * rate
+        first_sample = -(-start_fraction.numerator // start_fraction.denominator)
+        end_fraction = (end_ms / 1000 - first) * rate
+        last_sample = end_fraction.numerator // end_fraction.denominator
+        if first_sample < 0 or last_sample <= first_sample:
+            raise DecodeError("Native audio does not continuously cover the window")
+        expected = (last_sample - first_sample) * channels * 8
+        check_current(media)
+        command = [
+            ffmpeg_path,
+            "-nostdin",
+            "-nostats",
+            "-hide_banner",
+            "-loglevel",
+            "level+info",
+            "-xerror",
+            "-err_detect",
+            "explode",
+            "-threads",
+            str(threads),
+            "-copyts",
+            "-start_at_zero",
+            "-i",
+            media.canonical_path,
+            "-map",
+            f"0:{stream_index}",
+            "-vn",
+            "-sn",
+            "-dn",
+            "-af",
+            f"asettb=1/{rate},ashowinfo,atrim=start_sample={first_sample}:end_sample={last_sample}",
+            "-c:a",
+            "pcm_f64le",
+            "-f",
+            "f64le",
+            "-",
+        ]
+        decoder = _AudioLines(command, decoder=True, output=subprocess.PIPE)
+        processes.append(decoder)
+        sink._register(decoder)
+        sink._start_output(decoder, expected, rate, layout, ids, first + Fraction(first_sample, rate))
+        decoded = 0
+        decoded_samples = 0
+        sample_format = None
+        frame_declarations = None
+        uniform_declarations = None
+        initial_service = None
+        service_count = 0
         frame_has_service = False
-        match = re.match(
-            r"\bn:(\d+)\s+pts:(-?\d+).*?fmt:(\S+)\s+channels:(\d+)\s+chlayout:(\S+)\s+rate:(\d+)\s+nb_samples:(\d+)",
-            text,
-        )
-        if not match:
-            raise DecodeError("Malformed native audio decoder metadata")
-        ordinal, pts, actual_format, actual_channels, actual_layout, actual_rate, n = match.groups()
-        if sample_format is not None and actual_format != sample_format:
-            raise DecodeError("Dynamic native audio sample format")
-        sample_format = actual_format
-        i = len(decoded)
-        if (
-            int(ordinal) != i
-            or i >= len(frames)
-            or int(actual_channels) != channels
-            or actual_layout != layout
-            or int(actual_rate) != rate
-            or int(n) != int(frames[i]["nb_samples"])
-        ):
-            raise DecodeError("Native audio decoder format or frame count changed")
-        raw_pts = int(frames[i]["pts"]) * tb - origin
-        if abs(Fraction(int(pts), rate) - raw_pts) > tb / 2 + Fraction(1, rate):
-            raise DecodeError("Native audio decoder timeline disagrees with audit")
-        decoded.append(int(n))
-    finish_frame()
-    declarations = dict(uniform_declarations or {})
-    if initial_service is not None:
-        if service_count not in (1, len(decoded)):
-            raise DecodeError("Native audio service declaration has ambiguous scope")
-        scope = "audio_service_per_frame" if service_count > 1 else "audio_service_initial"
-        declarations[scope] = initial_service
-    if not decoded or sum(decoded) < last_sample:
-        raise DecodeError("Native audio decoder did not cover the window")
-    samples = np.frombuffer(data, dtype="<f8").reshape(-1, channels)
-    if not np.isfinite(samples).all():
-        raise DecodeError("Native audio contains nonfinite samples")
-    check_current(media)
-    return NativeAudio(
-        samples,
-        rate,
-        layout,
-        ids,
-        (first + Fraction(first_sample, rate)) * 1000,
-        (first + Fraction(last_sample, rate)) * 1000,
-        tuple(sorted(declarations.items())),
-    )
+        audio_filter_id = None
+        other_bytes = 0
+
+        def finish_frame():
+            nonlocal uniform_declarations
+            if frame_declarations is None:
+                return
+            if uniform_declarations is None:
+                uniform_declarations = frame_declarations
+            elif frame_declarations != uniform_declarations:
+                raise DecodeError("Native audio frame declarations changed")
+
+        while True:
+            raw = decoder.next_line(processes, cancel_check, pause_check)
+            if raw is None:
+                break
+            line = raw.decode("utf-8", "replace")
+            if re.match(r"^(?:\[[^\]\r\n]*\]\s*)?\[(?:warning|error|fatal|panic)\]", line):
+                raise DecodeError("Native audio decoder reported an error")
+            if "Parsed_ashowinfo_" not in line:
+                other_bytes += len(raw)
+                if other_bytes > 16 * 1024 * 1024:
+                    raise DecodeError("Native audio diagnostics exceed resource limit")
+                continue
+            source = re.fullmatch(r"\[Parsed_ashowinfo_(\d+)\s+@[^]]+\]\s+\[info\]\s?(.*)", line)
+            if not source:
+                raise DecodeError("Malformed native audio decoder metadata")
+            if audio_filter_id is None:
+                audio_filter_id = source.group(1)
+            elif source.group(1) != audio_filter_id:
+                raise DecodeError("Ambiguous native audio metadata source")
+            text = source.group(2).strip()
+            if text.startswith("side data - "):
+                if frame_declarations is None:
+                    raise DecodeError("Native audio declaration precedes its frame")
+                name, value = _native_audio_side_record(text)
+                if name == "audio_service_initial":
+                    if frame_has_service or frame_declarations or (initial_service is None and decoded != 1):
+                        raise DecodeError("Ambiguous native audio service declaration")
+                    if initial_service is not None and value != initial_service:
+                        raise DecodeError("Native audio service declaration changed")
+                    initial_service = value
+                    frame_has_service = True
+                    service_count += 1
+                else:
+                    if name == "matrix_encoding" and "downmix" in frame_declarations:
+                        raise DecodeError("Ambiguous native audio declaration order")
+                    if name in frame_declarations:
+                        raise DecodeError("Duplicate native audio frame declaration")
+                    frame_declarations[name] = value
+                continue
+            finish_frame()
+            frame_declarations = {}
+            frame_has_service = False
+            match = re.match(
+                r"\bn:(\d+)\s+pts:(-?\d+).*?fmt:(\S+)\s+channels:(\d+)\s+chlayout:(\S+)\s+rate:(\d+)\s+nb_samples:(\d+)",
+                text,
+            )
+            if not match:
+                raise DecodeError("Malformed native audio decoder metadata")
+            ordinal, pts, actual_format, actual_channels, actual_layout, actual_rate, n = match.groups()
+            if sample_format is not None and actual_format != sample_format:
+                raise DecodeError("Dynamic native audio sample format")
+            sample_format = actual_format
+            audited = first_frame if decoded == 0 else next(audit, None)
+            if (
+                audited is None
+                or int(ordinal) != decoded
+                or int(actual_channels) != channels
+                or actual_layout != layout
+                or int(actual_rate) != rate
+                or int(n) != audited[1]
+            ):
+                raise DecodeError("Native audio decoder format or frame count changed")
+            if abs(Fraction(int(pts), rate) - audited[0]) > tb / 2 + Fraction(1, rate):
+                raise DecodeError("Native audio decoder timeline disagrees with audit")
+            decoded += 1
+            decoded_samples += int(n)
+        finish_frame()
+        decoder.finish(processes, cancel_check, pause_check)
+        for _ in audit:
+            pass
+        probe_stream.finish(processes, cancel_check, pause_check)
+        if not decoded or decoded_samples < last_sample or count < last_sample:
+            raise DecodeError("Native audio decoder did not cover the window")
+        sink._finish_output(expected, channels)
+        declarations = dict(uniform_declarations or {})
+        if initial_service is not None:
+            if service_count not in (1, decoded):
+                raise DecodeError("Native audio service declaration has ambiguous scope")
+            scope = "audio_service_per_frame" if service_count > 1 else "audio_service_initial"
+            declarations[scope] = initial_service
+        check_current(media)
+        return tuple(sorted(declarations.items()))
+    except BaseException:
+        sink.output_abort.set()
+        raise
+    finally:
+        for process in reversed(processes):
+            process.close()
+        if sink.output_worker is not None and sink.output_worker.ident is not None:
+            sink.output_worker.join(timeout=1)

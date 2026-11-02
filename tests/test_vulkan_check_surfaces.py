@@ -80,7 +80,7 @@ class TestBellCard:
         assert body.index("What this means") < body.index("<strong>Why</strong>") < body.index("What to do")
         assert "Credits text is read on the CPU: just as accurate, slower." in body
         assert "Dolby Vision Profile 5 thumbnails get a green and purple tint." in body
-        assert "Previews and intros still use the GPU." in body
+        assert "GPU acceleration depends on the FFmpeg build and device; the bundled build is CPU-focused." in body
         assert "Intel&#39;s Vulkan driver needs softpin (Linux 4.5 or newer)." in body
         assert "Nothing, if the CPU keeps up. A host OS update with a newer kernel fixes it." in body
         assert "Nothing in the container can add it" not in body

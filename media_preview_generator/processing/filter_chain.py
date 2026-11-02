@@ -61,27 +61,14 @@ def build_dv5_vf(
 ) -> str:
     """Return the ``-vf`` filter string for a DV Profile 5 thumbnail run.
 
-    Three vendor variants share the same high-level shape:
-
-        fps-drop → upload-to-GPU → tonemap → hwdownload → format → scale
-
-    but differ in the GPU hop and tonemap filter:
-
-    * ``opencl_dv5_intel``   – VAAPI → OpenCL hwmap, ``tonemap_opencl``
-      (Jellyfin's DV-aware patch).  The only path that handles DV5 RPU on
-      an Intel iGPU without spilling to libplacebo on a different device.
-    * ``libplacebo_vaapi``   – VAAPI → Vulkan hwmap (DMA-BUF), libplacebo.
-      Used for AMD Radeon and (historically) Intel before we moved Intel
-      to OpenCL because Mesa ANV's Vulkan interop is broken on DV5.
-    * ``libplacebo_dv5``     – CPU → Vulkan hwupload, libplacebo.  Used
-      for NVIDIA (where CUDA→Vulkan interop is not available in FFmpeg)
-      and for the software-decode + libplacebo retry fallback.
+    VAAPI can map frames to a capable OpenCL or Vulkan filter; the generic
+    libplacebo path uploads software-decoded or NVIDIA-decoded frames.
 
     ``fps`` is placed first across all variants, which is:
       * required on NVIDIA Turing (fps-inside-libplacebo exhausts the
         Vulkan image allocator with VK_ERROR_OUT_OF_DEVICE_MEMORY at
         4K p010 — see commit 70cba4e);
-      * significantly faster on Intel OpenCL (17× vs 2.7× measured); and
+      * compatible with the generic and VAAPI paths; and
       * RPU-safe because fps only drops frames on timestamps — it never
         touches pixel data or side-data.
 
@@ -95,14 +82,10 @@ def build_dv5_vf(
     fps = build_fps_filter(fps_value)
     if path_kind == DV5_PATH_INTEL_OPENCL:
         return (
-            f"{fps},"
-            "setparams=color_primaries=bt2020:"
-            "color_trc=smpte2084:colorspace=bt2020nc,"
+            f"{fps},setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc,"
             "hwmap=derive_device=opencl:mode=read,"
-            f"tonemap_opencl=format=nv12:p=bt709:t=bt709:"
-            f"m=bt709:tonemap={tonemap_algorithm}"
-            f":peak=100:desat=0,"
-            f"hwdownload,format=nv12,format=yuv420p,{base_scale}"
+            f"tonemap_opencl=apply_dovi=1:format=nv12:p=bt709:t=bt709:m=bt709:tonemap={tonemap_algorithm}"
+            f":peak=100:desat=0,hwdownload,format=nv12,format=yuv420p,{base_scale}"
         )
     libplacebo_opts = f"libplacebo=tonemapping={tonemap_algorithm}:format=yuv420p:contrast=1.3:saturation=1.3"
     if path_kind == DV5_PATH_VAAPI_VULKAN:

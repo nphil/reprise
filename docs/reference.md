@@ -912,11 +912,8 @@ body must be a JSON object with a path"}`, `{"error": "Path is not a file inside
 #### GET /api/markers/sources/local
 
 **Response:** `200` with `{"season_audio": {"available", "ffmpeg", "message"}, "credits_text": {"available",
-"message"}}` — season audio matching needs an ffmpeg with the chromaprint muxer (jellyfin-ffmpeg in the amd64
-image; the arm64 image has none). `ffmpeg` is the binary found (`null` when none), and `message` says why it isn't
-available (`""` when it is): no ffmpeg lists the muxer, or one didn't answer the check (then it is asked again
-after 10 minutes), e.g.
-`{"season_audio": {"available": true, "ffmpeg": "/usr/lib/jellyfin-ffmpeg/ffmpeg", "message": ""}}`.
+"message"}}` — season audio matching needs an ffmpeg with the chromaprint muxer, included in the bundled native build. `ffmpeg` is the selected binary (`null` when unavailable); `message` explains whether the muxer is missing or the check did not answer (retried after 10 minutes), e.g.
+`{"season_audio": {"available": true, "ffmpeg": "/usr/local/bin/ffmpeg", "message": ""}}`.
 
 `credits_text.available` is `false` when ONNX Runtime/OpenCV aren't installed, the text detection or recognition
 model isn't at its expected path or isn't the expected file, or the check didn't answer (checked again after 10 minutes; arm64

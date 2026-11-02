@@ -45,7 +45,7 @@ class TestQuickActions:
     def test_quick_actions_shows_four_tiles_and_no_libraries_tile(self, authed_page: Page, app_url: str) -> None:
         mock_dashboard_defaults(authed_page)
         mock_worker_groups(authed_page)
-        authed_page.goto(app_url + "/")
+        authed_page.goto(app_url + "/dashboard")
         quick = authed_page.locator(".dashboard-quick-card")
         expect(quick.locator(".dash-tile-link")).to_have_count(4)
         expect(quick.locator("#libraryList")).to_have_count(0)
@@ -60,7 +60,7 @@ class TestQuickActions:
     ) -> None:
         mock_dashboard_defaults(authed_page)
         mock_worker_groups(authed_page)
-        authed_page.goto(app_url + "/")
+        authed_page.goto(app_url + "/dashboard")
         tile = authed_page.locator("#quickRunNextSchedule")
         expect(tile).to_be_disabled()
         expect(tile).to_contain_text("No schedules")
@@ -77,7 +77,7 @@ class TestQuickActions:
             _fulfill_json(route, {"success": True})
 
         authed_page.route("**/api/schedules/*/run", run)
-        authed_page.goto(app_url + "/")
+        authed_page.goto(app_url + "/dashboard")
         tile = authed_page.locator("#quickRunNextSchedule")
         expect(tile).to_contain_text("Run Nightly scan now")
         tile.click()
@@ -93,7 +93,7 @@ class TestQuickActions:
         authed_page.route(
             "**/api/schedules/*/run", lambda r: r.fulfill(status=500, json={"error": "Scheduler is down"})
         )
-        authed_page.goto(app_url + "/")
+        authed_page.goto(app_url + "/dashboard")
         authed_page.locator("#quickRunNextSchedule").click()
         expect(authed_page.locator(".toast", has_text="Scheduler is down")).to_be_visible()
 
@@ -103,7 +103,7 @@ class TestQuickActions:
         mock_dashboard_defaults(authed_page)
         mock_worker_groups(authed_page)
         authed_page.route("**/api/webhooks/pending", lambda r: _fulfill_json(r, {"pending": [{"id": 1}, {"id": 2}]}))
-        authed_page.goto(app_url + "/")
+        authed_page.goto(app_url + "/dashboard")
         pill = authed_page.locator("#quickWebhookPending")
         expect(pill).to_have_text("2")
         authed_page.route("**/api/webhooks/pending", lambda r: _fulfill_json(r, {"pending": []}))
@@ -117,7 +117,7 @@ class TestWorkerCardLogs:
         mock_dashboard_defaults(page)
         mock_worker_groups(page)
         page.route("**/api/jobs/workers", lambda r: _fulfill_json(r, {"workers": [worker]}))
-        page.goto(app_url + "/")
+        page.goto(app_url + "/dashboard")
 
     def test_running_worker_card_has_a_logs_button_that_opens_that_jobs_logs(
         self, authed_page: Page, app_url: str
@@ -145,7 +145,7 @@ class TestLongHardwareNames:
         groups["state"]["groups"][1]["name"] = "GPU video"
         groups["state"]["hardware"][0]["name"] = LONG_DEVICE
         authed_page.set_viewport_size({"width": 1440, "height": 900})
-        authed_page.goto(app_url + "/")
+        authed_page.goto(app_url + "/dashboard")
         # The System card line is read-only and summarises counts only, so the device name lives on the member row.
         expect(authed_page.locator('[data-system-group="gpu"] .pool-lbl small')).to_have_text("1 GPU")
         subtitle = authed_page.locator('[data-member-block="gpu:m1"] .devname .nm')
@@ -163,7 +163,7 @@ class TestLongHardwareNames:
         groups["state"]["groups"][1]["name"] = "UHD Graphics 770"
         groups["state"]["hardware"][0]["name"] = LONG_DEVICE
         authed_page.set_viewport_size({"width": 390, "height": 844})
-        authed_page.goto(app_url + "/")
+        authed_page.goto(app_url + "/dashboard")
         expect(authed_page.locator('[data-member-block="gpu:m1"] .devname .nm')).to_have_text(LONG_DEVICE)
         assert authed_page.evaluate("document.documentElement.scrollWidth") <= 390
 
@@ -188,7 +188,7 @@ class TestWorkerGroupHeaderStaysInItsColumn:
             }
         )
         authed_page.set_viewport_size({"width": width, "height": 900})
-        authed_page.goto(app_url + "/")
+        authed_page.goto(app_url + "/dashboard")
         expect(authed_page.locator('[data-member-block="gpu:m1"] .devname .nm')).to_have_text(LONG_DEVICE)
         boxes = authed_page.evaluate(
             """() => [...document.querySelectorAll('#workerGroupLiveRows > .worker-group-section')].map(section => {
@@ -220,7 +220,7 @@ class TestWorkerGroupHeaderStaysInItsColumn:
         groups["state"]["hardware"][0]["name"] = LONG_DEVICE
         groups["state"]["groups"].append({**groups["state"]["groups"][0], "id": "cpu-loud", "name": "CPU loudness"})
         authed_page.set_viewport_size({"width": 390, "height": 900})
-        authed_page.goto(app_url + "/")
+        authed_page.goto(app_url + "/dashboard")
         hardware = authed_page.locator('[data-member-block="gpu:m1"] .devname .nm')
         expect(hardware).to_have_attribute("title", LONG_DEVICE)
         assert hardware.evaluate("e => getComputedStyle(e).textOverflow") == "ellipsis"
@@ -244,7 +244,7 @@ class TestQueuedProgressText:
         }
         page.route("**/api/jobs?**", lambda r: _fulfill_json(r, {"jobs": [job], "total": 1, "page": 1}))
         page.set_viewport_size({"width": 1440, "height": 900})
-        page.goto(app_url + "/")
+        page.goto(app_url + "/dashboard")
 
     @pytest.mark.parametrize(
         ("message", "short"),
@@ -306,7 +306,7 @@ class TestExpandedJobRowLayout:
         }
         page.route("**/api/jobs?**", lambda r: _fulfill_json(r, {"jobs": [job], "total": 1, "page": 1}))
         page.set_viewport_size({"width": width, "height": 900})
-        page.goto(app_url + "/")
+        page.goto(app_url + "/dashboard")
         page.locator(".job-row .exp, .job-row .job-details-toggle").first.click()
         expect(page.locator(".job-files-detail:not(.d-none) .queue-file-row").first).to_be_visible()
 
@@ -365,7 +365,7 @@ class TestQueueColumns:
         job = self._job(message)
         page.route("**/api/jobs?**", lambda r: _fulfill_json(r, {"jobs": [job], "total": 1, "page": 1}))
         page.set_viewport_size({"width": width, "height": 900})
-        page.goto(app_url + "/")
+        page.goto(app_url + "/dashboard")
 
     @pytest.mark.parametrize("width", [1440, 1920])
     def test_id_column_is_narrow_and_the_expander_sits_beside_it(

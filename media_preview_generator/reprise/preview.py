@@ -13,6 +13,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..gpu.ffmpeg_capabilities import ffmpeg_binary
 from . import identity
 from . import media as decoder
 from .models import MediaVersion
@@ -100,13 +101,16 @@ def _encode(command: list[str], path: Path, cancel_check, pause_check) -> None:
     _run(command, path, cancel_check, pause_check, size_limit=MAX_PREVIEW_BYTES)
 
 
-def _probe(media: MediaVersion, cache_dir: Path, cancel_check, pause_check) -> tuple[int, list[tuple[str, int]]]:
+def _probe(
+    media: MediaVersion, cache_dir: Path, cancel_check, pause_check, ffmpeg_path
+) -> tuple[int, list[tuple[str, int]]]:
     fd, name = tempfile.mkstemp(prefix=".reprise-probe-", suffix=".json", dir=cache_dir)
     os.close(fd)
     output = Path(name)
     try:
         _run(
-            ["ffprobe", "-v", "error", "-show_streams", "-of", "json", "-o", str(output), media.canonical_path],
+            [decoder.paired_ffprobe(ffmpeg_path), "-v", "error", "-show_streams", "-of", "json", "-o",
+             str(output), media.canonical_path],
             output,
             cancel_check,
             pause_check,
@@ -148,6 +152,7 @@ def build_preview(
     cancel_check=None,
     pause_check=None,
     ffmpeg_threads: int = 1,
+    ffmpeg_path: str | None = None,
 ) -> PreviewArtifact:
     """Encode one selected track to a reusable H.264/AAC MP4, never altering its source.
 
@@ -167,13 +172,14 @@ def build_preview(
         raise ValueError("A selected audio stream is required")
     if isinstance(ffmpeg_threads, bool) or not isinstance(ffmpeg_threads, int) or not 1 <= ffmpeg_threads <= 4:
         raise ValueError("ffmpeg_threads must be between 1 and 4")
+    ffmpeg_path = ffmpeg_path or ffmpeg_binary()
     cancel = cancel_check or (lambda: False)
     pause = pause_check or (lambda: False)
     _cancelled(cancel)
     _current(media)
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    video, tracks = _probe(media, cache_dir, cancel, pause)
+    video, tracks = _probe(media, cache_dir, cancel, pause, ffmpeg_path)
     matches = [track for track in tracks if track[0] == audio_stream_id]
     if len(matches) != 1:
         raise decoder.DecodeError("Selected audio stream is not mapped to this media version")
@@ -194,7 +200,7 @@ def build_preview(
     temp = Path(name)
     try:
         command = [
-            "ffmpeg",
+            ffmpeg_path,
             "-nostdin",
             "-v",
             "error",

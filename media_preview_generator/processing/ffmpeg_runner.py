@@ -353,12 +353,9 @@ def create_ffmpeg_runner(
         )
         use_gpu = effective_gpu is not None
         use_intel_opencl_dv5 = (
-            init_vulkan
-            and use_gpu
-            and effective_gpu == "INTEL"
-            and effective_gpu_device_path is not None
-            and effective_gpu_device_path.startswith("/dev/dri/")
-            and not disable_vaapi_dv5
+            init_vulkan and use_gpu and effective_gpu == "INTEL"
+            and effective_gpu_device_path is not None and effective_gpu_device_path.startswith("/dev/dri/")
+            and path_kind == DV5_PATH_INTEL_OPENCL and not disable_vaapi_dv5
         )
         use_vaapi_dv5 = (
             init_vulkan
@@ -369,25 +366,11 @@ def create_ffmpeg_runner(
             and not disable_vaapi_dv5
         )
 
-        # Device init for the DV5 tone-mapping context.  Intel and non-Intel
-        # VAAPI GPUs take different paths because Intel's VAAPI→Vulkan DMA-BUF
-        # interop is broken upstream (libplacebo's vkCreateImage returns
-        # VK_ERROR_OUT_OF_DEVICE_MEMORY on Mesa ANV for the format+modifier
-        # combinations used for DV5).  Intel gets VAAPI→OpenCL (via Jellyfin-
-        # ffmpeg's DV RPU-aware tonemap_opencl patch).  AMD keeps VAAPI→Vulkan
-        # derived from a common DRM device (drm=dr → vaapi=va@dr →
-        # vulkan=vk@dr), which is Jellyfin's proven pattern for discrete AMD.
-        # NVIDIA and software fallback use plain vulkan=vk for libplacebo.
+        # AMD VAAPI frames may be mapped to Vulkan; other paths upload decoded frames.
         if init_vulkan:
             if use_intel_opencl_dv5:
-                args += [
-                    "-init_hw_device",
-                    f"vaapi=va:{effective_gpu_device_path}",
-                    "-init_hw_device",
-                    "opencl=ocl@va",
-                    "-filter_hw_device",
-                    "ocl",
-                ]
+                args += ["-init_hw_device", f"vaapi=va:{effective_gpu_device_path}",
+                         "-init_hw_device", "opencl=ocl@va", "-filter_hw_device", "ocl"]
             elif use_vaapi_dv5:
                 args += [
                     "-init_hw_device",
@@ -416,10 +399,7 @@ def create_ffmpeg_runner(
             args += list(decode.args)
             hw_decode_active = decode.active
         elif use_intel_opencl_dv5 or use_vaapi_dv5:
-            # Intel DV5 via VAAPI decode + OpenCL tonemap, OR AMD DV5 via
-            # VAAPI decode + Vulkan libplacebo.  Same hwaccel flags (VAAPI
-            # decode, frames stay as VAAPI surfaces); the device init
-            # block above picks OpenCL vs Vulkan for the tone-map stage.
+            # VAAPI frames stay on-device for the Vulkan filter.
             args += [
                 "-hwaccel",
                 "vaapi",
