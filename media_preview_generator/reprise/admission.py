@@ -20,8 +20,16 @@ def _episode(bindings):
     for identity, _server_id, metadata in bindings:
         machine, show = identity.plex_machine_identifier, metadata.get("show_key")
         season, episode = metadata.get("season"), metadata.get("episode")
-        if (not isinstance(machine, str) or not machine or not isinstance(show, str) or not show
-                or type(season) is not int or season < 0 or type(episode) is not int or episode < 0):
+        if (
+            not isinstance(machine, str)
+            or not machine
+            or not isinstance(show, str)
+            or not show
+            or type(season) is not int
+            or season < 0
+            or type(episode) is not int
+            or episode < 0
+        ):
             return None
         episodes.add((machine, show, season, episode))
     return next(iter(episodes)) if len(episodes) == 1 else None
@@ -29,8 +37,12 @@ def _episode(bindings):
 
 def pair_provenance(target, target_bindings, reference, reference_bindings):
     """Hash all active provenance only when the two current files prove different episodes."""
-    if (target.id == reference.id or not is_current(target) or not is_current(reference)
-            or (target.device, target.inode) == (reference.device, reference.inode)):
+    if (
+        target.id == reference.id
+        or not is_current(target)
+        or not is_current(reference)
+        or (target.device, target.inode) == (reference.device, reference.inode)
+    ):
         return None
     left, right = _episode(target_bindings), _episode(reference_bindings)
     if not left or not right or left[:3] != right[:3] or left[3] == right[3]:
@@ -41,8 +53,10 @@ def pair_provenance(target, target_bindings, reference, reference_bindings):
         return None
 
     def snapshot(bindings):
-        return sorted(json.dumps([asdict(i), server, metadata], sort_keys=True, separators=(",", ":"))
-                      for i, server, metadata in bindings)
+        return sorted(
+            json.dumps([asdict(i), server, metadata], sort_keys=True, separators=(",", ":"))
+            for i, server, metadata in bindings
+        )
 
     payload = [_ADMISSION_REVISION, target.id, snapshot(target_bindings), reference.id, snapshot(reference_bindings)]
     return hashlib.sha256(json.dumps(payload, separators=(",", ":")).encode()).hexdigest()

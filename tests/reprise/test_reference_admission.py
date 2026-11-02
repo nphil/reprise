@@ -50,7 +50,16 @@ def test_only_distinct_episodes_in_known_machine_scoped_show_and_season(catalog)
     unknown_episode, _, _ = register("unknown-episode", None)
     unknown_show, _, _ = register("unknown-show", 4, show=None)
     unknown_season, _, _ = register("unknown-season", 5, season=None)
-    candidates = [same_episode, other_show, other_season, other_machine, unknown_episode, unknown_show, unknown_season, good]
+    candidates = [
+        same_episode,
+        other_show,
+        other_season,
+        other_machine,
+        unknown_episode,
+        unknown_show,
+        unknown_season,
+        good,
+    ]
     assert admitted(store, target, candidates) == [good]
 
 
@@ -124,19 +133,36 @@ def test_persisted_approval_stales_when_binding_metadata_changes(catalog, change
     reference, ref_identity, ref_metadata = register("reference", 2)
     [(_, provenance)] = admit_references(target, [reference], store)
     evidence = Evidence(
-        "e", 0, 900, "audiovisual", "match", "match", "", reference.id, 0, 900,
-        {"checked_audio_stream_ids": ["a"], "admission_provenance": provenance,
-         "verification_profile": PROFILE_ID, "profile_fingerprint": PROFILE_FINGERPRINT},
+        "e",
+        0,
+        900,
+        "audiovisual",
+        "match",
+        "match",
+        "",
+        reference.id,
+        0,
+        900,
+        {
+            "checked_audio_stream_ids": ["a"],
+            "admission_provenance": provenance,
+            "verification_profile": PROFILE_ID,
+            "profile_fingerprint": PROFILE_FINGERPRINT,
+        },
     )
     proposal = DecisionRange("r", "intro", "skip", 0, 900, "proposed", False, "detector", "match", "", ("e",), ("a",))
     run = store.begin_analysis(target.id, "job", "signature")
     result = store.finish_analysis(run, (evidence,), (proposal,), target.id)
-    store.save_review(target.id, result.result_revision, [{"range_id": "r", "review_status": "approved", "locked": True}], "owner")
+    store.save_review(
+        target.id, result.result_revision, [{"range_id": "r", "review_status": "approved", "locked": True}], "owner"
+    )
     result = store.get_result(target.id)
     assert result.freshness == "current"
     assert eligible_ranges(result, "a")
     version, identity, metadata = (
-        (target, target_identity, target_metadata) if changed_side == "target" else (reference, ref_identity, ref_metadata)
+        (target, target_identity, target_metadata)
+        if changed_side == "target"
+        else (reference, ref_identity, ref_metadata)
     )
     metadata["episode"] = 3
     store.register_media(version, identity, server_id="server", metadata=metadata)

@@ -84,18 +84,25 @@ def _has_dv5_libplacebo(ffmpeg: str) -> bool:
     try:
         result = subprocess.run(
             [ffmpeg, "-hide_banner", "-h", "filter=libplacebo"],
-            capture_output=True, text=True, timeout=10, check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
     return result.returncode == 0 and "apply_dolbyvision" in result.stdout
+
 
 def _has_dv5_opencl(ffmpeg: str) -> bool:
     """Require the selected OpenCL filter to expose Dolby Vision metadata support."""
     try:
         result = subprocess.run(
             [ffmpeg, "-hide_banner", "-h", "filter=tonemap_opencl"],
-            capture_output=True, text=True, timeout=10, check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
@@ -1637,7 +1644,11 @@ def _warn_if_frame_count_disagrees_with_duration(
     if expected > 0 and abs(image_count - expected) > 2:
         span_s = image_count * interval
         slack_s = 2 * interval
-        video_end_s = _probe_video_end_seconds(video_file, duration_s, ffprobe_path_for(config.ffmpeg_path)) if image_count < expected else None
+        video_end_s = (
+            _probe_video_end_seconds(video_file, duration_s, ffprobe_path_for(config.ffmpeg_path))
+            if image_count < expected
+            else None
+        )
         if video_end_s is not None and video_end_s < duration_s - slack_s and span_s >= video_end_s - slack_s:
             logger.warning(
                 "'{}' looks cut short: it says it runs {:.0f} min, but its video stops at {:.0f} min, so its "
@@ -2015,7 +2026,9 @@ def read_media_info(video_file: str, *, ffprobe: str = "ffprobe", **parse_option
             video_file,
             exc,
         )
-        fields = "".join(f"<{name}>{value}</{name}>" for name, value in _video_details_from_ffprobe(video_file, ffprobe).items())
+        fields = "".join(
+            f"<{name}>{value}</{name}>" for name, value in _video_details_from_ffprobe(video_file, ffprobe).items()
+        )
         return MediaInfo(f'<Mediainfo><File><track type="Video">{fields}</track></File></Mediainfo>')
 
 
@@ -2195,20 +2208,25 @@ def generate_images(
                 vk_is_software = vulkan_info.is_software
                 has_dv_filter = _has_dv5_libplacebo(config.ffmpeg_path)
                 use_intel_opencl_dv5_path = bool(
-                    gpu == "INTEL" and gpu_device_path and gpu_device_path.startswith("/dev/dri/")
+                    gpu == "INTEL"
+                    and gpu_device_path
+                    and gpu_device_path.startswith("/dev/dri/")
                     and _has_dv5_opencl(config.ffmpeg_path)
                 )
                 if use_intel_opencl_dv5_path:
                     use_libplacebo = True
                     path_kind = DV5_PATH_INTEL_OPENCL
                     libplacebo_vf = build_dv5_vf(
-                        path_kind, config.tonemap_algorithm, fps_value,
+                        path_kind,
+                        config.tonemap_algorithm,
+                        fps_value,
                         f"{shown_turn},{base_scale}" if shown_turn else base_scale,
                     )
                 elif not has_dv_filter:
                     logger.warning(
                         "Dolby Vision Profile 5 tone mapping is unavailable in the selected FFmpeg; "
-                        "{} will be processed without it and thumbnail colours may be wrong.", video_file
+                        "{} will be processed without it and thumbnail colours may be wrong.",
+                        video_file,
                     )
                     dv5_software_fallback = True
                 elif vk_is_software or vk_device is None:

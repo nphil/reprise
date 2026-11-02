@@ -52,8 +52,19 @@ def test_projection_rejects_keep_and_unknown_evidence_gaps():
     result = _result(r, keep)
     with pytest.raises(ValueError):
         plex_projection(result, _identity(), eligible_ranges(result, "audio"))
-    unknown = Evidence("unknown", 2000, 3000, "video", "unknown", "undecoded", "", None, None, None,
-                       {"verification_profile": PROFILE_ID, "profile_fingerprint": PROFILE_FINGERPRINT})
+    unknown = Evidence(
+        "unknown",
+        2000,
+        3000,
+        "video",
+        "unknown",
+        "undecoded",
+        "",
+        None,
+        None,
+        None,
+        {"verification_profile": PROFILE_ID, "profile_fingerprint": PROFILE_FINGERPRINT},
+    )
     result = replace(_result(r), evidence=(unknown,))
     with pytest.raises(ValueError):
         plex_projection(result, _identity(), eligible_ranges(result, "audio"))

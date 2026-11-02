@@ -353,9 +353,13 @@ def create_ffmpeg_runner(
         )
         use_gpu = effective_gpu is not None
         use_intel_opencl_dv5 = (
-            init_vulkan and use_gpu and effective_gpu == "INTEL"
-            and effective_gpu_device_path is not None and effective_gpu_device_path.startswith("/dev/dri/")
-            and path_kind == DV5_PATH_INTEL_OPENCL and not disable_vaapi_dv5
+            init_vulkan
+            and use_gpu
+            and effective_gpu == "INTEL"
+            and effective_gpu_device_path is not None
+            and effective_gpu_device_path.startswith("/dev/dri/")
+            and path_kind == DV5_PATH_INTEL_OPENCL
+            and not disable_vaapi_dv5
         )
         use_vaapi_dv5 = (
             init_vulkan
@@ -369,8 +373,14 @@ def create_ffmpeg_runner(
         # AMD VAAPI frames may be mapped to Vulkan; other paths upload decoded frames.
         if init_vulkan:
             if use_intel_opencl_dv5:
-                args += ["-init_hw_device", f"vaapi=va:{effective_gpu_device_path}",
-                         "-init_hw_device", "opencl=ocl@va", "-filter_hw_device", "ocl"]
+                args += [
+                    "-init_hw_device",
+                    f"vaapi=va:{effective_gpu_device_path}",
+                    "-init_hw_device",
+                    "opencl=ocl@va",
+                    "-filter_hw_device",
+                    "ocl",
+                ]
             elif use_vaapi_dv5:
                 args += [
                     "-init_hw_device",

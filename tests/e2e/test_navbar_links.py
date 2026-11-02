@@ -94,9 +94,7 @@ def dev_page(page: Page, context: BrowserContext, dev_cookie: dict) -> Page:
     return page
 
 
-def _open(
-    page: Page, app: str, check: dict, viewport: dict, path: str = "/dashboard", font: str = "page-font"
-) -> None:
+def _open(page: Page, app: str, check: dict, viewport: dict, path: str = "/dashboard", font: str = "page-font") -> None:
     _call(f"{app}/api/__test/version-cache", check)
     page.set_viewport_size(viewport)
     page.goto(f"{app}{path}")
@@ -159,9 +157,7 @@ class TestDesktop:
         expect(dev_page.locator("#sponsorLinkBtn")).to_be_visible()
 
         _expect_new_tab_link(dev_page, "#navStarBtn", REPO)
-        expect(dev_page.locator("#navStarBtn")).to_have_attribute(
-            "aria-label", "Star Reprise on GitHub"
-        )
+        expect(dev_page.locator("#navStarBtn")).to_have_attribute("aria-label", "Star Reprise on GitHub")
         expect(dev_page.locator("#navStarBtn")).to_have_text("Star", use_inner_text=True)
 
         # The version sits under the wordmark, inside the bar, which stays one 57px row.

@@ -109,8 +109,17 @@ def _probe(
     output = Path(name)
     try:
         _run(
-            [decoder.paired_ffprobe(ffmpeg_path), "-v", "error", "-show_streams", "-of", "json", "-o",
-             str(output), media.canonical_path],
+            [
+                decoder.paired_ffprobe(ffmpeg_path),
+                "-v",
+                "error",
+                "-show_streams",
+                "-of",
+                "json",
+                "-o",
+                str(output),
+                media.canonical_path,
+            ],
             output,
             cancel_check,
             pause_check,

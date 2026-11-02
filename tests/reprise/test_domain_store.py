@@ -25,19 +25,45 @@ def test_real_database_review_rescan_failure_and_replacement(tmp_path):
     ref_path.write_bytes(b"reference")
     reference = media_version(str(ref_path), 1000, "timing")
     store.register_media(
-        reference, PlaybackIdentity("machine", "4", "5", "6", "/part/6", 9, 1000, "a"),
-        server_id="local", metadata={"show_key": "show", "season": 1, "episode": 2},
+        reference,
+        PlaybackIdentity("machine", "4", "5", "6", "/part/6", 9, 1000, "a"),
+        server_id="local",
+        metadata={"show_key": "show", "season": 1, "episode": 2},
     )
     [(_, provenance)] = admit_references(version, [reference], store)
     assert store.resolve_binding(identity) == version
     assert len(store.get_bindings(version.id)) == 2
     skip = DecisionRange("r", "intro", "skip", 0, 900, "proposed", False, "detector", "match", "", ("match",), ("a",))
-    unknown = Evidence("e", 400, 500, "video", "unknown", "undecoded", "", None, None, None,
-                       {"verification_profile": PROFILE_ID, "profile_fingerprint": PROFILE_FINGERPRINT})
+    unknown = Evidence(
+        "e",
+        400,
+        500,
+        "video",
+        "unknown",
+        "undecoded",
+        "",
+        None,
+        None,
+        None,
+        {"verification_profile": PROFILE_ID, "profile_fingerprint": PROFILE_FINGERPRINT},
+    )
     match = Evidence(
-        "match", 0, 900, "audiovisual", "match", "match", "", reference.id, 0, 900,
-        {"checked_audio_stream_ids": ["a"], "admission_provenance": provenance,
-         "verification_profile": PROFILE_ID, "profile_fingerprint": PROFILE_FINGERPRINT},
+        "match",
+        0,
+        900,
+        "audiovisual",
+        "match",
+        "match",
+        "",
+        reference.id,
+        0,
+        900,
+        {
+            "checked_audio_stream_ids": ["a"],
+            "admission_provenance": provenance,
+            "verification_profile": PROFILE_ID,
+            "profile_fingerprint": PROFILE_FINGERPRINT,
+        },
     )
     run = store.begin_analysis(version.id, "job", "signature")
     result = store.finish_analysis(run, (unknown, match), (skip,), version.id)
@@ -110,7 +136,9 @@ def test_changed_evidence_replaces_only_untouched_detector_proposals(tmp_path):
     ref_path.write_bytes(b"reference")
     reference = media_version(str(ref_path), 10000, "timing")
     ref_identity = PlaybackIdentity("machine", "4", "5", "6", "/part/6", 9, 10000, "a")
-    store.register_media(reference, ref_identity, server_id="local", metadata={"show_key": "show", "season": 1, "episode": 2})
+    store.register_media(
+        reference, ref_identity, server_id="local", metadata={"show_key": "show", "season": 1, "episode": 2}
+    )
     [(_, provenance)] = admit_references(version, [reference], store)
     proposals = tuple(
         DecisionRange(
@@ -161,8 +189,12 @@ def test_changed_evidence_replaces_only_untouched_detector_proposals(tmp_path):
         reference.id,
         0,
         10000,
-        {"checked_audio_stream_ids": ["a"], "admission_provenance": provenance,
-         "verification_profile": PROFILE_ID, "profile_fingerprint": PROFILE_FINGERPRINT},
+        {
+            "checked_audio_stream_ids": ["a"],
+            "admission_provenance": provenance,
+            "verification_profile": PROFILE_ID,
+            "profile_fingerprint": PROFILE_FINGERPRINT,
+        },
     )
     run = store.begin_analysis(version.id, "job2", "new")
     updated = store.finish_analysis(run, (evidence,), (fresh,), version.id)

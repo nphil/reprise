@@ -104,8 +104,12 @@ def case(tmp_path, monkeypatch):
         ref_version.id,
         10000,
         20000,
-        {"checked_audio_stream_ids": ["1"], "admission_provenance": provenance,
-         "verification_profile": PROFILE_ID, "profile_fingerprint": PROFILE_FINGERPRINT},
+        {
+            "checked_audio_stream_ids": ["1"],
+            "admission_provenance": provenance,
+            "verification_profile": PROFILE_ID,
+            "profile_fingerprint": PROFILE_FINGERPRINT,
+        },
     )
     proposal = DecisionRange(
         "intro", "intro", "skip", 10000, 20000, "proposed", False, "detector", "same", "", ("match",), ("1",)
@@ -365,7 +369,9 @@ def test_identically_reviewed_versions_publish_and_undo_together(case, tmp_path)
     source = c["result"].evidence[0]
     reference = c["store"].get_media(source.reference_version_id)
     [(_, provenance)] = admit_references(version, [reference], c["store"])
-    evidence = replace(source, metrics={**source.metrics, "checked_audio_stream_ids": ["2"], "admission_provenance": provenance})
+    evidence = replace(
+        source, metrics={**source.metrics, "checked_audio_stream_ids": ["2"], "admission_provenance": provenance}
+    )
     proposal = replace(c["result"].ranges[0], review_status="proposed", locked=False, audio_stream_ids=("2",))
     run = c["store"].begin_analysis(version.id, "job-two", "signature-two")
     result = c["store"].finish_analysis(run, (evidence,), (proposal,), version.id)
@@ -459,7 +465,9 @@ def test_reviewed_shared_file_sibling_changes_and_restores_together(case):
     source = c["result"].evidence[0]
     reference = c["store"].get_media(source.reference_version_id)
     [(_, provenance)] = admit_references(version, [reference], c["store"])
-    evidence = replace(source, metrics={**source.metrics, "checked_audio_stream_ids": ["2"], "admission_provenance": provenance})
+    evidence = replace(
+        source, metrics={**source.metrics, "checked_audio_stream_ids": ["2"], "admission_provenance": provenance}
+    )
     proposal = replace(c["result"].ranges[0], review_status="proposed", locked=False, audio_stream_ids=("2",))
     run = c["store"].begin_analysis(version.id, "sibling-job", "sibling-signature")
     result = c["store"].finish_analysis(run, (evidence,), (proposal,), version.id)

@@ -48,10 +48,15 @@ def _media_info(duration_s: float) -> SimpleNamespace:
 def _warn(image_count: int, video_end_s: float | None) -> MagicMock:
     with (
         patch("media_preview_generator.processing.generator.ffprobe_path_for", return_value=FFPROBE) as resolve,
-        patch("media_preview_generator.processing.generator._probe_video_end_seconds", return_value=video_end_s) as probe,
+        patch(
+            "media_preview_generator.processing.generator._probe_video_end_seconds", return_value=video_end_s
+        ) as probe,
     ):
         _warn_if_frame_count_disagrees_with_duration(
-            VIDEO, "/tmp/frames", image_count, _media_info(STATED_S),
+            VIDEO,
+            "/tmp/frames",
+            image_count,
+            _media_info(STATED_S),
             SimpleNamespace(plex_bif_frame_interval=INTERVAL, ffmpeg_path=FFMPEG),
         )
         if probe.called:

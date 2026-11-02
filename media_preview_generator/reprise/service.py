@@ -55,8 +55,16 @@ def _probe(path, streams, *, cancel_check=None, pause_check=None, ffmpeg_path=No
     freeze.hold(cancel_check=cancel)
     if cancel():
         raise Cancelled("Library refresh cancelled")
-    command = [paired_ffprobe(ffmpeg_path or ffmpeg_binary()), "-v", "error", "-show_streams",
-               "-show_format", "-of", "json", path]
+    command = [
+        paired_ffprobe(ffmpeg_path or ffmpeg_binary()),
+        "-v",
+        "error",
+        "-show_streams",
+        "-show_format",
+        "-of",
+        "json",
+        path,
+    ]
     with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
         proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=output, stderr=errors, start_new_session=True)
         deadline = freeze.clock() + 30
@@ -433,7 +441,9 @@ class RepriseService:
             return False
 
     def _references_current(self, result):
-        for version_id in {result.media_version_id} | {e.reference_version_id for e in result.evidence if e.reference_version_id}:
+        for version_id in {result.media_version_id} | {
+            e.reference_version_id for e in result.evidence if e.reference_version_id
+        }:
             version = self.store.get_media(version_id)
             bindings = self._bindings(version_id)
             if not version or not bindings or not all(self._valid_binding(version, *b) for b in bindings):
@@ -444,8 +454,9 @@ class RepriseService:
             if evidence.verdict.lower() != "match":
                 continue
             reference = self.store.get_media(evidence.reference_version_id)
-            snapshot = (pair_provenance(target, target_bindings, reference, self._bindings(reference.id))
-                        if reference else None)
+            snapshot = (
+                pair_provenance(target, target_bindings, reference, self._bindings(reference.id)) if reference else None
+            )
             if not snapshot or evidence.metrics.get("admission_provenance") != snapshot:
                 return False
         return True

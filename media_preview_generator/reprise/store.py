@@ -75,9 +75,9 @@ class RepriseStore:
     def _invalidate_binding_change(c, version_id):
         affected = {version_id}
         affected.update(
-            row["version_id"] for row in c.execute(
-                "SELECT version_id,data FROM reprise_evidence_windows"
-            ) if json.loads(row["data"]).get("reference_version_id") == version_id
+            row["version_id"]
+            for row in c.execute("SELECT version_id,data FROM reprise_evidence_windows")
+            if json.loads(row["data"]).get("reference_version_id") == version_id
         )
         for affected_id in affected:
             if not c.execute("SELECT 1 FROM reprise_decision_results WHERE version_id=?", (affected_id,)).fetchone():
@@ -86,10 +86,14 @@ class RepriseStore:
             for row in c.execute("SELECT id,data FROM reprise_ranges WHERE version_id=?", (affected_id,)).fetchall():
                 item = _range(json.loads(row["data"]))
                 if item.action == "skip" and item.review_status == "approved":
-                    c.execute("UPDATE reprise_ranges SET data=? WHERE version_id=? AND id=?",
-                              (_json(asdict(replace(item, review_status="proposed"))), affected_id, item.id))
-            c.execute("UPDATE reprise_decision_results SET policy_version=?,revision=revision+1 WHERE version_id=?",
-                      ("binding-changed", affected_id))
+                    c.execute(
+                        "UPDATE reprise_ranges SET data=? WHERE version_id=? AND id=?",
+                        (_json(asdict(replace(item, review_status="proposed"))), affected_id, item.id),
+                    )
+            c.execute(
+                "UPDATE reprise_decision_results SET policy_version=?,revision=revision+1 WHERE version_id=?",
+                ("binding-changed", affected_id),
+            )
 
     def register_media(
         self, version: MediaVersion, identity: PlaybackIdentity, *, server_id: str, metadata: dict | None = None
@@ -122,8 +126,13 @@ class RepriseStore:
                 "SELECT metadata,identity,active,server_id FROM reprise_bindings WHERE machine=? AND rating_key=? AND media_id=? AND part_id=? AND audio_id=? AND version_id=?",
                 (*binding, identity.audio_stream_id, version.id),
             ).fetchone()
-            if old and (not prior or not prior["active"] or prior["server_id"] != server_id
-                        or prior["identity"] != _json(asdict(identity)) or prior["metadata"] != _json(metadata or {})):
+            if old and (
+                not prior
+                or not prior["active"]
+                or prior["server_id"] != server_id
+                or prior["identity"] != _json(asdict(identity))
+                or prior["metadata"] != _json(metadata or {})
+            ):
                 self._invalidate_binding_change(c, version.id)
             keys = ("remote_part_path", "mapping_fingerprint")
             if prior and (
@@ -289,9 +298,14 @@ class RepriseStore:
                     (reference_id, reference_id),
                 ).fetchone()
                 snapshot = (
-                    pair_provenance(target, target_bindings, MediaVersion(**json.loads(ref["data"])),
-                                    self._bindings_in_transaction(c, reference_id))
-                    if ref else None
+                    pair_provenance(
+                        target,
+                        target_bindings,
+                        MediaVersion(**json.loads(ref["data"])),
+                        self._bindings_in_transaction(c, reference_id),
+                    )
+                    if ref
+                    else None
                 )
                 if not snapshot or entry.metrics.get("admission_provenance") != snapshot:
                     freshness = "stale"

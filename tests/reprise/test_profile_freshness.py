@@ -33,42 +33,97 @@ def case(tmp_path, monkeypatch):
     plex = build(folder, "fixture-machine")
     with sqlite3.connect(plex) as db:
         db.execute("INSERT INTO tags (id, tag, tag_type) VALUES (12, '', 12)")
-        db.execute("UPDATE media_parts SET file=?, size=?, duration=?, updated_at=? WHERE id=1",
-                   (str(media), media.stat().st_size, 100000, 101))
+        db.execute(
+            "UPDATE media_parts SET file=?, size=?, duration=?, updated_at=? WHERE id=1",
+            (str(media), media.stat().st_size, 100000, 101),
+        )
         db.execute("UPDATE media_items SET duration=? WHERE id=1", (100000,))
-    registry = ServerRegistry.from_settings([{
-        "id": "local", "type": "plex", "name": "fixture", "enabled": True,
-        "url": "http://127.0.0.1:1", "auth": {}, "server_identity": "fixture-machine",
-        "output": {"plex_config_folder": str(folder)},
-        "libraries": [{"id": "1", "name": "fixture", "enabled": True, "remote_paths": [str(library)]}],
-    }])
+    registry = ServerRegistry.from_settings(
+        [
+            {
+                "id": "local",
+                "type": "plex",
+                "name": "fixture",
+                "enabled": True,
+                "url": "http://127.0.0.1:1",
+                "auth": {},
+                "server_identity": "fixture-machine",
+                "output": {"plex_config_folder": str(folder)},
+                "libraries": [{"id": "1", "name": "fixture", "enabled": True, "remote_paths": [str(library)]}],
+            }
+        ]
+    )
     marker_path = tmp_path / "markers.db"
     marker = MarkerStore(str(marker_path))
     store = RepriseStore(marker)
     signature = json.dumps({"audio_streams": [{"plex_id": "1", "index": 1}], "start_time_ms": 0, "streams": []})
     version = media_version(str(media), 100000, signature)
     reference = media_version(str(reference_path), 100000, signature)
-    identity = PlaybackIdentity("fixture-machine", "1", "1", "1", "/library/parts/1/file.mkv", media.stat().st_size, 100000, "1")
-    ref_identity = replace(identity, rating_key="20", media_id="20", part_id="20",
-                           part_key="/library/parts/20/file.mkv", part_size_bytes=reference_path.stat().st_size)
+    identity = PlaybackIdentity(
+        "fixture-machine", "1", "1", "1", "/library/parts/1/file.mkv", media.stat().st_size, 100000, "1"
+    )
+    ref_identity = replace(
+        identity,
+        rating_key="20",
+        media_id="20",
+        part_id="20",
+        part_key="/library/parts/20/file.mkv",
+        part_size_bytes=reference_path.stat().st_size,
+    )
     cfg = registry.get_config("local")
-    metadata = {"library_id": "1", "show_key": "show", "season": 1, "episode": 1,
-                "remote_part_path": str(media), "mapping_fingerprint": _mapping_fingerprint(cfg, cfg.libraries[0])}
+    metadata = {
+        "library_id": "1",
+        "show_key": "show",
+        "season": 1,
+        "episode": 1,
+        "remote_part_path": str(media),
+        "mapping_fingerprint": _mapping_fingerprint(cfg, cfg.libraries[0]),
+    }
     store.register_media(version, identity, server_id="local", metadata=metadata)
-    store.register_media(reference, ref_identity, server_id="local",
-                         metadata={**metadata, "episode": 2, "remote_part_path": str(reference_path)})
+    store.register_media(
+        reference,
+        ref_identity,
+        server_id="local",
+        metadata={**metadata, "episode": 2, "remote_part_path": str(reference_path)},
+    )
     [(_, provenance)] = admit_references(version, [reference], store)
-    evidence = Evidence("match", 10000, 20000, "audiovisual", "match", "same", "", reference.id, 10000, 20000,
-                        {"checked_audio_stream_ids": ["1"], "admission_provenance": provenance,
-                         "verification_profile": PROFILE_ID, "profile_fingerprint": PROFILE_FINGERPRINT})
-    proposal = DecisionRange("intro", "intro", "skip", 10000, 20000, "proposed", False,
-                             "detector", "same", "", ("match",), ("1",))
+    evidence = Evidence(
+        "match",
+        10000,
+        20000,
+        "audiovisual",
+        "match",
+        "same",
+        "",
+        reference.id,
+        10000,
+        20000,
+        {
+            "checked_audio_stream_ids": ["1"],
+            "admission_provenance": provenance,
+            "verification_profile": PROFILE_ID,
+            "profile_fingerprint": PROFILE_FINGERPRINT,
+        },
+    )
+    proposal = DecisionRange(
+        "intro", "intro", "skip", 10000, 20000, "proposed", False, "detector", "same", "", ("match",), ("1",)
+    )
     service = RepriseService(store, registry, None)
     publisher = ReprisePublisher(store, registry, service, writes_enabled=True)
     monkeypatch.setattr(publisher, "_database_for", lambda server_id, identity: LocalPlexDb(lambda: str(plex)))
-    yield {"marker": marker, "marker_path": marker_path, "store": store, "registry": registry,
-           "service": service, "publisher": publisher, "plex": plex, "identity": identity,
-           "version": version, "evidence": evidence, "proposal": proposal}
+    yield {
+        "marker": marker,
+        "marker_path": marker_path,
+        "store": store,
+        "registry": registry,
+        "service": service,
+        "publisher": publisher,
+        "plex": plex,
+        "identity": identity,
+        "version": version,
+        "evidence": evidence,
+        "proposal": proposal,
+    }
     if not marker._closed:
         marker.close()
 
@@ -76,23 +131,36 @@ def case(tmp_path, monkeypatch):
 def finish(case, job="job", evidence=None, ranges=None):
     store, version = case["store"], case["version"]
     run = store.begin_analysis(version.id, job, "stable-signature")
-    return store.finish_analysis(run, evidence if evidence is not None else (case["evidence"],),
-                                 ranges if ranges is not None else (case["proposal"],), version.id)
+    return store.finish_analysis(
+        run,
+        evidence if evidence is not None else (case["evidence"],),
+        ranges if ranges is not None else (case["proposal"],),
+        version.id,
+    )
 
 
 def approve(case):
     result = finish(case)
-    return case["store"].save_review(case["version"].id, result.result_revision,
-                                     [{"range_id": "intro", "review_status": "approved", "locked": True}], "owner")
+    return case["store"].save_review(
+        case["version"].id,
+        result.result_revision,
+        [{"range_id": "intro", "review_status": "approved", "locked": True}],
+        "owner",
+    )
 
 
 def approve_old_profile(case, monkeypatch, *, manual_keep=False):
-    metrics = {**case["evidence"].metrics, "verification_profile": "old-profile",
-               "profile_fingerprint": "old-fingerprint"}
+    metrics = {
+        **case["evidence"].metrics,
+        "verification_profile": "old-profile",
+        "profile_fingerprint": "old-fingerprint",
+    }
     evidence = replace(case["evidence"], metrics=metrics)
+
     def is_old_profile(value):
-        return (value.get("verification_profile") == "old-profile"
-                and value.get("profile_fingerprint") == "old-fingerprint")
+        return (
+            value.get("verification_profile") == "old-profile" and value.get("profile_fingerprint") == "old-fingerprint"
+        )
 
     # Reproduce the previous writer's contract; the reader under test is unpatched.
     with monkeypatch.context() as previous:
@@ -121,8 +189,12 @@ def test_old_persisted_approval_is_stale_for_lookup_review_and_publish(case, mon
         assert lookup["eligible_skip_ranges"] == []
         # A lookup has no job manager to enqueue work through.
         with pytest.raises(ValueError, match="Analysis is unavailable or stale"):
-            service.review(case["version"].id, approved.result_revision,
-                           [{"range_id": "intro", "review_status": "approved"}], "owner")
+            service.review(
+                case["version"].id,
+                approved.result_revision,
+                [{"range_id": "intro", "review_status": "approved"}],
+                "owner",
+            )
         publisher = ReprisePublisher(store, case["registry"], service, writes_enabled=True)
         publisher._database_for = case["publisher"]._database_for
         with pytest.raises(PublicationConflict, match="no longer current"):
@@ -153,11 +225,14 @@ def test_unchanged_current_profile_reanalysis_preserves_approval(case):
     assert case["service"].lookup(case["identity"])["eligible_skip_ranges"] == eligible
     assert eligible
 
+
 def test_old_policy_with_no_evidence_is_stale_after_reopen(case):
     result = finish(case, evidence=(), ranges=())
     with case["store"].transaction() as db:
-        db.execute("UPDATE reprise_decision_results SET policy_version=? WHERE version_id=?",
-                   ("old-policy", case["version"].id))
+        db.execute(
+            "UPDATE reprise_decision_results SET policy_version=? WHERE version_id=?",
+            ("old-policy", case["version"].id),
+        )
     case["marker"].close()
     reopened = MarkerStore(str(case["marker_path"]))
     try:
@@ -171,11 +246,13 @@ def test_old_policy_with_no_evidence_is_stale_after_reopen(case):
 
 def test_mixed_persisted_profile_evidence_is_stale(case):
     approve(case)
-    bad = replace(case["evidence"], id="old-match",
-                  metrics={**case["evidence"].metrics, "profile_fingerprint": "old-fingerprint"})
+    bad = replace(
+        case["evidence"], id="old-match", metrics={**case["evidence"].metrics, "profile_fingerprint": "old-fingerprint"}
+    )
     with case["store"].transaction() as db:
-        db.execute("INSERT INTO reprise_evidence_windows VALUES (?,?,?)",
-                   (case["version"].id, bad.id, json.dumps(asdict(bad))))
+        db.execute(
+            "INSERT INTO reprise_evidence_windows VALUES (?,?,?)", (case["version"].id, bad.id, json.dumps(asdict(bad)))
+        )
     result = case["store"].get_result(case["version"].id)
     assert len(result.evidence) == 2
     assert result.freshness == "stale"
@@ -188,7 +265,6 @@ def test_policy_rejects_mixed_profiles_even_if_caller_claims_current(case):
     bad = replace(case["evidence"], id="old", metrics={**case["evidence"].metrics, "profile_fingerprint": "old"})
     assert not eligible_ranges(replace(result, evidence=(*result.evidence, bad)), "1")
     assert not eligible_ranges(replace(result, policy_version="old"), "1")
-
 
 
 @pytest.mark.parametrize("invalid", ["missing_id", "missing_fingerprint", "wrong_id", "wrong_fingerprint", "mixed"])

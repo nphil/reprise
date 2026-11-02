@@ -88,7 +88,10 @@ def test_dv5_capability_requires_option_in_selected_ffmpeg(returncode, output, e
 
 
 def test_dv5_capability_fails_closed_on_timeout():
-    with patch("media_preview_generator.processing.generator.subprocess.run", side_effect=subprocess.TimeoutExpired("ffmpeg", 10)):
+    with patch(
+        "media_preview_generator.processing.generator.subprocess.run",
+        side_effect=subprocess.TimeoutExpired("ffmpeg", 10),
+    ):
         assert not _has_dv5_libplacebo("ffmpeg")
 
 
@@ -100,7 +103,6 @@ def test_intel_dolby_requires_opencl_metadata_option(output, expected):
         run.return_value = subprocess.CompletedProcess([], 0, stdout=output)
         assert _has_dv5_opencl("/selected/ffmpeg") is expected
         assert run.call_args.args[0] == ["/selected/ffmpeg", "-hide_banner", "-h", "filter=tonemap_opencl"]
-
 
 
 class TestBIFGeneration:
@@ -3776,14 +3778,18 @@ class TestRotatedVideo:
 
     def test_missing_dolby_filter_never_selects_a_patched_gpu_filter(self, mock_config):
         with patch("media_preview_generator.processing.generator._has_dv5_libplacebo", return_value=False):
-            args = self._command(mock_config, "INTEL", "/dev/dri/renderD128", _matrix(0, -ONE, ONE, 0), hdr_fmt="Dolby Vision")
+            args = self._command(
+                mock_config, "INTEL", "/dev/dri/renderD128", _matrix(0, -ONE, ONE, 0), hdr_fmt="Dolby Vision"
+            )
         vf = args[args.index("-vf") + 1]
         assert "libplacebo" not in vf and "tonemap_opencl" not in vf
         assert "opencl=ocl@va" not in args
 
     def test_intel_uses_opencl_only_when_dolby_option_is_present(self, mock_config):
         with patch("media_preview_generator.processing.generator._has_dv5_opencl", return_value=True):
-            args = self._command(mock_config, "INTEL", "/dev/dri/renderD128", _matrix(0, -ONE, ONE, 0), hdr_fmt="Dolby Vision")
+            args = self._command(
+                mock_config, "INTEL", "/dev/dri/renderD128", _matrix(0, -ONE, ONE, 0), hdr_fmt="Dolby Vision"
+            )
         vf = args[args.index("-vf") + 1]
         assert "opencl=ocl@va" in args
         assert "tonemap_opencl=apply_dovi=1" in vf
@@ -4629,7 +4635,6 @@ class TestBuildDV5Vf:
     """
 
     _BASE_SCALE = "scale=w=320:h=240:force_original_aspect_ratio=decrease"
-
 
     def test_vaapi_vulkan_chain_is_byte_identical(self):
         got = build_dv5_vf(

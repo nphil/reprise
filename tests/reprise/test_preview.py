@@ -123,7 +123,7 @@ def test_preview_and_library_probe_use_selected_ffmpeg_pair(source, tmp_path):
         wrapper = binaries / name
         wrapper.write_text(
             f"#!/bin/sh\nprintf '%s\n' {shlex.quote(name)} >> {shlex.quote(str(log))}\n"
-            f"exec {shlex.quote(real)} \"$@\"\n"
+            f'exec {shlex.quote(real)} "$@"\n'
         )
         wrapper.chmod(0o755)
 

@@ -99,25 +99,43 @@ def test_mapping_changes_immediately_invalidate_stream_and_publication_eligibili
         "library_id": "library",
         "remote_part_path": remote,
         "mapping_fingerprint": _mapping_fingerprint(cfg, cfg.libraries[0]),
-        "show_key": "show", "season": 1, "episode": 1,
+        "show_key": "show",
+        "season": 1,
+        "episode": 1,
     }
     store.register_media(version, identity, server_id="server", metadata=metadata)
     reference = media_version(str(a / "reference.mp4"), 10000, "{}")
-    ref_identity = replace(identity, rating_key="2", media_id="20", part_id="30",
-                           part_key="/library/parts/30/file", part_size_bytes=9)
+    ref_identity = replace(
+        identity, rating_key="2", media_id="20", part_id="30", part_key="/library/parts/30/file", part_size_bytes=9
+    )
     ref_metadata = {**metadata, "episode": 2, "remote_part_path": "/plex/tv/reference.mp4"}
     store.register_media(reference, ref_identity, server_id="server", metadata=ref_metadata)
     snapshot = admit_references(version, [reference], store)[0][1]
     service = RepriseService(store, registry, None)
     evidence = Evidence(
-        "e", 0, 1000, "audiovisual", "match", "match", "", reference.id, 0, 1000,
-        {"checked_audio_stream_ids": ["4"], "admission_provenance": snapshot,
-         "verification_profile": PROFILE_ID, "profile_fingerprint": PROFILE_FINGERPRINT}
+        "e",
+        0,
+        1000,
+        "audiovisual",
+        "match",
+        "match",
+        "",
+        reference.id,
+        0,
+        1000,
+        {
+            "checked_audio_stream_ids": ["4"],
+            "admission_provenance": snapshot,
+            "verification_profile": PROFILE_ID,
+            "profile_fingerprint": PROFILE_FINGERPRINT,
+        },
     )
     proposal = DecisionRange("r", "intro", "skip", 0, 1000, "proposed", False, "detector", "match", "", ("e",), ("4",))
     run = store.begin_analysis(version.id, "job", "signature")
     result = store.finish_analysis(run, (evidence,), (proposal,), version.id)
-    result = store.save_review(version.id, result.result_revision, [{"range_id": "r", "review_status": "approved"}], "owner")
+    result = store.save_review(
+        version.id, result.result_revision, [{"range_id": "r", "review_status": "approved"}], "owner"
+    )
     assert service.eligible_ranges(result, identity)
     with service.open_stream(version.id)[0] as source:
         assert source.read() == b"original"
@@ -275,6 +293,7 @@ def test_alternate_episode_version_cannot_supply_recurrence(lifecycle):
     assert not service.lookup(identity)["eligible_skip_ranges"]
     assert not any(e.reference_version_id for e in result.evidence)
 
+
 def test_hardlinked_episode_alias_cannot_supply_recurrence(lifecycle):
     service, register = lifecycle
     original, identity = register("target", "episode-1")
@@ -285,9 +304,12 @@ def test_hardlinked_episode_alias_cannot_supply_recurrence(lifecycle):
     alias = media_version(alias_path, original.duration_ms, original.stream_signature)
     metadata = service.store.get_bindings(original.id)[0][2]
     service.store.register_media(target, identity, server_id="server", metadata=metadata)
-    alias_identity = replace(identity, rating_key="episode-2", media_id="alias", part_id="alias", part_key="/part/alias")
-    service.store.register_media(alias, alias_identity, server_id="server",
-                                 metadata={**metadata, "episode": 2, "remote_part_path": alias_path})
+    alias_identity = replace(
+        identity, rating_key="episode-2", media_id="alias", part_id="alias", part_key="/part/alias"
+    )
+    service.store.register_media(
+        alias, alias_identity, server_id="server", metadata={**metadata, "episode": 2, "remote_part_path": alias_path}
+    )
     assert target.id != alias.id and (target.device, target.inode) == (alias.device, alias.inode)
     queued_analysis(service, target)
     result = service.store.get_result(target.id)
