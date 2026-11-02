@@ -45,6 +45,7 @@ from .validation import (  # noqa: F401
     validate_processing_thread_totals,
 )
 
+
 def _resolve_ffmpeg_path() -> str | None:
     """Use FFmpeg on PATH (the bundled native build in the container)."""
     return shutil.which("ffmpeg")

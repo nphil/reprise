@@ -338,7 +338,7 @@ def analyze(
         decoder.check_current(media)
         selected = []
         last_target = -1
-        last_references = {}
+        last_references: dict[str, Fraction] = {}
         for entry in sorted(verified, key=lambda row: (row[0], -(row[1] - row[0]))):
             lo, hi, ref, offset, _, _ = entry
             decoder.check_current(ref)
@@ -394,7 +394,7 @@ def analyze(
                 "reference_offset_rational_ms": str(offset) if offset is not None else None,
                 "unspecified_interpretation_fields": support[4] if support else [],
                 "claim": "native-code-signal recurrence, not rendered equivalence",
-                "admission_provenance": provenance[evidence_reference.id] if support else None,
+                "admission_provenance": provenance[support[2].id] if support else None,
                 "native_anchors": support[5] if support else None,
             }
             evidence.append(

@@ -9,8 +9,8 @@ from dataclasses import replace
 import pytest
 
 from media_preview_generator.markers.store import MarkerStore
-from media_preview_generator.reprise.admission import admit_references
 from media_preview_generator.reprise import service as service_module
+from media_preview_generator.reprise.admission import admit_references
 from media_preview_generator.reprise.identity import media_version
 from media_preview_generator.reprise.models import DecisionRange, Evidence, PlaybackIdentity
 from media_preview_generator.reprise.service import RepriseService, _mapping_fingerprint

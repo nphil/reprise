@@ -37,6 +37,7 @@ from media_preview_generator.processing import (
     record_failure,
 )
 from media_preview_generator.processing.generator import _has_dv5_libplacebo, _video_details_from_ffprobe, read_media_info
+from media_preview_generator.processing.hdr_detection import is_hdr_transfer
 from media_preview_generator.processing.hdr_detection import (
     detect_dolby_vision_rpu_error as _detect_dolby_vision_rpu_error,
 )
@@ -45,7 +46,6 @@ from media_preview_generator.processing.hdr_detection import (
 )
 from media_preview_generator.processing.hdr_detection import is_dolby_vision as _is_dolby_vision
 from media_preview_generator.processing.hdr_detection import is_dv_no_backward_compat as _is_dv_no_backward_compat
-from media_preview_generator.processing.hdr_detection import is_hdr_transfer
 
 
 @pytest.fixture(autouse=True)

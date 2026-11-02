@@ -65,7 +65,7 @@ jobs:
             echo "Checking $image"
             license="$(docker run --rm --network none --entrypoint /usr/local/bin/ffmpeg "$image" -L 2>&1)"
             printf '%s\n' "$license"
-            printf '%s\n' "$license" | grep -F -- 'GNU GENERAL PUBLIC LICENSE'
+            printf '%s\n' "$license" | grep -F -- 'GNU General Public License'
             buildconf="$(docker run --rm --network none --entrypoint /usr/local/bin/ffmpeg "$image" -buildconf 2>&1)"
             printf '%s\n' "$buildconf"
             printf '%s\n' "$buildconf" | grep -E -- '^[[:space:]]*--enable-gpl[[:space:]]*$'
