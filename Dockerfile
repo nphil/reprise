@@ -2,7 +2,7 @@
 # Build stages: `toolchain` (compiler + Python, shared), `model` (the credit
 # text detection model) and `builder` (dependency and app wheels)
 # =============================================================================
-FROM linuxserver/ffmpeg:8.1.2-cli-ls73 AS toolchain
+FROM linuxserver/ffmpeg:8.1.2-cli-ls73@sha256:282f8c023eb24cafc8fbd92e35a35627815cd1c8b183beddf6e29b9a93329435 AS toolchain
 
 # Build-time only: compiler toolchain + Python + git (for setuptools-scm)
 RUN apt-get update && \
@@ -81,7 +81,7 @@ RUN if [ -n "$SETUPTOOLS_SCM_PRETEND_VERSION" ]; then \
 # =============================================================================
 # Runtime stage — lean production image (no compiler toolchain)
 # =============================================================================
-FROM linuxserver/ffmpeg:8.1.2-cli-ls73
+FROM linuxserver/ffmpeg:8.1.2-cli-ls73@sha256:282f8c023eb24cafc8fbd92e35a35627815cd1c8b183beddf6e29b9a93329435
 
 # Runtime dependencies.  Split into two apt passes because we add two
 # third-party repos before pulling jellyfin-ffmpeg + newer Intel drivers.

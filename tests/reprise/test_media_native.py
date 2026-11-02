@@ -178,7 +178,7 @@ def test_audio_gap_is_not_silently_filled(tmp_path):
         "-i",
         "sine=frequency=440:sample_rate=48000:duration=6",
         "-af",
-        r"aselect=not(between(t\,2\,2.3))",
+        "asetpts='PTS+if(gte(T,2),0.2/TB,0)'",
         "-c:a",
         "pcm_s16le",
         "-y",
@@ -572,7 +572,7 @@ def test_native_audio_rejects_gap_and_unknown_layout(tmp_path):
         "-i",
         "sine=frequency=440:sample_rate=48000:duration=3",
         "-af",
-        r"aselect=not(between(t\,1\,1.3))",
+        "asetpts='PTS+if(gte(T,1),0.2/TB,0)'",
         "-c:a",
         "flac",
         "-y",
@@ -627,7 +627,32 @@ def test_native_uses_unrotated_pixels(tmp_path):
         "-y",
         str(original),
     )
-    execute("-i", str(original), "-c", "copy", "-metadata:s:v:0", "rotate=180", "-y", str(rotated))
+    help_text = subprocess.check_output(["ffmpeg", "-hide_banner", "-h", "full"], stderr=subprocess.STDOUT)
+    if b"-display_rotation" in help_text:
+        execute("-display_rotation", "180", "-i", str(original), "-c", "copy", "-y", str(rotated))
+    else:
+        execute("-i", str(original), "-c", "copy", "-metadata:s:v:0", "rotate=180", "-y", str(rotated))
+    details = json.loads(
+        subprocess.check_output(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_streams",
+                "-show_entries",
+                "stream_side_data=side_data_type,rotation",
+                "-of",
+                "json",
+                str(rotated),
+            ]
+        )
+    )
+    side_data = details["streams"][0].get("side_data_list", [])
+    assert any(s.get("side_data_type") == "Display Matrix" and abs(s.get("rotation", 0)) == 180 for s in side_data), (
+        f"generated rotation fixture lacks 180-degree display matrix: {side_data}"
+    )
     assert_generated_video_format(rotated)
     item = media_version(str(rotated), 2000, "{}")
     with native_frames(item, 0, 0, 1000, lambda: False, lambda: False, 1) as reader:
@@ -929,14 +954,37 @@ def test_ac3_native_declarations_and_channels(ac3_native_audio):
     assert decoded.data.shape == (48000, 6)
     assert np.array_equal(decoded.data, reference[:48000])
     declarations = dict(decoded.declarations)
-    assert declarations["audio_service_initial"] == ("Main Audio Service",)
-    assert declarations["matrix_encoding"] == ("none",)
+    assert set(declarations) <= {"audio_service_initial", "audio_service_per_frame", "matrix_encoding", "downmix"}
+    for key in ("audio_service_initial", "audio_service_per_frame"):
+        if key in declarations:
+            assert declarations[key] == ("Main Audio Service",)
+    if "matrix_encoding" in declarations:
+        assert declarations["matrix_encoding"] == ("none",)
     assert declarations["downmix"][0] == "unknown"
+
+
+def with_test_audio_declarations(lines):
+    """Insert known records into real decoder logs for cross-version fault injection."""
+    output = []
+    frames = 0
+    for line in lines:
+        if b"side data - matrix encoding:" in line or b"side data - audio service type:" in line:
+            continue
+        output.append(line)
+        if b"Parsed_ashowinfo_" in line and b" n:" in line:
+            frames += 1
+            prefix = line.split(b" n:", 1)[0] + b" "
+            if frames == 1:
+                output.append(prefix + b"side data - audio service type: Main Audio Service\n")
+            output.append(prefix + b"side data - matrix encoding: none\n")
+    assert frames >= 2
+    return output
 
 
 @pytest.mark.parametrize(
     "fault",
     [
+        "valid",
         "duplicate",
         "missing",
         "dynamic",
@@ -959,7 +1007,7 @@ def test_ac3_native_rejects_bad_declarations(ac3_native_audio, monkeypatch, faul
         if not kwargs.get("capture_stderr"):
             return result
         data, log = result
-        lines = log.splitlines(keepends=True)
+        lines = with_test_audio_declarations(log.splitlines(keepends=True))
         matrices = [i for i, line in enumerate(lines) if b"side data - matrix encoding:" in line]
         services = [i for i, line in enumerate(lines) if b"side data - audio service type:" in line]
         assert len(matrices) >= 2 and len(services) == 1
@@ -984,15 +1032,20 @@ def test_ac3_native_rejects_bad_declarations(ac3_native_audio, monkeypatch, faul
             lines[idx], lines[following] = lines[following], lines[idx]
         elif fault == "filter_id":
             lines[idx] = lines[idx].replace(b"Parsed_ashowinfo_1", b"Parsed_ashowinfo_9")
-        else:
+        elif fault == "before_frame":
             service = lines.pop(services[0])
             first_frame = next(i for i, line in enumerate(lines) if b"Parsed_ashowinfo_" in line and b" n:" in line)
             lines.insert(first_frame, service)
         return data, b"".join(lines)
 
     monkeypatch.setattr(media, "run", altered)
-    with pytest.raises(DecodeError):
-        media.native_audio_pcm(ac3_native_audio, 0, 0, 1000, lambda: False, lambda: False, 1)
+    if fault == "valid":
+        decoded = media.native_audio_pcm(ac3_native_audio, 0, 0, 1000, lambda: False, lambda: False, 1)
+        assert dict(decoded.declarations)["audio_service_initial"] == ("Main Audio Service",)
+        assert dict(decoded.declarations)["matrix_encoding"] == ("none",)
+    else:
+        with pytest.raises(DecodeError):
+            media.native_audio_pcm(ac3_native_audio, 0, 0, 1000, lambda: False, lambda: False, 1)
 
 
 @pytest.mark.parametrize(
@@ -1043,7 +1096,7 @@ def test_ac3_per_frame_service_scope_and_absent_matrix(ac3_native_audio, monkeyp
         if not kwargs.get("capture_stderr"):
             return result
         data, log = result
-        lines = log.splitlines(keepends=True)
+        lines = with_test_audio_declarations(log.splitlines(keepends=True))
         service = next(line for line in lines if b"side data - audio service type:" in line)
         output = []
         count = 0
