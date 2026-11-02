@@ -54,11 +54,13 @@ SIDE_DATA_TWICE_EXIT = 239  # -EEXIST & 0xff
 
 def _make_video_after_audio(path: Path, duration_s: float, offset_s: float = 0.04) -> None:
     """A real video whose brightness is 8 × its time in seconds, starting ``offset_s`` after its audio."""
+    # Apply the offset in a millisecond time base, not the 5 fps source time base.
     subprocess.run(
         [FFMPEG, "-nostdin", "-loglevel", "error",
          "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=mono:d={duration_s}",
-         "-itsoffset", str(offset_s),
-         "-f", "lavfi", "-i", f"nullsrc=s=64x36:r=5:d={duration_s},geq=lum='T*8':cb=128:cr=128",
+         "-f", "lavfi", "-i",
+         f"nullsrc=s=64x36:r=5:d={duration_s},geq=lum='T*8':cb=128:cr=128,"
+         f"settb=1/1000,setpts=PTS+{offset_s}/TB",
          "-map", "1:v", "-map", "0:a", "-fps_mode", "passthrough", "-enc_time_base", "1:1000",
          "-c:v", "mpeg4", "-q:v", "2", "-c:a", "aac", str(path)],
         check=True,

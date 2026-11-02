@@ -945,7 +945,7 @@ def test_missing_complete_metadata_pair_times_out_and_reaps(tmp_path, monkeypatc
     script = f"import os,time; os.write(2,{lines.encode()!r}); os.write(1,b'x'*1048576); time.sleep(10)"
 
     def replacement(command, *args, **kwargs):
-        if command[0] == "ffmpeg" and "-vf" in command:
+        if "-vf" in command:
             command = [sys.executable, "-u", "-c", script]
         return real_popen(command, *args, **kwargs)
 
@@ -995,7 +995,7 @@ def test_metadata_error_interrupts_partial_payload(tmp_path, monkeypatch):
     )
 
     def replacement(command, *args, **kwargs):
-        if command[0] == "ffmpeg" and "-vf" in command:
+        if "-vf" in command:
             command = [sys.executable, "-u", "-c", script]
         return real_popen(command, *args, **kwargs)
 
@@ -1035,7 +1035,7 @@ def test_stderr_eof_does_not_stall_decoder_cleanup(tmp_path, monkeypatch, extra)
     script = "import os,time; os.close(2); " + ("os.write(1,b'x'*1048576); " if extra else "") + "time.sleep(10)"
 
     def replacement(command, *args, **kwargs):
-        if command[0] == "ffmpeg" and "-vf" in command:
+        if "-vf" in command:
             command = [sys.executable, "-u", "-c", script]
         return real_popen(command, *args, **kwargs)
 
@@ -1160,7 +1160,7 @@ def intercept_audio_records(monkeypatch, transform):
     pending = {}
 
     def altered(self, *args, **kwargs):
-        if self.proc.args[0] != "ffmpeg":
+        if "-af" not in self.proc.args:
             return original(self, *args, **kwargs)
         if self not in pending:
             lines = []

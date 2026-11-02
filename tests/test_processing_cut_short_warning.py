@@ -23,6 +23,8 @@ from media_preview_generator.processing.generator import (
 VIDEO = "/data/TV/Show - S03E16.mkv"
 STATED_S = 2549.056  # 42.5 min in the header
 INTERVAL = 6
+FFMPEG = "/test/bin/ffmpeg"
+FFPROBE = "/test/bin/ffprobe"
 
 
 @pytest.fixture
@@ -44,12 +46,16 @@ def _media_info(duration_s: float) -> SimpleNamespace:
 
 
 def _warn(image_count: int, video_end_s: float | None) -> MagicMock:
-    with patch(
-        "media_preview_generator.processing.generator._probe_video_end_seconds", return_value=video_end_s
-    ) as probe:
+    with (
+        patch("media_preview_generator.processing.generator.ffprobe_path_for", return_value=FFPROBE) as resolve,
+        patch("media_preview_generator.processing.generator._probe_video_end_seconds", return_value=video_end_s) as probe,
+    ):
         _warn_if_frame_count_disagrees_with_duration(
-            VIDEO, "/tmp/frames", image_count, _media_info(STATED_S), SimpleNamespace(plex_bif_frame_interval=INTERVAL)
+            VIDEO, "/tmp/frames", image_count, _media_info(STATED_S),
+            SimpleNamespace(plex_bif_frame_interval=INTERVAL, ffmpeg_path=FFMPEG),
         )
+        if probe.called:
+            resolve.assert_called_once_with(FFMPEG)
     return probe
 
 
@@ -57,7 +63,7 @@ class TestCutShortWarning:
     def test_says_cut_short_and_suggests_redownload_when_video_stops_where_thumbnails_do(self, loguru_caplog):
         probe = _warn(image_count=106, video_end_s=632.1)
 
-        probe.assert_called_once_with(VIDEO, pytest.approx(STATED_S))
+        probe.assert_called_once_with(VIDEO, pytest.approx(STATED_S), FFPROBE)
         text = loguru_caplog.text
         assert "'Show - S03E16.mkv' looks cut short" in text
         assert "says it runs 42 min, but its video stops at 11 min" in text

@@ -36,7 +36,11 @@ from media_preview_generator.processing import (
     parse_ffmpeg_progress_line,
     record_failure,
 )
-from media_preview_generator.processing.generator import _has_dv5_libplacebo, _video_details_from_ffprobe, read_media_info
+from media_preview_generator.processing.generator import (
+    _has_dv5_libplacebo,
+    _video_details_from_ffprobe,
+    read_media_info,
+)
 from media_preview_generator.processing.hdr_detection import is_hdr_transfer
 from media_preview_generator.processing.hdr_detection import (
     detect_dolby_vision_rpu_error as _detect_dolby_vision_rpu_error,

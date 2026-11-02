@@ -266,6 +266,9 @@ def run(mock_config, tmp_path):
                     "media_preview_generator.processing.generator._probe_max_keyframe_gap", return_value=keyframe_gap
                 ),
                 patch("media_preview_generator.processing.generator.display_turn", return_value=None),
+                # Exercise the libplacebo retry ladder independently of the host FFmpeg build.
+                patch("media_preview_generator.processing.generator._has_dv5_libplacebo", return_value=True),
+                patch("media_preview_generator.processing.generator._has_dv5_opencl", return_value=False),
                 patch(
                     "media_preview_generator.gpu.vulkan_probe.get_vulkan_device_info",
                     return_value=MagicMock(device="Real GPU", is_software=False),

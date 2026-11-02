@@ -155,11 +155,12 @@ def test_generate_images_drops_tail_frames_when_source_gets_shorter(mock_mediain
     assert image_count == fresh, "tail frames from the previous longer cut survived"
 
 
+@patch("media_preview_generator.processing.generator.ffprobe_path_for", return_value="/test/bin/ffprobe")
 @patch("media_preview_generator.processing.generator._probe_video_end_seconds", return_value=6900.4)
 @patch("media_preview_generator.processing.generator._probe_max_keyframe_gap", return_value=None)
 @patch("media_preview_generator.processing.generator.MediaInfo")
 def test_generate_images_warns_when_thumbnails_do_not_span_the_movie(
-    mock_mediainfo, _mock_probe, _mock_end_probe, sdr_config, tmp_path, loguru_caplog
+    mock_mediainfo, _mock_probe, _mock_end_probe, _mock_ffprobe_path, sdr_config, tmp_path, loguru_caplog
 ):
     """Backstop: a BIF whose length disagrees with the runtime must be loud.
 
@@ -183,7 +184,7 @@ def test_generate_images_warns_when_thumbnails_do_not_span_the_movie(
     assert "out of sync" in loguru_caplog.text
     assert "please report it" in loguru_caplog.text
     assert "115 min" in loguru_caplog.text  # the real runtime is surfaced
-    _mock_end_probe.assert_called_once_with(str(tmp_path / "movie.mkv"), pytest.approx(6900.43))
+    _mock_end_probe.assert_called_once_with(str(tmp_path / "movie.mkv"), pytest.approx(6900.43), "/test/bin/ffprobe")
 
 
 @patch("media_preview_generator.processing.generator._probe_max_keyframe_gap", return_value=None)

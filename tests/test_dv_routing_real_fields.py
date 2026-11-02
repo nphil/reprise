@@ -112,6 +112,7 @@ def _run(row: Row, temp_dir: str, mock_config: MagicMock, vulkan: VulkanProbeRes
         patch("media_preview_generator.processing.generator._detect_codec_error", return_value=False),
         # Keyframes every second: the keyframe-only fast path stays on unless the route forbids it.
         patch("media_preview_generator.processing.generator._probe_max_keyframe_gap", return_value=1.0),
+        patch("media_preview_generator.processing.generator._has_dv5_libplacebo", return_value=True),
         patch("media_preview_generator.gpu.vulkan_probe.get_vulkan_device_info", return_value=vulkan),
         patch.object(ffmpeg_runner, "create_ffmpeg_runner", wraps=ffmpeg_runner.create_ffmpeg_runner) as runner,
     ):
