@@ -17,8 +17,8 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # Keep the first build's provenance in the registry, but do not give it
-      # the installable commit tag until an independent cold build is compared.
+      # Preserve both builds by digest for comparison and mismatch analysis;
+      # only the first can receive an installable tag after verification.
       - name: First cold build (push by digest)
         id: first
         uses: docker/build-push-action@v6
@@ -31,13 +31,13 @@ jobs:
             GIT_SHA=${{ github.sha }}
             SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0.dev${{ github.run_number }}+g${{ github.sha }}
             DOCKER_IMAGE_NAME=ghcr.io/nphil/reprise
-      - name: Second cold build (local comparison only)
+      - name: Second cold build (push by digest)
+        id: second
         uses: docker/build-push-action@v6
         with:
           context: .
           no-cache: true
-          load: true
-          tags: reprise:cold-comparison
+          outputs: type=image,name=ghcr.io/nphil/reprise,push-by-digest=true,name-canonical=true,push=true
           build-args: |
             GIT_BRANCH=${{ github.ref_name }}
             GIT_SHA=${{ github.sha }}
@@ -46,22 +46,24 @@ jobs:
       - name: Compare runtime configuration and uncompressed layers
         env:
           FIRST_IMAGE: ghcr.io/nphil/reprise@${{ steps.first.outputs.digest }}
+          SECOND_IMAGE: ghcr.io/nphil/reprise@${{ steps.second.outputs.digest }}
         run: |
           set -euo pipefail
           docker pull "$FIRST_IMAGE"
-          for image in "$FIRST_IMAGE" reprise:cold-comparison; do
-            docker image inspect "$image" | jq -S '.[0] | {Architecture, Os, Variant, Config, RootFS}' > "${RUNNER_TEMP}/$(if [ "$image" = "$FIRST_IMAGE" ]; then echo first; else echo second; fi).json"
-          done
+          docker pull "$SECOND_IMAGE"
+          docker image inspect "$FIRST_IMAGE" | jq -S '.[0] | {Architecture, Os, Variant, Config, RootFS}' > "${RUNNER_TEMP}/first.json"
+          docker image inspect "$SECOND_IMAGE" | jq -S '.[0] | {Architecture, Os, Variant, Config, RootFS}' > "${RUNNER_TEMP}/second.json"
           diff -u "${RUNNER_TEMP}/first.json" "${RUNNER_TEMP}/second.json"
           echo "Runtime configuration and uncompressed layer digests match. OCI provenance is not compared."
       - name: Verify both candidate images before publication
         env:
           FIRST_IMAGE: ghcr.io/nphil/reprise@${{ steps.first.outputs.digest }}
+          SECOND_IMAGE: ghcr.io/nphil/reprise@${{ steps.second.outputs.digest }}
         run: |
           set -euo pipefail
           container="reprise-candidate-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           trap 'docker logs "$container" 2>/dev/null || true; docker rm -f -v "$container" >/dev/null 2>&1 || true' EXIT
-          for image in "$FIRST_IMAGE" reprise:cold-comparison; do
+          for image in "$FIRST_IMAGE" "$SECOND_IMAGE"; do
             echo "Checking $image"
             license="$(docker run --rm --network none --entrypoint /usr/local/bin/ffmpeg "$image" -L 2>&1)"
             printf '%s\n' "$license"
