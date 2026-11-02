@@ -556,7 +556,7 @@ class TestNavbarMenus:
         page.locator(".navbar-toggler").click()
         drawer = page.locator("#navbarNav")
         expect(drawer).to_be_visible()
-        for label in ("Dashboard", "Servers", "Automation", "Settings", "Tools"):
+        for label in ("Library", "Jobs", "Servers", "Automation", "Settings", "Tools"):
             expect(drawer.get_by_role("link", name=label).first).to_be_visible()
         for toggle, menu, count in (
             ("#navAutomationDropdown", "#navAutomationMenu", 2),

@@ -35,25 +35,24 @@ jobs:
             DOCKER_IMAGE_NAME=ghcr.io/nphil/reprise
       - name: Verify candidate image before publication
         env:
-          IMAGE: ghcr.io/nphil/reprise@${{ steps.image.outputs.digest }}
+          CANDIDATE_IMAGE: ghcr.io/nphil/reprise@${{ steps.image.outputs.digest }}
         run: |
           set -euo pipefail
-          docker pull "$IMAGE"
+          docker pull "$CANDIDATE_IMAGE"
           container="reprise-candidate-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           trap 'docker logs "$container" 2>/dev/null || true; docker rm -f -v "$container" >/dev/null 2>&1 || true' EXIT
-          image="$IMAGE"
-            echo "Checking $image"
-            license="$(docker run --rm --network none --entrypoint /usr/local/bin/ffmpeg "$image" -L 2>&1)"
+          echo "Checking $CANDIDATE_IMAGE"
+          license="$(docker run --rm --network none --entrypoint /usr/local/bin/ffmpeg "$CANDIDATE_IMAGE" -L 2>&1)"
             printf '%s\n' "$license"
             printf '%s\n' "$license" | grep -F -- 'GNU General Public License'
-            buildconf="$(docker run --rm --network none --entrypoint /usr/local/bin/ffmpeg "$image" -buildconf 2>&1)"
+          buildconf="$(docker run --rm --network none --entrypoint /usr/local/bin/ffmpeg "$CANDIDATE_IMAGE" -buildconf 2>&1)"
             printf '%s\n' "$buildconf"
             printf '%s\n' "$buildconf" | grep -E -- '^[[:space:]]*--enable-gpl[[:space:]]*$'
             if printf '%s\n' "$buildconf" | grep -F -- '--enable-nonfree'; then
               echo 'Nonfree FFmpeg configuration must not be published' >&2
               exit 1
             fi
-            docker run --rm -i --network none --entrypoint python3 "$image" - <<'PY'
+          docker run --rm -i --network none --entrypoint python3 "$CANDIDATE_IMAGE" - <<'PY'
           from pathlib import Path
 
           source = Path('/opt/ffmpeg-gpl/share/source')
@@ -90,7 +89,7 @@ jobs:
           for name in ('ebur128.patch', 'COPYING.LGPLv2.1'):
               require_file(loudness / name)
           PY
-            docker run -d --name "$container" --network none --tmpfs /config:rw -e PUID=1000 -e PGID=1000 "$image"
+          docker run -d --name "$container" --network none --tmpfs /config:rw -e PUID=1000 -e PGID=1000 "$CANDIDATE_IMAGE"
             healthy=false
             for _ in {1..60}; do
               state="$(docker inspect -f '{{.State.Status}}' "$container")"
@@ -101,7 +100,7 @@ jobs:
             done
             if [ "$healthy" != true ]; then
               docker inspect -f '{{json .State.Health}}' "$container"
-              echo "Candidate failed to become healthy: $image" >&2
+              echo "Candidate failed to become healthy: $CANDIDATE_IMAGE" >&2
               exit 1
             fi
             docker rm -f -v "$container" >/dev/null
