@@ -20,10 +20,8 @@ jobs:
       - name: Set reproducible build timestamp
         id: timestamp
         run: echo "epoch=$(git show -s --format=%ct "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
-      # Preserve both builds by digest for comparison and mismatch analysis;
-      # only the first can receive an installable tag after verification.
-      - name: First cold build (push by digest)
-        id: first
+      - name: Cold build (push by digest)
+        id: image
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -35,40 +33,15 @@ jobs:
             GIT_SHA=${{ github.sha }}
             SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0.dev${{ github.run_number }}+g${{ github.sha }}
             DOCKER_IMAGE_NAME=ghcr.io/nphil/reprise
-      - name: Second cold build (push by digest)
-        id: second
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          no-cache: true
-          outputs: type=image,name=ghcr.io/nphil/reprise,push-by-digest=true,name-canonical=true,push=true,rewrite-timestamp=true
-          build-args: |
-            SOURCE_DATE_EPOCH=${{ steps.timestamp.outputs.epoch }}
-            GIT_BRANCH=${{ github.ref_name }}
-            GIT_SHA=${{ github.sha }}
-            SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0.dev${{ github.run_number }}+g${{ github.sha }}
-            DOCKER_IMAGE_NAME=ghcr.io/nphil/reprise
-      - name: Compare runtime configuration and uncompressed layers
+      - name: Verify candidate image before publication
         env:
-          FIRST_IMAGE: ghcr.io/nphil/reprise@${{ steps.first.outputs.digest }}
-          SECOND_IMAGE: ghcr.io/nphil/reprise@${{ steps.second.outputs.digest }}
+          IMAGE: ghcr.io/nphil/reprise@${{ steps.image.outputs.digest }}
         run: |
           set -euo pipefail
-          docker pull "$FIRST_IMAGE"
-          docker pull "$SECOND_IMAGE"
-          docker image inspect "$FIRST_IMAGE" | jq -S '.[0] | {Architecture, Os, Variant, Config, RootFS}' > "${RUNNER_TEMP}/first.json"
-          docker image inspect "$SECOND_IMAGE" | jq -S '.[0] | {Architecture, Os, Variant, Config, RootFS}' > "${RUNNER_TEMP}/second.json"
-          diff -u "${RUNNER_TEMP}/first.json" "${RUNNER_TEMP}/second.json"
-          echo "Runtime configuration and uncompressed layer digests match. OCI provenance is not compared."
-      - name: Verify both candidate images before publication
-        env:
-          FIRST_IMAGE: ghcr.io/nphil/reprise@${{ steps.first.outputs.digest }}
-          SECOND_IMAGE: ghcr.io/nphil/reprise@${{ steps.second.outputs.digest }}
-        run: |
-          set -euo pipefail
+          docker pull "$IMAGE"
           container="reprise-candidate-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           trap 'docker logs "$container" 2>/dev/null || true; docker rm -f -v "$container" >/dev/null 2>&1 || true' EXIT
-          for image in "$FIRST_IMAGE" "$SECOND_IMAGE"; do
+          image="$IMAGE"
             echo "Checking $image"
             license="$(docker run --rm --network none --entrypoint /usr/local/bin/ffmpeg "$image" -L 2>&1)"
             printf '%s\n' "$license"
@@ -132,9 +105,8 @@ jobs:
               exit 1
             fi
             docker rm -f -v "$container" >/dev/null
-          done
       - name: Publish verified commit image
         env:
-          FIRST_IMAGE: ghcr.io/nphil/reprise@${{ steps.first.outputs.digest }}
+          IMAGE: ghcr.io/nphil/reprise@${{ steps.image.outputs.digest }}
           COMMIT_IMAGE: ghcr.io/nphil/reprise:sha-${{ github.sha }}
-        run: docker buildx imagetools create --tag "$COMMIT_IMAGE" "$FIRST_IMAGE"
+        run: docker buildx imagetools create --tag "$COMMIT_IMAGE" "$IMAGE"
