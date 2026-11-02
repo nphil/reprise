@@ -54,15 +54,14 @@ SIDE_DATA_TWICE_EXIT = 239  # -EEXIST & 0xff
 
 def _make_video_after_audio(path: Path, duration_s: float, offset_s: float = 0.04) -> None:
     """A real video whose brightness is 8 × its time in seconds, starting ``offset_s`` after its audio."""
-    # Apply the offset in a millisecond time base, not the 5 fps source time base.
+    # Shift after input timestamp normalization, with enough precision for a sub-frame offset.
     subprocess.run(
         [FFMPEG, "-nostdin", "-loglevel", "error",
          "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=mono:d={duration_s}",
-         "-f", "lavfi", "-i",
-         f"nullsrc=s=64x36:r=5:d={duration_s},geq=lum='T*8':cb=128:cr=128,"
-         f"settb=1/1000,setpts=PTS+{offset_s}/TB",
-         "-map", "1:v", "-map", "0:a", "-fps_mode", "passthrough", "-enc_time_base", "1:1000",
-         "-c:v", "mpeg4", "-q:v", "2", "-c:a", "aac", str(path)],
+         "-f", "lavfi", "-i", f"nullsrc=s=64x36:r=5:d={duration_s},geq=lum='T*8':cb=128:cr=128",
+         "-map", "1:v", "-map", "0:a", "-vf", f"settb=1/1000,setpts=PTS+{offset_s}/TB",
+         "-fps_mode", "passthrough", "-enc_time_base", "1:1000",
+         "-c:v", "mpeg4", "-q:v", "2", "-c:a", "pcm_s16le", str(path)],
         check=True,
         capture_output=True,
         timeout=60,
