@@ -8,9 +8,9 @@ from flask import Flask, request
 
 from media_preview_generator.web.webhook_router import _classify_payload
 
-# What each sender posts when set up as docs/guides.md and docs/multi-server.md describe, trimmed to
-# the fields the router looks at. Plex posts multipart form data; the rest post JSON.
 SENDER_BODIES: dict[str, dict] = {
+    # What each sender posts as described in docs/guides.md and docs/multi-server.md,
+    # trimmed to fields the router uses. Plex posts multipart; the rest post JSON.
     "Sonarr": {"eventType": "Download", "series": {"path": "/tv/Show"}, "episodeFile": {"path": "/tv/Show/a.mkv"}},
     "Radarr": {"eventType": "Download", "movie": {"folderPath": "/films/F"}, "movieFile": {"path": "/films/F/f.mkv"}},
     "Plex": {"event": "library.new", "Server": {"uuid": "plex-id"}, "Metadata": {"ratingKey": "1"}},
@@ -44,4 +44,3 @@ def test_the_universal_url_recognises_each_sender_it_should() -> None:
         "Tdarr": "unknown",
         "FileFlows": "unknown",
     }
-
