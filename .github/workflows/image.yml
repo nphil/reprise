@@ -17,6 +17,9 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set reproducible build timestamp
+        id: timestamp
+        run: echo "epoch=$(git show -s --format=%ct "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
       # Preserve both builds by digest for comparison and mismatch analysis;
       # only the first can receive an installable tag after verification.
       - name: First cold build (push by digest)
@@ -25,8 +28,9 @@ jobs:
         with:
           context: .
           no-cache: true
-          outputs: type=image,name=ghcr.io/nphil/reprise,push-by-digest=true,name-canonical=true,push=true
+          outputs: type=image,name=ghcr.io/nphil/reprise,push-by-digest=true,name-canonical=true,push=true,rewrite-timestamp=true
           build-args: |
+            SOURCE_DATE_EPOCH=${{ steps.timestamp.outputs.epoch }}
             GIT_BRANCH=${{ github.ref_name }}
             GIT_SHA=${{ github.sha }}
             SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0.dev${{ github.run_number }}+g${{ github.sha }}
@@ -37,8 +41,9 @@ jobs:
         with:
           context: .
           no-cache: true
-          outputs: type=image,name=ghcr.io/nphil/reprise,push-by-digest=true,name-canonical=true,push=true
+          outputs: type=image,name=ghcr.io/nphil/reprise,push-by-digest=true,name-canonical=true,push=true,rewrite-timestamp=true
           build-args: |
+            SOURCE_DATE_EPOCH=${{ steps.timestamp.outputs.epoch }}
             GIT_BRANCH=${{ github.ref_name }}
             GIT_SHA=${{ github.sha }}
             SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0.dev${{ github.run_number }}+g${{ github.sha }}

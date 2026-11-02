@@ -87,6 +87,7 @@ RUN mkdir -p media_preview_generator && \
 # build, so declared any earlier it would invalidate Layer A's cache each time.
 # ---------------------------------------------------------------------------
 COPY media_preview_generator/ ./media_preview_generator/
+ARG SOURCE_DATE_EPOCH
 ARG SETUPTOOLS_SCM_PRETEND_VERSION=""
 RUN if [ -n "$SETUPTOOLS_SCM_PRETEND_VERSION" ]; then \
       SETUPTOOLS_SCM_PRETEND_VERSION_FOR_REPRISE=$SETUPTOOLS_SCM_PRETEND_VERSION \
@@ -133,7 +134,8 @@ RUN apt-get update && \
         ocl-icd-libopencl1; \
     fi && \
     apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/* /var/cache/ldconfig/aux-cache \
+      /var/log/apt/history.log /var/log/apt/term.log /var/log/dpkg.log
 
 # Install the bundled FFmpeg and ffprobe.
 COPY --from=ffmpeg-gpl-builder /opt/ffmpeg-gpl /opt/ffmpeg-gpl
@@ -143,6 +145,7 @@ RUN ln -s /opt/ffmpeg-gpl/bin/ffmpeg /usr/local/bin/ffmpeg && \
 # Install pre-built wheels from builder (no compiler needed)
 COPY --from=builder /wheels /tmp/wheels
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
+ARG SOURCE_DATE_EPOCH
 RUN pip3 install --no-cache-dir --no-index /tmp/wheels/*.whl \
     --ignore-installed blinker && \
     rm -rf /tmp/wheels
