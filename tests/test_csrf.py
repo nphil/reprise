@@ -145,11 +145,16 @@ class TestSignedInBrowserSession:
 
         assert resp.status_code == 200
 
-    @pytest.mark.parametrize("path", ["/", "/logs", "/servers", "/api/system/status", "/api/jobs"])
+    @pytest.mark.parametrize("path", ["/reprise", "/dashboard", "/logs", "/servers", "/api/system/status", "/api/jobs"])
     def test_get_requests_need_no_token(self, signed_in, path):
         resp = signed_in.get(path)
 
         assert resp.status_code == 200
+
+    def test_home_redirects_to_reprise_without_a_token(self, signed_in):
+        resp = signed_in.get("/")
+        assert resp.status_code == 302
+        assert resp.headers["Location"].endswith("/reprise")
 
 
 class TestApiTokenScripts:
@@ -178,12 +183,47 @@ class TestApiTokenScripts:
 
 
 class TestWebhookReceivers:
-    def test_exactly_the_webhook_receivers_are_exempt(self, app):
+    def test_exactly_the_independently_authenticated_receivers_are_exempt(self, app):
         exempt = {
             endpoint for endpoint, view in app.view_functions.items() if getattr(view, "is_webhook_receiver", False)
         }
 
-        assert exempt == set(WEBHOOK_RECEIVERS)
+        assert exempt == set(WEBHOOK_RECEIVERS) | {"reprise_api.client_analysis"}
+
+    def test_client_analysis_exemption_still_requires_scoped_client_auth(self, app, signed_in):
+        token = _page_token(signed_in)
+        created = signed_in.post(
+            "/api/reprise/clients",
+            json={"name": "analysis client", "scopes": ["analysis:request"]},
+            headers={"X-CSRFToken": token},
+        )
+        assert created.status_code == 201
+        limited = signed_in.post(
+            "/api/reprise/clients",
+            json={"name": "read-only client"},
+            headers={"X-CSRFToken": token},
+        )
+        assert limited.status_code == 201
+        url = "/api/v1/analyses"
+        body = {"media_version_ids": []}
+        client = app.test_client()
+        for headers in ({}, {"Authorization": "Bearer invalid"}, {"Authorization": f"Bearer {API_TOKEN}"}):
+            assert client.post(url, json=body, headers=headers).status_code == 401
+        assert signed_in.post(url, json=body).status_code == 401
+        headers = {"Authorization": f"Bearer {limited.get_json()['secret']}"}
+        assert client.post(url, json=body, headers=headers).status_code == 403
+        headers = {"Authorization": f"Bearer {created.get_json()['secret']}"}
+        response = client.post(url, json=body, headers=headers)
+        assert response.status_code == 400
+        assert response.get_json() == {"error": "Invalid request or operation"}
+        with patch(
+            "media_preview_generator.reprise.service.RepriseService.enqueue_analysis", return_value={"id": "job"}
+        ) as enqueue:
+            response = client.post(url, json={"media_version_ids": ["media-1"]}, headers=headers)
+        assert response.status_code == 202
+        assert response.get_json() == {"id": "job"}
+        assert enqueue.call_args.args == (["media-1"],)
+        assert enqueue.call_args.kwargs["principal"].id == created.get_json()["id"]
 
     def test_receiver_runs_whatever_sec_fetch_site_says(self, app):
         resp = app.test_client().post(
@@ -306,14 +346,14 @@ class TestSecFetchSite:
 
 class TestLogout:
     def test_the_nav_button_signs_out(self, signed_in):
-        resp = signed_in.post("/logout", data={"csrf_token": _page_token(signed_in, "/")})
+        resp = signed_in.post("/logout", data={"csrf_token": _page_token(signed_in, "/dashboard")})
 
         assert resp.status_code == 302 and resp.headers["Location"].endswith("/login")
         with signed_in.session_transaction() as sess:
             assert not sess.get("authenticated")
 
     def test_the_nav_carries_a_logout_form_with_the_page_token(self, signed_in):
-        html = signed_in.get("/").get_data(as_text=True)
+        html = signed_in.get("/dashboard").get_data(as_text=True)
         form = re.search(r'<form method="post" action="/logout"[^>]*>(.*?)</form>', html, re.S)
 
         assert form, "the nav has no Logout form"

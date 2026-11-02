@@ -1,8 +1,7 @@
-"""Pipeline matrix: owners, identity, kind, evidence order + early stop, decisions, publish fan-out, outcomes."""
+"""Pipeline matrix: owners, identity, kind, evidence, decisions, and proposal outcomes."""
 
 from __future__ import annotations
 
-import copy
 import os
 import sqlite3
 import threading
@@ -23,21 +22,12 @@ from media_preview_generator.markers.models import Candidate, FileIdentity, Mark
 from media_preview_generator.markers.outcomes import (
     FILE_BUSY,
     OUTCOME_KEYS,
-    PLEX_DB_BUSY,
     FileOutcome,
     ServerStatus,
     file_outcome,
 )
 from media_preview_generator.markers.pipeline import LocalDetectorSpec, PipelineContext, check_item, process_item
 from media_preview_generator.markers.probe import Chapter, MediaProbe, ProbeError
-from media_preview_generator.markers.publishers import plex_db
-from media_preview_generator.markers.publishers.base import (
-    Capability,
-    CapabilityReport,
-    ItemNotFoundError,
-    PublishError,
-    Shown,
-)
 from media_preview_generator.markers.settings import load_global, validate_global
 from media_preview_generator.markers.sources import ratelimit
 from media_preview_generator.markers.sources.online import LookupResult
@@ -45,21 +35,18 @@ from media_preview_generator.markers.store import EvidenceRow, MarkerStore
 from media_preview_generator.processing.generator import CodecNotSupportedError
 from media_preview_generator.servers.base import Library, ServerType
 from tests.markers import pipeline_helpers
-from tests.markers.fakes import FakeClient, FakePlexItems, FakeRegistry, ready_publisher, server_config
+from tests.markers.fakes import FakeClient, FakeRegistry, ready_publisher, server_config
 from tests.markers.pipeline_helpers import (
     CHAPTERS_BOTH,
     CHAPTERS_OPENING,
     CREDITS_CH,
     DUR,
-    END_CREDITS_CH,
     EPISODE_IDS,
-    EPISODE_LIMITS,
     INTRO_CH,
     INTRO_ONLY,
     MOVIE_IDS,
     NEW_CUT,
     NO_DATA,
-    OPENING_CH,
     TIDB_CREDITS,
     TIDB_INTRO,
     UNKNOWN_IDS,
@@ -94,13 +81,13 @@ class TestOwners:
         assert store.get_file(media) is None  # nothing detected for a file without an enabled owner
         assert all(c.calls == [] for c in ctx.clients.values())
 
-    def test_owner_without_a_publisher_is_skipped_not_failed(self, store, media):
-        # A server type the factory builds no publisher for (none given here): the owner counts, its row says why.
+    def test_emby_owner_gets_a_proposal_without_publication(self, store, media):
         reg = _registry(media, ServerType.EMBY)
         out, _ = _run(_ctx(store, reg), media, {}, probe=_probe(CHAPTERS_BOTH))
         assert [r["status"] for r in out.publisher_rows] == [ServerStatus.SKIPPED.value]
         assert out.outcome_key == FileOutcome.SKIPPED.value
-        assert _state(store, media, "emby-1").status == "skipped"
+        assert _state(store, media, "emby-1") is None
+        assert store.get_decisions(store.get_file(media).id)[T.INTRO].status is DecisionStatus.DECIDED
 
     def test_many_owners_each_get_a_row_in_registry_order(self, store, media):
         reg = _registry(media, ServerType.PLEX, ServerType.JELLYFIN, ServerType.EMBY)
@@ -108,30 +95,20 @@ class TestOwners:
         jf = ready_publisher("jellyfin_bridge", ("intro", "credits", "recap", "preview"))
         out, _ = _run(_ctx(store, reg), media, {"plex-1": plex, "jellyfin-1": jf}, probe=_probe(CHAPTERS_BOTH))
         assert [(r["server_id"], r["server_type"], r["status"]) for r in out.publisher_rows] == [
-            ("plex-1", "plex", ServerStatus.WRITTEN.value),
-            ("jellyfin-1", "jellyfin", ServerStatus.WRITTEN.value),
-            ("emby-1", "emby", ServerStatus.SKIPPED.value),
+            (sid, stype, ServerStatus.SKIPPED.value)
+            for sid, stype in (("plex-1", "plex"), ("jellyfin-1", "jellyfin"), ("emby-1", "emby"))
         ]
-        for pub, sid in ((plex, "plex-1"), (jf, "jellyfin-1")):
-            assert pub.write.call_args.args == (f"item-{sid}", [INTRO_CH, CREDITS_CH])
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        plex.write.assert_not_called()
+        jf.write.assert_not_called()
+        assert out.outcome_key == FileOutcome.SKIPPED.value
+        assert all(_state(store, media, sid) is None for sid in ("plex-1", "jellyfin-1", "emby-1"))
 
     def test_owner_excluded_on_one_server_is_neither_read_nor_published_there(self, store, media):
         reg = _registry(media, ServerType.PLEX, ServerType.JELLYFIN)
         reg.configs_by_id["plex-1"].exclude_paths.append({"value": r"Rick and Morty", "type": "regex"})
-        factory_calls = []
-
-        def factory(server, cfg, **kw):
-            factory_calls.append(cfg.id)
-            return ready_publisher("jellyfin_bridge")
-
-        with (
-            patch.object(pipeline, "probe_media", return_value=_probe()),
-            patch.object(pipeline, "publisher_for", side_effect=factory),
-        ):
+        with patch.object(pipeline, "probe_media", return_value=_probe()):
             out = check_item(_item(media), ctx=_ctx(store, reg))
         assert list(_rows(out)) == ["jellyfin-1"]
-        assert factory_calls == ["jellyfin-1"]
         reg.get("jellyfin-1").get_media_segments.assert_called_once_with("item-jellyfin-1")
         reg.get("plex-1").get_markers.assert_not_called()
         reg.get("plex-1").resolve_remote_path_to_item_id.assert_not_called()
@@ -145,13 +122,13 @@ class TestOwners:
         out, _ = _run(_ctx(store, reg), media, {"jellyfin-1": jf}, probe=_probe(CHAPTERS_BOTH))
         assert [r["server_id"] for r in out.publisher_rows] == ["jellyfin-1"]
 
-    def test_owner_with_markers_off_gets_no_row_while_the_other_publishes(self, store, media):
+    def test_owner_with_markers_off_gets_no_row(self, store, media):
         reg = _registry(media, ServerType.PLEX, ServerType.JELLYFIN)
         reg.configs_by_id["plex-1"].markers["enabled"] = False
         jf = ready_publisher("jellyfin_bridge")
         out, _ = _run(_ctx(store, reg), media, {"jellyfin-1": jf}, probe=_probe(CHAPTERS_BOTH))
         assert [r["server_id"] for r in out.publisher_rows] == ["jellyfin-1"]
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         assert store.get_publish_state(store.get_file(media).id, "plex-1") is None
 
     def test_markers_ownership_uses_every_matching_library(self, store, media):
@@ -163,7 +140,8 @@ class TestOwners:
         plex = ready_publisher()
         out, _ = _run(_ctx(store, reg), media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
         assert [r["server_id"] for r in out.publisher_rows] == ["plex-1"]  # one row however many libraries match
-        assert plex.write.call_args.args == ("item-plex-1", [INTRO_CH, CREDITS_CH])
+        plex.write.assert_not_called()
+        assert store.get_decisions(store.get_file(media).id)[T.INTRO].status is DecisionStatus.DECIDED
 
     def test_server_markers_are_read_from_a_library_with_previews_off(self, store, media):
         reg = _registry(media, ServerType.PLEX, ServerType.JELLYFIN)
@@ -174,29 +152,20 @@ class TestOwners:
         reg.get("plex-1").get_markers.assert_called_once_with("item-plex-1", unknown_if_hidden=True, part_durations=ANY)
         reg.get("jellyfin-1").get_media_segments.assert_called_once_with("item-jellyfin-1")
 
-    @pytest.mark.parametrize(
-        ("stype", "prepare", "message"),
-        [
-            (ServerType.PLEX, lambda server: None, "Plex database not found"),
-            (ServerType.JELLYFIN, lambda server: setattr(server.get_bridge_info, "return_value", None), "reach"),
-            (
-                ServerType.EMBY,
-                lambda server: setattr(server.get_bridge_info, "return_value", {"installed": False, "features": []}),
-                "Install the Media Preview Bridge for Emby plugin",
-            ),
-        ],
-        ids=["plex-no-db", "jellyfin-unreachable", "emby-no-plugin"],
-    )
-    def test_real_publisher_factory_per_vendor(self, store, media, stype, prepare, message):
+    @pytest.mark.parametrize("stype", [ServerType.PLEX, ServerType.JELLYFIN, ServerType.EMBY])
+    def test_proposal_never_writes_to_server(self, store, media, stype):
         reg = _registry(media, stype)
         server = reg.get(f"{stype.value}-1")
-        prepare(server)
-        with patch.object(pipeline, "probe_media", return_value=_probe(CHAPTERS_BOTH)):
+        publisher = ready_publisher()
+        with (
+            patch.object(pipeline, "probe_media", return_value=_probe(CHAPTERS_BOTH)),
+            patch.object(pipeline, "publisher_for", return_value=publisher),
+        ):
             out = check_item(_item(media), ctx=_ctx(store, reg))
-        row = out.publisher_rows[0]
-        assert row["status"] == ServerStatus.SKIPPED.value and message in row["message"]
+        assert out.publisher_rows[0]["status"] == ServerStatus.SKIPPED.value
         assert out.outcome_key == FileOutcome.SKIPPED.value
-        assert _state(store, media, f"{stype.value}-1").status == "skipped"
+        assert _state(store, media, f"{stype.value}-1") is None
+        publisher.write.assert_not_called()
         server.put_bridge_markers.assert_not_called()
         server.put_emby_markers.assert_not_called()
 
@@ -239,10 +208,10 @@ class TestItemIdLookupScope:
         server = PlexServer(cfg)
         server._plex = plex
         reg.servers_by_id["plex-1"] = server
-        publisher = ready_publisher()
-        out, _ = _run(_ctx(store, reg), media, {"plex-1": publisher}, probe=_probe(CHAPTERS_BOTH))
-        assert _rows(out)["plex-1"]["status"] == ServerStatus.WRITTEN.value
-        assert publisher.write.call_args.args == ("42", [INTRO_CH, CREDITS_CH])
+        out, _ = _run(_ctx(store, reg), media, {}, probe=_probe(CHAPTERS_BOTH))
+        assert _rows(out)["plex-1"]["status"] == ServerStatus.SKIPPED.value
+        assert plex.fetchItems.called
+        assert store.get_decisions(store.get_file(media).id)[T.INTRO].status is DecisionStatus.DECIDED
 
 
 EXTRA_SHAPES = [
@@ -283,7 +252,7 @@ class TestExtras:
             reg.get(sid).resolve_remote_path_to_item_id.assert_not_called()
         assert store.get_file(path) is None
 
-    def test_the_episode_next_to_extras_is_still_published(self, store, media):
+    def test_the_episode_next_to_extras_is_still_analyzed(self, store, media):
         season = os.path.dirname(media)
         trailer = os.path.join(season, "Rick and Morty (2013) - S01E01 - Pilot-trailer.mkv")
         featurette = os.path.join(season, "Featurettes", "Rick and Morty (2013) - S01E01 - Pilot.mkv")
@@ -303,13 +272,36 @@ class TestExtras:
                 outcomes[path] = check_item(_item(path), ctx=ctx).outcome_key
         assert outcomes == {
             trailer: FileOutcome.SKIPPED.value,
-            media: FileOutcome.PUBLISHED.value,
+            media: FileOutcome.SKIPPED.value,
             featurette: FileOutcome.SKIPPED.value,
         }
         assert [c.args[0] for c in probe.call_args_list] == [media]
-        assert plex.write.call_args_list[0].args == ("item-plex-1", [INTRO_CH, CREDITS_CH])
-        assert plex.write.call_args_list[0].kwargs["canonical_path"] == media
-        assert plex.write.call_count == 1
+        plex.write.assert_not_called()
+        assert store.get_decisions(store.get_file(media).id)[T.INTRO].status is DecisionStatus.DECIDED
+
+    @pytest.mark.parametrize("stage", ["check", "process"])
+    def test_completed_proposal_clears_health_failure_but_extra_does_not(
+        self, store, media, tmp_path, monkeypatch, stage
+    ):
+        from media_preview_generator.library_health import failures
+        from media_preview_generator.library_health.models import Feature
+        from media_preview_generator.library_health.store import HealthStore
+
+        health = HealthStore(str(tmp_path / "health.db"))
+        monkeypatch.setattr(failures, "default_store", lambda: health)
+        extra = self._extra(tmp_path, "Film/Film-trailer.mkv")
+        features = (Feature.INTRO, Feature.CREDITS)
+        for path in (media, extra):
+            failures.record_failure(features, path, pipeline.NO_DURATION_MESSAGE)
+
+        ctx = _ctx(store, _registry(media, ServerType.PLEX))
+        out, _ = _run(ctx, media, {}, probe=_probe(CHAPTERS_BOTH), stage=stage)
+        extra_out, extra_probe = _run(ctx, extra, {}, probe=_probe(CHAPTERS_BOTH), stage=stage)
+
+        assert out.outcome_key == FileOutcome.SKIPPED.value
+        assert extra_out.outcome_key == FileOutcome.SKIPPED.value
+        extra_probe.assert_not_called()
+        assert failures.unreadable_paths(health) == {feature: frozenset({extra}) for feature in features}
 
 
 class TestIdentityAndProbe:
@@ -485,7 +477,7 @@ class TestIdentityAndProbe:
         assert out.outcome_key == FileOutcome.FAILED.value and "duration" in out.message
         plex.write.assert_not_called()
         out, probe = _run(ctx, media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        assert probe.call_count == 1 and out.outcome_key == FileOutcome.PUBLISHED.value
+        assert probe.call_count == 1 and out.outcome_key == FileOutcome.SKIPPED.value
 
     def test_unchanged_file_is_not_probed_twice_and_changed_file_is(self, store, media):
         reg = _registry(media, ServerType.PLEX)
@@ -503,12 +495,13 @@ class TestIdentityAndProbe:
         reg = _registry(media, ServerType.PLEX)
         plex = ready_publisher()
         _run(_ctx(store, reg), media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH[:3]))
-        assert plex.write.call_args.args[1] == [INTRO_CH]
+        assert store.get_decisions(store.get_file(media).id)[T.INTRO].status is DecisionStatus.DECIDED
         _, probe = _run(_ctx(store, reg, force=True), media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
         assert probe.call_count == 1
-        assert plex.write.call_args.args[1] == [INTRO_CH, CREDITS_CH]
+        assert store.get_decisions(store.get_file(media).id)[T.CREDITS].status is DecisionStatus.DECIDED
+        plex.write.assert_not_called()
 
-    def test_changed_file_republishes_with_previous_markers(self, store, media):
+    def test_changed_file_replaces_the_proposal(self, store, media):
         reg = _registry(media, ServerType.PLEX)
         plex = ready_publisher()
         ctx = _ctx(store, reg)
@@ -520,13 +513,12 @@ class TestIdentityAndProbe:
             Chapter(40_000, None, "Chapter 2"),
         )
         _run(ctx, media, {"plex-1": plex}, probe=_probe(new_chapters, NEW_CUT))  # another cut: no credits carried
-        args, kwargs = plex.write.call_args
-        assert args[1] == [Marker(T.INTRO, 10_000, 40_000, ("chapters",))]
-        assert [m.type for m in kwargs["previous"]] == [T.INTRO, T.CREDITS]
+        decisions = store.get_decisions(store.get_file(media).id)
+        assert store.get_markers(store.get_file(media).id)[T.INTRO] == Marker(T.INTRO, 10_000, 40_000, ("chapters",))
+        assert decisions[T.CREDITS].status is DecisionStatus.NO_EVIDENCE
+        plex.write.assert_not_called()
 
-    def test_changed_file_with_identical_markers_is_offered_again_to_every_server(self, store, media):
-        # A changed identity clears every server's basis, so each publisher decides whether its server needs them
-        # again (the Jellyfin plugin must store the new file's size: TestJellyfinReadBackVerify in the contract tests).
+    def test_changed_file_with_identical_markers_remains_a_proposal_for_every_owner(self, store, media):
         reg = _registry(media, ServerType.PLEX, ServerType.JELLYFIN)
         plex, jf = ready_publisher(), ready_publisher("jellyfin_bridge")
         pubs = {"plex-1": plex, "jellyfin-1": jf}
@@ -536,21 +528,13 @@ class TestIdentityAndProbe:
 
         out, _ = _run(ctx, media, pubs, probe=_probe(CHAPTERS_BOTH))
 
-        for pub, sid in ((plex, "plex-1"), (jf, "jellyfin-1")):
-            assert pub.write.call_count == 2
-            args, kwargs = pub.write.call_args
-            assert args == (f"item-{sid}", [INTRO_CH, CREDITS_CH])
-            assert kwargs["previous"] == [INTRO_CH, CREDITS_CH]
-        rows = _rows(out)
-        # Neither write changed its server here; both are still checked again later: servers rescan a replaced file.
-        assert (rows["plex-1"]["status"], rows["jellyfin-1"]["status"]) == (
-            ServerStatus.UP_TO_DATE.value,
-            ServerStatus.UP_TO_DATE.value,
-        )
-        assert rows["plex-1"]["verify_later"] is True and rows["jellyfin-1"]["verify_later"] is True
-        assert out.outcome_key == FileOutcome.UP_TO_DATE.value
+        plex.write.assert_not_called()
+        jf.write.assert_not_called()
+        assert {r["status"] for r in out.publisher_rows} == {ServerStatus.SKIPPED.value}
+        assert out.outcome_key == FileOutcome.SKIPPED.value
+        assert store.get_decisions(store.get_file(media).id)[T.INTRO].status is DecisionStatus.DECIDED
 
-    def test_file_changed_during_analysis_is_detected_again_before_publishing(self, store, media):
+    def test_file_changed_during_analysis_is_detected_again_before_proposal(self, store, media):
         reg = _registry(media, ServerType.PLEX)
         plex = ready_publisher()
         new_chapters = (Chapter(0, 10_000, "Chapter 1"), Chapter(10_000, 40_000, "Intro"), Chapter(40_000, None, "B"))
@@ -565,30 +549,20 @@ class TestIdentityAndProbe:
 
         out, _ = _run(_ctx(store, reg), media, {"plex-1": plex}, probe_effect=probe)
         assert len(probes) == 2
-        plex.write.assert_called_once()
-        assert plex.write.call_args.args[1] == [Marker(T.INTRO, 10_000, 40_000, ("chapters",))]
+        plex.write.assert_not_called()
+        assert store.get_markers(store.get_file(media).id)[T.INTRO] == Marker(T.INTRO, 10_000, 40_000, ("chapters",))
         assert store.get_file(media).mtime_ns == 7
-        assert _state(store, media, "plex-1").markers == (Marker(T.INTRO, 10_000, 40_000, ("chapters",)),)
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
 
-    def test_file_changed_between_two_servers_restarts_before_the_next_write(self, store, media):
+    def test_multiple_owners_never_write_during_analysis(self, store, media):
         reg = _registry(media, ServerType.PLEX, ServerType.JELLYFIN)
         plex, jf = ready_publisher(), ready_publisher("jellyfin_bridge")
-        order = []
-
-        def plex_write(*args, **kwargs):
-            order.append("plex")
-            if len(order) == 1:
-                os.utime(media, ns=(9, 9))
-            return args[1]
-
-        plex.write.side_effect = plex_write
-        jf.write.side_effect = lambda *a, **k: order.append("jellyfin") or a[1]
-        out, probe = _run(_ctx(store, reg), media, {"plex-1": plex, "jellyfin-1": jf}, probe=_probe(CHAPTERS_BOTH))
-        assert order == ["plex", "plex", "jellyfin"]  # jellyfin never received markers for the replaced file
-        assert probe.call_count == 2
-        assert {r["status"] for r in out.publisher_rows} == {ServerStatus.WRITTEN.value}
-        assert store.get_file(media).mtime_ns == 9
+        out, _ = _run(_ctx(store, reg), media, {"plex-1": plex, "jellyfin-1": jf}, probe=_probe(CHAPTERS_BOTH))
+        plex.write.assert_not_called()
+        jf.write.assert_not_called()
+        assert {r["server_id"] for r in out.publisher_rows} == {"plex-1", "jellyfin-1"}
+        assert {r["status"] for r in out.publisher_rows} == {ServerStatus.SKIPPED.value}
+        assert store.get_decisions(store.get_file(media).id)[T.INTRO].status is DecisionStatus.DECIDED
 
     def test_file_that_keeps_changing_fails_without_publishing(self, store, media):
         reg = _registry(media, ServerType.PLEX)
@@ -638,9 +612,10 @@ class TestKind:
         return out, reg, pubs, ctx
 
     def test_path_movie_that_the_server_calls_an_episode_gets_intros(self, store, ambiguous):
-        out, reg, pubs, _ = self._run_kind(store, ambiguous, {"jellyfin-1": EPISODE_IDS})
+        _, reg, pubs, _ = self._run_kind(store, ambiguous, {"jellyfin-1": EPISODE_IDS})
         reg.get("jellyfin-1").get_external_ids.assert_called_once_with("item-jellyfin-1")
-        assert pubs["jellyfin-1"].write.call_args.args[1] == [OPENING_CH, END_CREDITS_CH]
+        assert store.get_decisions(store.get_file(ambiguous).id)[T.INTRO].status is DecisionStatus.DECIDED
+        pubs["jellyfin-1"].write.assert_not_called()
         rec = store.get_file(ambiguous)
         assert rec.is_movie is False and rec.season_key == os.path.dirname(ambiguous)
 
@@ -650,8 +625,9 @@ class TestKind:
         assert clients["theintrodb"].calls[0]["ids"] == MediaIds("episode", None, "tt7654321", "999", 1, 3)
 
     def test_server_confirmed_movie_detects_credits_only_even_with_an_opening_chapter(self, store, ambiguous):
-        out, _, pubs, _ = self._run_kind(store, ambiguous, {"jellyfin-1": MOVIE_IDS})
-        assert pubs["jellyfin-1"].write.call_args.args[1] == [END_CREDITS_CH]
+        _, _, pubs, _ = self._run_kind(store, ambiguous, {"jellyfin-1": MOVIE_IDS})
+        assert store.get_decisions(store.get_file(ambiguous).id)[T.CREDITS].status is DecisionStatus.DECIDED
+        pubs["jellyfin-1"].write.assert_not_called()
         rec = store.get_file(ambiguous)
         assert rec.is_movie is True and rec.season_key is None
         assert store.get_decisions(rec.id)[T.INTRO].status is DecisionStatus.DISABLED
@@ -665,11 +641,11 @@ class TestKind:
     @pytest.mark.parametrize("answer", [None, "no-item"], ids=["server-cant-answer", "not-in-server-yet"])
     def test_unconfirmed_path_movie_keeps_the_movie_kind_and_skips_online_lookups(self, store, ambiguous, answer):
         clients = _clients()
-        out, reg, pubs, _ = self._run_kind(store, ambiguous, {"jellyfin-1": answer}, clients=clients)
-        if answer is None:
-            assert pubs["jellyfin-1"].write.call_args.args[1] == [END_CREDITS_CH]
-        else:
+        _, reg, pubs, _ = self._run_kind(store, ambiguous, {"jellyfin-1": answer}, clients=clients)
+        if answer == "no-item":
             reg.get("jellyfin-1").get_external_ids.assert_not_called()
+        pubs["jellyfin-1"].write.assert_not_called()
+        assert store.get_decisions(store.get_file(ambiguous).id)[T.CREDITS].status is DecisionStatus.DECIDED
         assert store.get_file(ambiguous).is_movie is True
         assert all(c.calls == [] for c in clients.values())
 
@@ -682,16 +658,18 @@ class TestKind:
         assert store.get_file(ambiguous).is_movie is False
 
     def test_second_server_answers_when_the_first_cant(self, store, ambiguous):
-        out, reg, pubs, _ = self._run_kind(
+        _, reg, pubs, _ = self._run_kind(
             store, ambiguous, {"plex-1": None, "jellyfin-1": EPISODE_IDS}, types=("plex", "jellyfin")
         )
         reg.get("plex-1").get_external_ids.assert_called_once_with("item-plex-1")
-        assert pubs["jellyfin-1"].write.call_args.args[1] == [OPENING_CH, END_CREDITS_CH]
+        assert store.get_decisions(store.get_file(ambiguous).id)[T.INTRO].status is DecisionStatus.DECIDED
+        pubs["jellyfin-1"].write.assert_not_called()
 
     def test_server_unknown_kind_wins_over_path_movie(self, store, ambiguous):
         clients = _clients()
-        out, _, pubs, _ = self._run_kind(store, ambiguous, {"jellyfin-1": UNKNOWN_IDS}, clients=clients)
-        assert pubs["jellyfin-1"].write.call_args.args[1] == [END_CREDITS_CH]
+        _, _, pubs, _ = self._run_kind(store, ambiguous, {"jellyfin-1": UNKNOWN_IDS}, clients=clients)
+        assert store.get_decisions(store.get_file(ambiguous).id)[T.CREDITS].status is DecisionStatus.DECIDED
+        pubs["jellyfin-1"].write.assert_not_called()
         assert store.get_file(ambiguous).is_movie is False
         assert all(c.calls == [] for c in clients.values())  # no ids to ask with
 
@@ -699,15 +677,16 @@ class TestKind:
         clients = _clients()
         out, _, _, _ = self._run_kind(store, ambiguous, {"jellyfin-1": UNKNOWN_IDS}, chapters=(), clients=clients)
         assert all(c.calls == [] for c in clients.values())
-        assert out.outcome_key == FileOutcome.NO_MARKERS.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
 
     def test_server_exception_counts_as_no_answer(self, store, ambiguous):
         reg = _registry(ambiguous, ServerType.JELLYFIN)
         reg.get("jellyfin-1").get_external_ids.side_effect = RuntimeError("HTTP 500")
         jf = ready_publisher("jellyfin_bridge")
         out, _ = _run(_ctx(store, reg), ambiguous, {"jellyfin-1": jf}, probe=_probe(CHAPTERS_OPENING))
-        assert jf.write.call_args.args[1] == [END_CREDITS_CH]
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert store.get_decisions(store.get_file(ambiguous).id)[T.CREDITS].status is DecisionStatus.DECIDED
+        jf.write.assert_not_called()
+        assert out.outcome_key == FileOutcome.SKIPPED.value
 
     def test_hint_item_id_confirms_the_kind_without_a_path_lookup(self, store, ambiguous):
         reg = _registry(ambiguous, ServerType.JELLYFIN)
@@ -718,7 +697,8 @@ class TestKind:
         )
         reg.get("jellyfin-1").get_external_ids.assert_called_once_with("abc")
         reg.get("jellyfin-1").resolve_remote_path_to_item_id.assert_not_called()
-        assert jf.write.call_args.args[0] == "abc"
+        assert store.get_decisions(store.get_file(ambiguous).id)[T.INTRO].status is DecisionStatus.DECIDED
+        jf.write.assert_not_called()
 
     def test_server_kind_is_asked_once_while_the_file_is_unchanged(self, store, ambiguous):
         reg = _registry(ambiguous, ServerType.JELLYFIN)
@@ -728,13 +708,14 @@ class TestKind:
         _run(_ctx(store, reg), ambiguous, {"jellyfin-1": jf}, probe=_probe(CHAPTERS_OPENING))
         out, _ = _run(_ctx(store, reg), ambiguous, {"jellyfin-1": jf})
         assert server.get_external_ids.call_count == 1
-        assert out.outcome_key == FileOutcome.UP_TO_DATE.value  # still an episode: the intro stays
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         assert store.get_server_kind(store.get_file(ambiguous).id) == "episode"
         os.utime(ambiguous, ns=(3, 3))
         server.get_external_ids.return_value = MOVIE_IDS
         _run(_ctx(store, reg), ambiguous, {"jellyfin-1": jf}, probe=_probe(CHAPTERS_OPENING))
         assert server.get_external_ids.call_count == 2
-        assert jf.write.call_args.args[1] == [END_CREDITS_CH]
+        assert store.get_decisions(store.get_file(ambiguous).id)[T.INTRO].status is DecisionStatus.DISABLED
+        jf.write.assert_not_called()
 
     @pytest.mark.parametrize(
         ("answer", "expected"),
@@ -789,7 +770,7 @@ class TestKind:
         assert server.get_external_ids.call_count == 1
         assert store.get_file(ambiguous).is_movie is (cached == "movie")
         assert [len(c.calls) for c in clients.values()] == calls_after_first
-        assert out.outcome_key == FileOutcome.UP_TO_DATE.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
 
     def test_path_episode_is_not_confirmed_when_nothing_needs_ids(self, store, media):
         reg = _registry(media, ServerType.PLEX)
@@ -798,7 +779,8 @@ class TestKind:
         raw = {"sources": [{"id": sid, "enabled": False} for sid in ("theintrodb", "introdb", "skipdb")]}
         _run(_ctx(store, reg, settings_raw=raw), media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
         reg.get("plex-1").get_external_ids.assert_not_called()
-        assert plex.write.call_args.args[1] == [INTRO_CH, CREDITS_CH]
+        assert store.get_decisions(store.get_file(media).id)[T.INTRO].status is DecisionStatus.DECIDED
+        plex.write.assert_not_called()
 
     def test_path_episode_ignores_server_ids_of_another_kind(self, store, media):
         reg = _registry(media, ServerType.PLEX)
@@ -824,8 +806,9 @@ class TestKind:
         folder.mkdir(parents=True)
         path = str(folder / "Anime Show - 001.mkv")
         open(path, "wb").close()
-        out, _, pubs, _ = self._run_kind(store, path, {"jellyfin-1": EPISODE_IDS})
-        assert pubs["jellyfin-1"].write.call_args.args[1] == [OPENING_CH, END_CREDITS_CH]
+        _, _, pubs, _ = self._run_kind(store, path, {"jellyfin-1": EPISODE_IDS})
+        assert store.get_decisions(store.get_file(path).id)[T.INTRO].status is DecisionStatus.DECIDED
+        pubs["jellyfin-1"].write.assert_not_called()
 
     def test_movie_detects_credits_only(self, store, tmp_path):
         folder = tmp_path / "media" / "movies" / "Toy Story (1995) {tmdb-862}"
@@ -844,7 +827,10 @@ class TestKind:
             patch.object(pipeline, "publisher_for", return_value=plex),
         ):
             check_item(_item(str(path)), ctx=_ctx(store, reg))
-        assert plex.write.call_args.args[1] == [Marker(T.CREDITS, 4_629_000, 4_866_050, ("chapters",))]
+        assert store.get_markers(store.get_file(str(path)).id)[T.CREDITS] == Marker(
+            T.CREDITS, 4_629_000, 4_866_050, ("chapters",)
+        )
+        plex.write.assert_not_called()
 
     def test_path_without_ids_uses_server_metadata(self, store, tmp_path):
         folder = tmp_path / "media" / "tv" / "Some Show" / "Season 02"
@@ -882,42 +868,25 @@ class TestEvidenceAndDecisions:
         plex, jf = ready_publisher(), ready_publisher("jellyfin_bridge", ("intro", "credits", "recap", "preview"))
         ctx = _ctx(store, reg)
         out, _ = _run(ctx, media, {"plex-1": plex, "jellyfin-1": jf}, probe=_probe(CHAPTERS_BOTH))
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         assert [len(c.calls) for c in ctx.clients.values()] == [1, 1, 1]
         reg.get("plex-1").get_markers.assert_called_once_with("item-plex-1", unknown_if_hidden=True, part_durations=ANY)
         reg.get("jellyfin-1").get_media_segments.assert_called_once_with("item-jellyfin-1")
-        for pub, sid in ((plex, "plex-1"), (jf, "jellyfin-1")):
-            args, kwargs = pub.write.call_args
-            assert args == (f"item-{sid}", [INTRO_CH, CREDITS_CH])
-            assert kwargs == {
-                "previous": [],
-                "own_previous": None,
-                "duration_ms": DUR,
-                "canonical_path": media,
-                "kept_types": frozenset(),
-                "limits": EPISODE_LIMITS,
-            }
-        assert {r["server_id"]: r["status"] for r in out.publisher_rows} == {
-            "plex-1": ServerStatus.WRITTEN.value,
-            "jellyfin-1": ServerStatus.WRITTEN.value,
-        }
-        row = _rows(out)["plex-1"]
-        assert row["canonical_path"] == media and row["adapter_name"] == "plex_db" and row["server_name"] == "PLEX-1"
-        assert _state(store, media, "plex-1").markers == (INTRO_CH, CREDITS_CH)
-        assert _state(store, media, "plex-1").status == "written"
-        assert _state(store, media, "plex-1").item_id == "item-plex-1"
+        for pub in (plex, jf):
+            pub.write.assert_not_called()
+        assert store.get_markers(store.get_file(media).id) == {T.INTRO: INTRO_CH, T.CREDITS: CREDITS_CH}
+        assert store.get_publish_state(store.get_file(media).id, "plex-1") is None
         assert "intro" in out.message and "credits" in out.message
 
-    def test_second_run_is_up_to_date_without_writes(self, store, media):
+    def test_second_run_reuses_decisions_without_writes(self, store, media):
         reg = _registry(media, ServerType.PLEX)
         plex = ready_publisher()
         ctx = _ctx(store, reg)
         _run(ctx, media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        plex.write.reset_mock()
         out, _ = _run(ctx, media, {"plex-1": plex})
         plex.write.assert_not_called()
-        assert out.outcome_key == FileOutcome.UP_TO_DATE.value
-        assert out.publisher_rows[0]["status"] == ServerStatus.UP_TO_DATE.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
+        assert store.get_markers(store.get_file(media).id) == {T.INTRO: INTRO_CH, T.CREDITS: CREDITS_CH}
 
     @pytest.mark.parametrize("intro", DECISION_CELLS)
     @pytest.mark.parametrize("credits", DECISION_CELLS)
@@ -945,17 +914,9 @@ class TestEvidenceAndDecisions:
         )
 
         expected = [m for m, cell in ((INTRO_CH, intro), (CREDITS_CH, credits)) if cell == "decided"]
-        if expected:
-            status = ServerStatus.WRITTEN
-            outcome = FileOutcome.PUBLISHED
-            assert plex.write.call_args.args == ("item-plex-1", expected)
-        else:
-            plex.write.assert_not_called()
-            status = ServerStatus.NONE
-            outcome = FileOutcome.NO_MARKERS
-            assert out.publisher_rows[0]["message"] == "No markers found"
-        assert [r["status"] for r in out.publisher_rows] == [status.value]
-        assert out.outcome_key == outcome.value
+        assert store.get_markers(store.get_file(media).id) == {m.type: m for m in expected}
+        plex.write.assert_not_called()
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         # The file's summary says why a type has nothing only when there is a reason beyond "nothing found".
         for mtype, cell in ((T.INTRO, intro), (T.CREDITS, credits)):
             if cell == "online-alone":
@@ -992,33 +953,34 @@ class TestEvidenceAndDecisions:
             {"jellyfin-1": jf},
             probe=_probe(chapters),
         )
-        assert jf.write.call_args.args[1] == [Marker(T.RECAP, 0, 40_000, ("chapters",)), INTRO_CH, CREDITS_CH]
+        assert store.get_markers(store.get_file(media).id) == {
+            T.RECAP: Marker(T.RECAP, 0, 40_000, ("chapters",)),
+            T.INTRO: INTRO_CH,
+            T.CREDITS: CREDITS_CH,
+        }
+        jf.write.assert_not_called()
 
-    def test_a_lone_online_answer_left_after_a_file_change_removes_the_marker_published_before(self, store, media):
-        # The file changed, so the chapter that decided the intro is gone; TheIntroDB alone decides nothing, and a
-        # changed file isn't a rule change, so nothing keeps the published intro.
+    def test_file_change_replaces_decided_marker_with_lone_online_proposal(self, store, media):
+        # The file changed, so the chapter that decided the intro is gone; TheIntroDB alone cannot decide it.
         reg = _registry(media, ServerType.PLEX)
         plex = ready_publisher()
         ctx = _ctx(store, reg, clients=_clients(theintrodb=LookupResult("ok", (TIDB_INTRO,))), settings_raw=INTRO_ONLY)
         _run(ctx, media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH[:3]))
+        assert store.get_markers(store.get_file(media).id)[T.INTRO] == INTRO_CH
         os.utime(media, ns=(3, 3))
         out, _ = _run(ctx, media, {"plex-1": plex}, probe=_probe())
-        assert plex.write.call_args.args == ("item-plex-1", [])
-        assert plex.write.call_args.kwargs["previous"] == [INTRO_CH]
-        assert out.publisher_rows[0]["status"] == ServerStatus.WRITTEN.value
-        assert _state(store, media, "plex-1").markers == ()
+        plex.write.assert_not_called()
+        assert T.INTRO not in store.get_markers(store.get_file(media).id)
         decision = store.get_decisions(store.get_file(media).id)[T.INTRO]
         assert (decision.status, decision.reason) == (DecisionStatus.NO_EVIDENCE, ONLINE_ALONE_REASON.format("intro"))
         assert (decision.proposed_start_ms, decision.proposed_end_ms) == (TIDB_INTRO.start_ms, TIDB_INTRO.end_ms)
-        # The next run has nothing to send either; Plex already shows that, so the row is up to date.
+        # A later run retains the same undecided proposal without changing the server.
         out, _ = _run(ctx, media, {"plex-1": plex})
-        assert plex.write.call_count == 2
-        assert out.publisher_rows[0]["status"] == ServerStatus.UP_TO_DATE.value
-        assert out.publisher_rows[0]["message"] == "Up to date"
-        assert out.outcome_key == FileOutcome.UP_TO_DATE.value
+        plex.write.assert_not_called()
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         assert out.message == f"intro: none ({ONLINE_ALONE_REASON.format('intro')})"
 
-    def test_a_file_an_older_build_held_at_high_is_published_from_its_stored_answers(self, store, media, monkeypatch):
+    def test_a_file_held_at_high_is_decided_from_its_stored_answers(self, store, media, monkeypatch):
         # Until 2026-09-24 the default rules ("high") left a lone season audio intro undecided; the file said why.
         # (A lone SkipDB intro, the case this once covered, waits for a second source at "medium" too since 2026-09-25.)
         reg = _registry(media, ServerType.PLEX)
@@ -1034,23 +996,24 @@ class TestEvidenceAndDecisions:
 
         monkeypatch.setattr(pipeline, "APP_PUBLISH_WHEN", "high")
         out = run()
-        assert out.outcome_key == FileOutcome.NO_MARKERS.value
-        assert _rows(out)["plex-1"]["status"] == ServerStatus.NONE.value
-        assert _rows(out)["plex-1"]["message"] == "No markers found"
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         assert out.message == 'intro: none (only season audio found the intro; at "high" a second source must agree)'
         decision = store.get_decisions(store.get_file(media).id)[T.INTRO]
         assert decision.status is DecisionStatus.NO_EVIDENCE
         assert (decision.proposed_start_ms, decision.proposed_end_ms) == (127_894, 156_824)
         monkeypatch.undo()
         out = run()
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         assert detect.call_count == 1  # the stored answer decided; the season wasn't matched again
         assert [len(c.calls) for c in clients.values()] == [1, 1, 1]
-        assert plex.write.call_args.args[1] == [Marker(T.INTRO, 127_894, 156_824, ("season_audio",))]
+        assert store.get_markers(store.get_file(media).id)[T.INTRO] == Marker(
+            T.INTRO, 127_894, 156_824, ("season_audio",)
+        )
+        plex.write.assert_not_called()
 
     def test_the_files_message_says_why_each_undecided_type_has_nothing(self, store, media):
         # IntroDB alone can't decide the intro, and two online sources disagree on the credits (neither read the file,
-        # so neither decides): the file's message gives each type's reason; the row says only that nothing was found.
+        # so neither decides): the file's message gives each type's reason.
         reg = _registry(media, ServerType.PLEX)
         plex = ready_publisher()
         clients = _clients(
@@ -1059,9 +1022,7 @@ class TestEvidenceAndDecisions:
             theintrodb=LookupResult("ok", (Candidate(T.CREDITS, 1_290_000, None, Source.THEINTRODB),)),
         )
         out, _ = _run(_ctx(store, reg, clients=clients), media, {"plex-1": plex})
-        assert out.outcome_key == FileOutcome.NO_MARKERS.value
-        assert _rows(out)["plex-1"]["status"] == ServerStatus.NONE.value
-        assert _rows(out)["plex-1"]["message"] == "No markers found"
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         assert out.message == (
             "intro: none (only IntroDB has the intro; an online answer needs a check against the file); "
             "credits: none (sources disagree: introdb/theintrodb, skipdb)"
@@ -1088,8 +1049,8 @@ class TestEvidenceAndDecisions:
     ):
         # Season audio decides an intro alone when nothing else answers, but the online sources are
         # still asked on their schedule (a "no entry" again after NO_DATA_RETRY): one that later agrees confirms it; one
-        # that disagrees leaves the intro undecided (an intro disagreement writes nothing), a new
-        # answer, so the published marker isn't kept. TheIntroDB isn't kept for chapters-only files here, even at Low.
+        # that disagrees leaves the intro undecided, replacing the earlier decision. TheIntroDB isn't kept for
+        # chapters-only files here, even at Low.
         reg = _registry(media, ServerType.PLEX)
         plex = ready_publisher()
         clients = _clients()
@@ -1102,8 +1063,11 @@ class TestEvidenceAndDecisions:
             ctx.priority = lambda: priority
             return _run(ctx, media, {"plex-1": plex}, stage="process")[0]
 
-        assert run(first).outcome_key == FileOutcome.PUBLISHED.value
-        assert plex.write.call_args.args[1] == [Marker(T.INTRO, 126_000, 157_000, ("season_audio",))]
+        assert run(first).outcome_key == FileOutcome.SKIPPED.value
+        assert store.get_markers(store.get_file(media).id)[T.INTRO] == Marker(
+            T.INTRO, 126_000, 157_000, ("season_audio",)
+        )
+        plex.write.assert_not_called()
         run(first + pipeline.NO_DATA_RETRY - timedelta(days=1))
         assert [len(c.calls) for c in clients.values()] == [1, 1, 1]  # not due yet: nothing asked again
 
@@ -1126,7 +1090,7 @@ class TestEvidenceAndDecisions:
             )
             assert T.INTRO not in store.get_markers(store.get_file(media).id)
 
-    def test_theintrodb_alone_never_publishes_even_at_medium(self, store, media):
+    def test_theintrodb_alone_never_decides_even_at_medium(self, store, media):
         # TheIntroDB answers the closest cut it has, whatever this file's duration (e.g. a long cold open).
         reg = _registry(media, ServerType.PLEX)
         plex = ready_publisher()
@@ -1136,7 +1100,7 @@ class TestEvidenceAndDecisions:
             media,
             {"plex-1": plex},
         )
-        assert out.outcome_key == FileOutcome.NO_MARKERS.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         decision = store.get_decisions(store.get_file(media).id)[T.INTRO]
         assert (decision.status, decision.reason) == (DecisionStatus.NO_EVIDENCE, ONLINE_ALONE_REASON.format("intro"))
         plex.write.assert_not_called()
@@ -1162,8 +1126,11 @@ class TestEvidenceAndDecisions:
         assert call["ids"] == MediaIds("episode", None, None, "275274", 1, 1)
         assert call["duration_ms"] == DUR and call["priority"] == 2
         # The agreed end is TheIntroDB's (first in source order); the start is the latest of the agreeing sources.
-        assert plex.write.call_args.args[1] == [Marker(T.INTRO, 129_000, 156_824, ("theintrodb", "introdb", "skipdb"))]
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert store.get_markers(store.get_file(media).id)[T.INTRO] == Marker(
+            T.INTRO, 129_000, 156_824, ("theintrodb", "introdb", "skipdb")
+        )
+        plex.write.assert_not_called()
+        assert out.outcome_key == FileOutcome.SKIPPED.value
 
     def test_stops_querying_once_everything_is_decided(self, store, media):
         # SkipDB alone never decides (rule 6), so TheIntroDB, next in the order, is asked; once the two agree the intro
@@ -1179,9 +1146,12 @@ class TestEvidenceAndDecisions:
         }
         plex = ready_publisher()
         _run(_ctx(store, reg, clients=clients, settings_raw=raw), media, {"plex-1": plex})
-        assert plex.write.call_args.args[1] == [Marker(T.INTRO, 127_500, 157_000, ("skipdb", "theintrodb"))]
+        assert store.get_markers(store.get_file(media).id)[T.INTRO] == Marker(
+            T.INTRO, 127_500, 157_000, ("skipdb", "theintrodb")
+        )
+        plex.write.assert_not_called()
         assert [len(c.calls) for c in clients.values()] == [1, 0, 1]
-        # The server is still read before the first publish: its own marker could shorten the decided skip (rule 7).
+        # The server is still read before the decision: its own marker could shorten the decided skip (rule 7).
         reg.get("plex-1").get_markers.assert_called_once_with("item-plex-1", unknown_if_hidden=True, part_durations=ANY)
 
     def test_a_server_read_after_everything_is_decided_shortens_agreed_credits(self, store, media):
@@ -1198,7 +1168,8 @@ class TestEvidenceAndDecisions:
         plex = ready_publisher()
         _run(_ctx(store, reg, clients=clients, settings_raw=CREDITS_DEFAULTS), media, {"plex-1": plex})
         shortened = Marker(T.CREDITS, 1_255_500, DUR, ("introdb", "skipdb", "server_markers"))
-        assert plex.write.call_args.args == ("item-plex-1", [shortened])
+        assert store.get_markers(store.get_file(media).id)[T.CREDITS] == shortened
+        plex.write.assert_not_called()
         decision = store.get_decisions(store.get_file(media).id)[T.CREDITS]
         assert decision.reason == "sources agree: introdb, skipdb; start shortened to the server's own marker (plex-1)"
         plex_server.get_markers.assert_called_once_with("item-plex-1", unknown_if_hidden=True, part_durations=ANY)
@@ -1236,8 +1207,8 @@ class TestEvidenceAndDecisions:
                 "chapters contradicted by agreeing sources: introdb, skipdb",
             )
             assert (decision.proposed_start_ms, decision.proposed_end_ms) == (0, 95_000)
-            assert out.outcome_key == FileOutcome.NO_MARKERS.value
-        jf.write.assert_not_called()  # never published, so nothing to take back
+            assert out.outcome_key == FileOutcome.SKIPPED.value
+        jf.write.assert_not_called()
         # The first run asked both; the forced run asked again; normal runs reuse the stored answers.
         assert (len(clients["introdb"].calls), len(clients["skipdb"].calls)) == (2, 2)
 
@@ -1266,14 +1237,13 @@ class TestEvidenceAndDecisions:
         assert (len(clients["introdb"].calls), len(clients["skipdb"].calls)) == (1, 1)
         reg.get("plex-1").get_markers.assert_called_once_with("item-plex-1", unknown_if_hidden=True, part_durations=ANY)
 
-    def test_a_lone_online_answer_writes_nothing_and_the_file_says_why(self, store, media):
+    def test_a_lone_online_answer_is_undecided_and_the_file_says_why(self, store, media):
         reg = _registry(media, ServerType.PLEX)
         clients = _clients(theintrodb=LookupResult("ok", (TIDB_INTRO,)))
         plex = ready_publisher()
         out, _ = _run(_ctx(store, reg, clients=clients, settings_raw=INTRO_ONLY), media, {"plex-1": plex})
-        assert out.outcome_key == FileOutcome.NO_MARKERS.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         plex.write.assert_not_called()
-        assert out.publisher_rows[0]["status"] == ServerStatus.NONE.value
         assert out.message == f"intro: none ({ONLINE_ALONE_REASON.format('intro')})"
         decision = store.get_decisions(store.get_file(media).id)[T.INTRO]
         assert (decision.status, decision.reason) == (DecisionStatus.NO_EVIDENCE, ONLINE_ALONE_REASON.format("intro"))
@@ -1297,7 +1267,7 @@ class TestEvidenceAndDecisions:
         plex = ready_publisher()
         out, _ = _run(_ctx(store, reg, clients=clients, settings_raw=raw), media, {"plex-1": plex})
         assert clients["skipdb"].calls == []
-        assert out.outcome_key == FileOutcome.NO_MARKERS.value  # skipdb's stored agreement doesn't count
+        assert out.outcome_key == FileOutcome.SKIPPED.value  # skipdb's stored agreement doesn't count
         decision = store.get_decisions(rec.id)[T.INTRO]
         assert (decision.status, decision.reason) == (DecisionStatus.NO_EVIDENCE, ONLINE_ALONE_REASON.format("intro"))
 
@@ -1321,7 +1291,8 @@ class TestEvidenceAndDecisions:
         )
         assert all(c.calls == [] for c in clients.values())
         assert store.get_decisions(rec.id)[T.INTRO].status is DecisionStatus.DECIDED
-        assert plex.write.call_args.args[1] == [locked]
+        assert store.get_markers(rec.id)[T.INTRO] == locked
+        plex.write.assert_not_called()
         assert out.message == "intro 0:05–0:30 (user)"
 
     def test_locked_marker_beats_chapters_and_survives_a_file_change(self, store, media):
@@ -1332,11 +1303,11 @@ class TestEvidenceAndDecisions:
         locked = Marker(T.INTRO, 5_000, 30_000, ("user",), locked=True)
         store.lock_marker(store.get_file(media).id, locked)
         out, _ = _run(ctx, media, {"plex-1": plex})
-        assert plex.write.call_args.args[1] == [locked, CREDITS_CH]
+        assert store.get_markers(store.get_file(media).id) == {T.INTRO: locked, T.CREDITS: CREDITS_CH}
         os.utime(media, ns=(4, 4))
         _run(ctx, media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        assert plex.write.call_count == 3
-        assert plex.write.call_args.args[1] == [locked, CREDITS_CH]
+        assert store.get_markers(store.get_file(media).id) == {T.INTRO: locked, T.CREDITS: CREDITS_CH}
+        plex.write.assert_not_called()
 
 
 class TestOnlineLookups:
@@ -1393,11 +1364,14 @@ class TestOnlineLookups:
         clients["theintrodb"] = client
         plex = ready_publisher()
         _run(_ctx(store, reg, clients=clients, settings_raw=INTRO_ONLY), media, {"plex-1": plex})
+        original = store.get_markers(store.get_file(media).id)[T.INTRO]
         client.result = LookupResult("unavailable", detail="TheIntroDB HTTP 503")
         out, _ = _run(_ctx(store, reg, clients=clients, settings_raw=INTRO_ONLY, force=True), media, {"plex-1": plex})
         assert len(client.calls) == 2
         assert Source.THEINTRODB in {c.source for c in store.get_evidence(store.get_file(media).id)}
-        assert out.outcome_key == FileOutcome.UP_TO_DATE.value
+        assert store.get_markers(store.get_file(media).id)[T.INTRO] == original
+        plex.write.assert_not_called()
+        assert out.outcome_key == FileOutcome.SKIPPED.value
 
     @pytest.mark.parametrize(
         "broken",
@@ -1417,14 +1391,19 @@ class TestOnlineLookups:
         plex = ready_publisher()
         out, _ = _run(_ctx(store, reg, clients=clients, settings_raw=INTRO_ONLY), media, {"plex-1": plex})
         assert store.evidence_fetched_at(store.get_file(media).id, Source.THEINTRODB) is None
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert store.get_decisions(store.get_file(media).id)[T.INTRO].status is DecisionStatus.DECIDED
+        assert store.get_markers(store.get_file(media).id)[T.INTRO] == Marker(
+            T.INTRO, 129_000, 157_000, ("introdb", "skipdb")
+        )
+        plex.write.assert_not_called()
+        assert out.outcome_key == FileOutcome.SKIPPED.value
 
     def test_enabled_source_without_a_client_is_skipped(self, store, media):
         reg = _registry(media, ServerType.PLEX)
         clients = _clients()
         del clients["theintrodb"]
         out, _ = _run(_ctx(store, reg, clients=clients, settings_raw=INTRO_ONLY), media, {"plex-1": ready_publisher()})
-        assert len(clients["introdb"].calls) == 1 and out.outcome_key == FileOutcome.NO_MARKERS.value
+        assert len(clients["introdb"].calls) == 1 and out.outcome_key == FileOutcome.SKIPPED.value
 
     def test_ids_are_fetched_from_a_server_at_most_once_per_file(self, store, media):
         reg = _registry(media, ServerType.PLEX, ServerType.JELLYFIN)
@@ -1446,7 +1425,7 @@ class TestOnlineLookups:
         _run(ctx, other, {"plex-1": ready_publisher()})
         assert [c["priority"] for c in clients["theintrodb"].calls] == [3, 2]
 
-    def test_cancel_during_a_lookup_stops_before_the_next_source_and_publishing(self, store, media):
+    def test_cancel_during_a_lookup_stops_before_the_next_source_and_decision(self, store, media):
         reg = _registry(media, ServerType.PLEX)
         cancelled = threading.Event()
         clients = _clients()
@@ -1480,7 +1459,7 @@ class TestBudgetExhaustedFileNote:
     def test_note_appears_when_the_result_could_still_change(self, store, media):
         reg = _registry(media, ServerType.PLEX)
         clients = _clients(theintrodb=TIDB_BUDGET_EXHAUSTED)
-        out, _ = _run(_ctx(store, reg, clients=clients, settings_raw=INTRO_ONLY), media, {"plex-1": ready_publisher()})
+        out, _ = _run(_ctx(store, reg, clients=clients, settings_raw=INTRO_ONLY), media, {})
         assert out.message.endswith("; TheIntroDB not checked (daily limit reached)")
 
     def test_note_omitted_once_other_sources_already_decided_it(self, store, media):
@@ -1498,13 +1477,14 @@ class TestBudgetExhaustedFileNote:
             introdb=LookupResult("ok", (Candidate(T.INTRO, 128_000, 157_000, Source.INTRODB),)),
             skipdb=LookupResult("ok", (Candidate(T.INTRO, 129_000, 157_800, Source.SKIPDB),)),
         )
-        out, _ = _run(_ctx(store, reg, clients=clients, settings_raw=raw), media, {"plex-1": ready_publisher()})
+        out, _ = _run(_ctx(store, reg, clients=clients, settings_raw=raw), media, {})
         assert "not checked" not in out.message
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
+        assert store.get_decisions(store.get_file(media).id)[T.INTRO].status is DecisionStatus.DECIDED
 
     def test_note_omitted_when_nothing_ran_out(self, store, media):
         reg = _registry(media, ServerType.PLEX)
-        out, _ = _run(_ctx(store, reg, settings_raw=INTRO_ONLY), media, {"plex-1": ready_publisher()})
+        out, _ = _run(_ctx(store, reg, settings_raw=INTRO_ONLY), media, {})
         assert "not checked" not in out.message
 
     def test_no_answer_is_stored_so_the_next_run_asks_theintrodb_again(self, store, media):
@@ -1512,11 +1492,11 @@ class TestBudgetExhaustedFileNote:
         client = FakeClient(TIDB_BUDGET_EXHAUSTED)
         clients = _clients(theintrodb=TIDB_BUDGET_EXHAUSTED)
         clients["theintrodb"] = client
-        _run(_ctx(store, reg, clients=clients, settings_raw=INTRO_ONLY), media, {"plex-1": ready_publisher()})
+        _run(_ctx(store, reg, clients=clients, settings_raw=INTRO_ONLY), media, {})
         assert store.evidence_fetched_at(store.get_file(media).id, Source.THEINTRODB) is None
         assert len(client.calls) == 1
         client.result = LookupResult("ok", (TIDB_INTRO,))
-        _run(_ctx(store, reg, clients=clients, settings_raw=INTRO_ONLY), media, {"plex-1": ready_publisher()})
+        _run(_ctx(store, reg, clients=clients, settings_raw=INTRO_ONLY), media, {})
         assert len(client.calls) == 2  # nothing stored last time, so a normal run asks again (no retry needed)
         assert store.evidence_fetched_at(store.get_file(media).id, Source.THEINTRODB) is not None
 
@@ -1525,14 +1505,14 @@ class TestBudgetExhaustedJobWarning:
     def test_no_warning_when_nothing_ran_out(self, store, media):
         reg = _registry(media, ServerType.PLEX)
         ctx = _ctx(store, reg, settings_raw=INTRO_ONLY)  # default clients answer no_data, never budget_exhausted
-        _run(ctx, media, {"plex-1": ready_publisher()})
+        _run(ctx, media, {})
         assert pipeline.budget_exhausted_warnings(ctx) == []
 
     def test_singular_wording_for_one_file(self, store, media):
         reg = _registry(media, ServerType.PLEX)
         clients = _clients(theintrodb=TIDB_BUDGET_EXHAUSTED)
         ctx = _ctx(store, reg, clients=clients, settings_raw=INTRO_ONLY)
-        _run(ctx, media, {"plex-1": ready_publisher()})
+        _run(ctx, media, {})
         assert pipeline.budget_exhausted_warnings(ctx) == [
             "TheIntroDB's daily lookup limit was reached: 1 file was checked without it. "
             "It resets at 00:00 UTC; run Find markers again manually or with a schedule after that "
@@ -1548,7 +1528,7 @@ class TestBudgetExhaustedJobWarning:
         clients = _clients(theintrodb=TIDB_BUDGET_EXHAUSTED)
         ctx = _ctx(store, reg, clients=clients, settings_raw=INTRO_ONLY)
         for p in (media, other1, other2):
-            _run(ctx, p, {"plex-1": ready_publisher()})
+            _run(ctx, p, {})
         assert pipeline.budget_exhausted_warnings(ctx) == [
             "TheIntroDB's daily lookup limit was reached: 3 files were checked without it. "
             "It resets at 00:00 UTC; run Find markers again manually or with a schedule after that "
@@ -1561,8 +1541,8 @@ class TestBudgetExhaustedJobWarning:
         spec = LocalDetectorSpec(Source.SEASON_AUDIO, frozenset({T.INTRO}), MagicMock(return_value=[]))
         client = FakeClient(TIDB_BUDGET_EXHAUSTED)
         ctx = _ctx(store, reg, clients={"theintrodb": client}, detectors=(spec,), settings_raw=INTRO_ONLY)
-        assert _run(ctx, media, {"plex-1": ready_publisher()})[0] is None
-        _run(ctx, media, {"plex-1": ready_publisher()}, stage="process")
+        assert _run(ctx, media, {})[0] is None
+        _run(ctx, media, {}, stage="process")
         assert len(client.calls) == 2
         assert pipeline.budget_exhausted_warnings(ctx)[0].startswith(
             "TheIntroDB's daily lookup limit was reached: 1 file was checked without it."
@@ -1574,9 +1554,9 @@ class TestBudgetExhaustedJobWarning:
         spec = LocalDetectorSpec(Source.SEASON_AUDIO, frozenset({T.INTRO}), MagicMock(return_value=[]))
         client = FakeClient(TIDB_BUDGET_EXHAUSTED)
         ctx = _ctx(store, reg, clients={"theintrodb": client}, detectors=(spec,), settings_raw=INTRO_ONLY)
-        assert _run(ctx, media, {"plex-1": ready_publisher()})[0] is None
+        assert _run(ctx, media, {})[0] is None
         client.result = LookupResult("ok", (TIDB_INTRO,))
-        out, _ = _run(ctx, media, {"plex-1": ready_publisher()}, stage="process")
+        out, _ = _run(ctx, media, {}, stage="process")
         assert "not checked" not in out.message
         assert pipeline.budget_exhausted_warnings(ctx) == []
 
@@ -1592,9 +1572,9 @@ class TestBudgetExhaustedJobWarning:
                 os.utime(path, ns=(7, 7))  # replaced while its chapters were read: detected again from scratch
             return _probe()
 
-        out, _ = _run(ctx, media, {"plex-1": ready_publisher()}, probe_effect=probe)
+        out, _ = _run(ctx, media, {}, probe_effect=probe)
         assert len(probes) == 2 and len(client.calls) == 2
-        assert out.outcome_key == FileOutcome.NO_MARKERS.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         assert pipeline.budget_exhausted_warnings(ctx)[0].startswith(
             "TheIntroDB's daily lookup limit was reached: 1 file was checked without it."
         )
@@ -1615,7 +1595,7 @@ class TestBudgetExhaustedJobWarning:
             theintrodb=TIDB_BUDGET_EXHAUSTED, skipdb=SKIPDB_BUDGET_EXHAUSTED, introdb=INTRODB_BUDGET_EXHAUSTED
         )
         ctx = _ctx(store, reg, clients=clients, settings_raw=raw)
-        _run(ctx, media, {"plex-1": ready_publisher()})
+        _run(ctx, media, {})
         warnings = pipeline.budget_exhausted_warnings(ctx)
         assert len(warnings) == 3
         # Sorted by name: IntroDB, SkipDB, TheIntroDB.
@@ -1649,7 +1629,7 @@ class TestBudgetExhaustedJobWarning:
         clients = _clients(theintrodb=LookupResult("unavailable", detail=detail))
         ctx = _ctx(store, reg, clients=clients, settings_raw=NO_CHAPTERS)
         for p in (media, *others):
-            _run(ctx, p, {"plex-1": ready_publisher()})
+            _run(ctx, p, {})
         assert pipeline.budget_exhausted_warnings(ctx) == [
             f"{detail}: 3 files were checked without it. Check the TheIntroDB API key in Settings → Intro & Credits."
         ]
@@ -1661,7 +1641,7 @@ class TestBudgetExhaustedJobWarning:
     def test_other_unavailable_answers_give_no_job_warning(self, store, media, detail):
         reg = _registry(media, ServerType.PLEX)
         ctx = _ctx(store, reg, clients=_clients(theintrodb=LookupResult("unavailable", detail=detail)))
-        _run(ctx, media, {"plex-1": ready_publisher()})
+        _run(ctx, media, {})
         assert pipeline.budget_exhausted_warnings(ctx) == []
 
     def test_a_refused_key_and_a_used_up_budget_each_get_their_line(self, store, media):
@@ -1671,7 +1651,7 @@ class TestBudgetExhaustedJobWarning:
             skipdb=SKIPDB_BUDGET_EXHAUSTED,
         )
         ctx = _ctx(store, reg, clients=clients)
-        _run(ctx, media, {"plex-1": ready_publisher()})
+        _run(ctx, media, {})
         warnings = pipeline.budget_exhausted_warnings(ctx)
         assert [w.split(":")[0] for w in warnings] == [
             "SkipDB's daily lookup limit was reached",
@@ -1685,7 +1665,7 @@ class TestBudgetExhaustedJobWarning:
         clients = _clients(theintrodb=TIDB_BUDGET_EXHAUSTED)
         ctx = _ctx(store, reg, clients=clients, settings_raw=INTRO_ONLY)
         for p in (media, other):
-            _run(ctx, p, {"plex-1": ready_publisher()})
+            _run(ctx, p, {})
         budget_lines = [r for r in loguru_caplog.records if "daily lookup budget ran out" in r.getMessage()]
         assert len(budget_lines) == 1
         assert budget_lines[0].levelname == "WARNING"
@@ -1731,8 +1711,8 @@ class TestJobWideRefusalsAcrossStages:
     @pytest.mark.parametrize("force", [False, True], ids=["normal", "forced"])
     def test_a_file_handed_to_a_worker(self, store, media, refused, force):
         ctx, client, _ = self._job(store, media, refused, force=force)
-        assert _run(ctx, media, {"plex-1": ready_publisher()})[0] is None
-        out, _ = _run(ctx, media, {"plex-1": ready_publisher()}, stage="process")
+        assert _run(ctx, media, {})[0] is None
+        out, _ = _run(ctx, media, {}, stage="process")
         self._counted_once(ctx, out, refused)
         # A forced run asks each source once; a normal one asks again where nothing is stored.
         assert len(client.calls) == (1 if force else 2)
@@ -1743,11 +1723,11 @@ class TestJobWideRefusalsAcrossStages:
     def test_a_file_rerun_on_the_cpu_after_a_gpu_error(self, store, media, refused, force):
         ctx, client, detector = self._job(store, media, refused, force=force)
         detector.side_effect = [CodecNotSupportedError("the GPU read no frames in that part of the file"), []]
-        assert _run(ctx, media, {"plex-1": ready_publisher()})[0] is None
+        assert _run(ctx, media, {})[0] is None
         with pytest.raises(CodecNotSupportedError):
-            _run(ctx, media, {"plex-1": ready_publisher()}, stage="process", gpu="NVIDIA", gpu_device_path="cuda:0")
+            _run(ctx, media, {}, stage="process", gpu="NVIDIA", gpu_device_path="cuda:0")
         assert pipeline.budget_exhausted_warnings(ctx) == []  # not finished yet
-        out, _ = _run(ctx, media, {"plex-1": ready_publisher()}, stage="process")
+        out, _ = _run(ctx, media, {}, stage="process")
         self._counted_once(ctx, out, refused)
         assert len(client.calls) == (1 if force else 3)
         assert ctx._pending_skips == {}
@@ -1757,9 +1737,9 @@ class TestJobWideRefusalsAcrossStages:
         # The budget reset (00:00 UTC) between the stages. A forced worker stage doesn't ask again, so there the
         # refusal it was handed stands.
         ctx, client, _ = self._job(store, media, TIDB_BUDGET_EXHAUSTED, force=force)
-        assert _run(ctx, media, {"plex-1": ready_publisher()})[0] is None
+        assert _run(ctx, media, {})[0] is None
         client.result = LookupResult("ok", (TIDB_INTRO,))
-        _run(ctx, media, {"plex-1": ready_publisher()}, stage="process")
+        _run(ctx, media, {}, stage="process")
         assert len(pipeline.budget_exhausted_warnings(ctx)) == (1 if force else 0)
 
     def test_a_file_that_kept_changing_leaves_nothing_behind(self, store, media):
@@ -1771,7 +1751,7 @@ class TestJobWideRefusalsAcrossStages:
             os.utime(path, ns=(next(ticks), next(ticks)))  # replaced on every attempt
             return _probe()
 
-        out, _ = _run(ctx, media, {"plex-1": ready_publisher()}, probe_effect=probe)
+        out, _ = _run(ctx, media, {}, probe_effect=probe)
         assert out.outcome_key == FileOutcome.FAILED.value and "kept changing" in out.message
         assert ctx._pending_skips == {} and pipeline.budget_exhausted_warnings(ctx) == []
 
@@ -1798,7 +1778,7 @@ class TestRealTheIntroDbRefusals:
         Path(other).write_bytes(b"y" * 10)
         ctx = _ctx(store, _registry(media, ServerType.PLEX), clients={"theintrodb": client}, settings_raw=NO_CHAPTERS)
         for path in (media, other):
-            _run(ctx, path, {"plex-1": ready_publisher()})
+            _run(ctx, path, {})
         assert pipeline.budget_exhausted_warnings(ctx) == [
             f"{detail}: 2 files were checked without it. Check the TheIntroDB API key in Settings → Intro & Credits."
         ]
@@ -1838,17 +1818,20 @@ def _serve_intro(reg, sid, start_ms, end_ms):
 
 
 class TestServerMarkers:
-    def test_server_markers_confirm_online_source_and_are_read_once_before_publishing(self, store, media):
+    def test_server_markers_confirm_online_source_and_are_read_again_when_forced(self, store, media):
         reg = _registry(media, ServerType.PLEX)
         _serve_intro(reg, "plex-1", 127_000, 158_000)
         clients = _clients(theintrodb=LookupResult("ok", (TIDB_INTRO,)))
         plex = ready_publisher()
         out, _ = _run(_ctx(store, reg, clients=clients, settings_raw=INTRO_ONLY), media, {"plex-1": plex})
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         reg.get("plex-1").get_markers.assert_called_once_with("item-plex-1", unknown_if_hidden=True, part_durations=ANY)
         _run(_ctx(store, reg, clients=clients, settings_raw=INTRO_ONLY, force=True), media, {"plex-1": plex})
-        assert reg.get("plex-1").get_markers.call_count == 1  # never re-read a server we've published to
-        assert plex.write.call_args.args[1] == [Marker(T.INTRO, 127_894, 156_824, ("theintrodb", "server_markers"))]
+        assert reg.get("plex-1").get_markers.call_count == 2
+        plex.write.assert_not_called()
+        assert store.get_markers(store.get_file(media).id)[T.INTRO] == Marker(
+            T.INTRO, 127_894, 156_824, ("theintrodb", "server_markers")
+        )
 
     def test_server_markers_read_from_owner_without_markers_enabled(self, store, media):
         reg = _registry(media, ServerType.PLEX, ServerType.JELLYFIN, ServerType.EMBY)
@@ -1871,15 +1854,15 @@ class TestServerMarkers:
         plex = ready_publisher()
         out, _ = _run(_ctx(store, reg, settings_raw=INTRO_ONLY), media, {"plex-1": plex})
         plex.write.assert_not_called()
-        assert out.outcome_key == FileOutcome.NO_MARKERS.value  # a second opinion with nothing to confirm
+        assert out.outcome_key == FileOutcome.SKIPPED.value  # a second opinion with nothing to confirm
         decision = store.get_decisions(store.get_file(media).id)[T.INTRO]
         assert decision.status is DecisionStatus.NO_EVIDENCE
         assert (decision.proposed_start_ms, decision.proposed_end_ms) == (127_000, 158_000)
 
-    def test_after_a_file_change_only_servers_we_never_published_to_are_read_again(self, store, media):
+    def test_after_a_file_change_all_servers_are_read_again(self, store, media):
         reg = _registry(media, ServerType.PLEX, ServerType.JELLYFIN)
         plex, jf = ready_publisher(), ready_publisher("jellyfin_bridge")
-        jf.capability.return_value = CapabilityReport(Capability.NEEDS_PLUGIN, "Install the plugin")
+        # Both servers remain independent evidence sources because detection publishes nothing.
         for sid in ("plex-1", "jellyfin-1"):
             _serve_intro(reg, sid, 127_000, 158_000)
         clients = _clients(theintrodb=LookupResult("ok", (TIDB_INTRO,)))
@@ -1888,7 +1871,9 @@ class TestServerMarkers:
         assert [_vendor_read(reg, sid).call_count for sid in ("plex-1", "jellyfin-1")] == [1, 1]
         os.utime(media, ns=(8, 8))
         _run(ctx, media, {"plex-1": plex, "jellyfin-1": jf})
-        assert [_vendor_read(reg, sid).call_count for sid in ("plex-1", "jellyfin-1")] == [1, 2]
+        assert [_vendor_read(reg, sid).call_count for sid in ("plex-1", "jellyfin-1")] == [2, 2]
+        plex.write.assert_not_called()
+        jf.write.assert_not_called()
 
     def test_force_reads_again_servers_we_never_published_to(self, store, media):
         reg = _registry(media, ServerType.PLEX, ServerType.JELLYFIN)
@@ -1923,7 +1908,7 @@ class TestServerMarkers:
         server = reg.get("plex-1")
         setup(server)
         out, _ = _run(_ctx(store, reg), media, {"plex-1": ready_publisher()})
-        assert out.outcome_key == FileOutcome.NO_MARKERS.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         server.get_markers.side_effect, server.get_markers.return_value = None, []
         _run(_ctx(store, reg), media, {"plex-1": ready_publisher()})
         _run(_ctx(store, reg), media, {"plex-1": ready_publisher()})
@@ -1967,7 +1952,8 @@ class TestServerMarkers:
         reg.get("jellyfin-1").get_bridge_markers.assert_called_once_with("shared-item")  # ours are left out
         stored = [r for r in store.evidence_rows(store.get_file(version_a).id) if r.source is Source.SERVER_MARKERS]
         assert [(r.origin, r.type) for r in stored] == [("jellyfin-1", None)]
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
+        assert store.get_decisions(store.get_file(version_a).id)[T.INTRO].status is DecisionStatus.DECIDED
 
     @pytest.mark.parametrize(
         ("serves_intro", "later", "published_first", "read_again"),
@@ -1997,6 +1983,9 @@ class TestServerMarkers:
             {"plex-1": ready_publisher()},
             probe=probe,
         )
+        if published_first:
+            rec = store.get_file(media)
+            store.set_publish_state(rec.id, "plex-1", item_id="item-plex-1", markers=[INTRO_CH], status="written")
         clock["t"] += later
         _run(_ctx(store, reg, settings_raw=raw, now=lambda: clock["t"]), media, {"plex-1": ready_publisher()})
         server = reg.get("plex-1")
@@ -2037,17 +2026,19 @@ class TestServerMarkers:
         _run(_ctx(store, reg), media, {"plex-1": ready_publisher()})
         reg.get("plex-1").get_markers.assert_not_called()
 
-    def test_jellyfin_is_not_read_again_after_we_published_there(self, store, media):
+    def test_jellyfin_is_read_again_when_forced_without_a_publish(self, store, media):
         reg = _registry(media, ServerType.JELLYFIN)
         _serve_intro(reg, "jellyfin-1", 127_000, 158_000)
         jf = ready_publisher("jellyfin_bridge")
         clients = _clients(theintrodb=LookupResult("ok", (TIDB_INTRO,)))
         _run(_ctx(store, reg, clients=clients, settings_raw=INTRO_ONLY), media, {"jellyfin-1": jf})
-        assert jf.write.call_count == 1
+        jf.write.assert_not_called()
         ctx = _ctx(store, reg, clients=clients, settings_raw=INTRO_ONLY, force=True)
         out, _ = _run(ctx, media, {"jellyfin-1": jf})
-        reg.get("jellyfin-1").get_media_segments.assert_called_once_with("item-jellyfin-1")
-        assert out.outcome_key == FileOutcome.UP_TO_DATE.value
+        assert reg.get("jellyfin-1").get_media_segments.call_count == 2
+        reg.get("jellyfin-1").get_media_segments.assert_called_with("item-jellyfin-1")
+        assert out.outcome_key == FileOutcome.SKIPPED.value
+        assert store.get_decisions(store.get_file(media).id)[T.INTRO].status is DecisionStatus.DECIDED
 
 
 # A season of Blu-rays: the markers Plex serves (its own detection, prod), IntroDB's
@@ -2106,11 +2097,13 @@ class TestServerMarkersFromVendors:
             {"plex-1": plex},
             probe=_probe(duration=duration),
         )
-        assert plex.write.call_args.args == (
-            "item-plex-1",
-            [Marker(T.CREDITS, *published, ("introdb", "server_markers"))],
+        decision = store.get_decisions(store.get_file(media).id)[T.CREDITS]
+        assert decision.status is DecisionStatus.DECIDED
+        assert store.get_markers(store.get_file(media).id)[T.CREDITS] == Marker(
+            T.CREDITS, *published, ("introdb", "server_markers")
         )
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
+        plex.write.assert_not_called()
         stored = [c for c in store.get_evidence(store.get_file(media).id) if c.source is Source.SERVER_MARKERS]
         # Plex's final credits run to the end of the file.
         assert [(c.start_ms, c.end_ms) for c in stored] == [
@@ -2158,7 +2151,9 @@ class TestServerMarkersFromVendors:
         else:
             expected = Marker(T.CREDITS, 1_239_000, DUR, ("chapters",))
             assert decision.reason == "chapters"
-        assert pub.write.call_args.args == (f"item-{sid}", [expected])
+        assert decision.status is DecisionStatus.DECIDED
+        assert store.get_markers(store.get_file(media).id)[T.CREDITS] == expected
+        pub.write.assert_not_called()
 
     @pytest.mark.parametrize(
         ("setup", "marker"),
@@ -2202,6 +2197,7 @@ class TestServerMarkersFromVendors:
             ctx = _ctx(store, reg, clients=clients, settings_raw=raw, now=lambda: clock["t"])
             ctx.priority = lambda: 3
             _run(ctx, media, {"plex-1": ready_publisher()}, probe=_probe(chapters))
+            assert store.get_decisions(store.get_file(media).id)[T.CREDITS].status is DecisionStatus.DECIDED
             assert store.get_markers(store.get_file(media).id)[T.CREDITS] == marker
             clock["t"] += pipeline.no_data_retry(store.get_file(media).id) + timedelta(seconds=1)
         assert (len(clients["introdb"].calls), len(clients["skipdb"].calls)) == (2, 2)
@@ -2257,7 +2253,7 @@ class TestServerMarkersFromVendors:
         if read_again:
             assert first.start_ms < 1_255_500 and credits.start_ms == 1_255_500
             assert "server_markers" in credits.decided_by
-            assert jellyfin.write.call_args.args[1] == [credits]  # published through the pipeline
+            jellyfin.write.assert_not_called()
         else:
             assert credits == first
         store.close()
@@ -2279,7 +2275,7 @@ class TestServerMarkersFromVendors:
         jellyfin = ready_publisher("jellyfin_bridge")
         ctx = _ctx(store, reg, clients=_clients(), settings_raw=CREDITS_DEFAULTS, now=lambda: clock["t"])
         _run(ctx, media, {"jellyfin-1": jellyfin})
-        assert store.get_markers(store.get_file(media).id).get(T.CREDITS) is None
+        assert store.get_decisions(store.get_file(media).id)[T.CREDITS].status is DecisionStatus.NO_EVIDENCE
         clock["t"] += timedelta(hours=12)
         ctx = _ctx(store, reg, clients=_clients(), settings_raw=CREDITS_DEFAULTS, now=lambda: clock["t"])
         ctx.recheck_empty_server_markers = recheck
@@ -2426,7 +2422,7 @@ class TestServerMarkersFromVendors:
             is False
         )
 
-    @pytest.mark.parametrize("case", ["plex-cant-publish", "other-cut-item", "published-server"])
+    @pytest.mark.parametrize("case", ["other-cut-item", "normal-server"])
     def test_with_everything_decided_a_server_is_read_only_the_first_time(self, tmp_path, media, case):
         # Credits decided by IntroDB + SkipDB before the servers come up. Runs two days apart, so the empty-answer
         # retry (1 day) would be due every time: a decided file reads each server once, whatever it answered.
@@ -2437,9 +2433,7 @@ class TestServerMarkersFromVendors:
         plex_server = reg.get("plex-1")
         plex = ready_publisher()
         publishers = {"plex-1": plex}
-        if case == "plex-cant-publish":
-            plex.capability.return_value = CapabilityReport(Capability.NEEDS_LOCAL_DB, "Plex's database isn't local")
-        elif case == "other-cut-item":
+        if case == "other-cut-item":
             # Plex only lends evidence here; its item has a second version 60 s shorter, so its markers aren't used.
             reg.configs_by_id["plex-1"].markers["enabled"] = False
             plex_server.get_markers.return_value = [
@@ -2461,10 +2455,8 @@ class TestServerMarkersFromVendors:
             assert decision.status is DecisionStatus.DECIDED
             clock["t"] += timedelta(days=2)
         assert reads == [1, 0, 0, 0]
-        if case == "published-server":
-            plex.write.assert_called_once()
-        else:
-            plex.write.assert_not_called()
+        plex.write.assert_not_called()
+        plex.capability.assert_not_called()
         store.close()
 
     @pytest.mark.parametrize(
@@ -2530,7 +2522,7 @@ class TestServerMarkersFromVendors:
         for _ in range(3):
             pubs = {"emby-1": ready_publisher("emby_bridge")}
             out, _ = _run(ctx, media, pubs, probe=_probe(duration=S03E05_BLURAY_MS))
-            assert out.outcome_key == FileOutcome.NO_MARKERS.value
+            assert out.outcome_key == FileOutcome.SKIPPED.value
         assert server.get_chapter_markers.call_count == 1
         rec = store.get_file(media)
         assert [c for c in store.get_evidence(rec.id) if c.source is Source.SERVER_MARKERS] == [
@@ -2658,10 +2650,13 @@ class TestServerMarkersFromVendors:
             ]
             assert store.evidence_version(rec.id, source, sid) == pipeline.READER_VERSION
         if expected == "decided":
-            assert plex.write.call_args.args[1] == [Marker(T.INTRO, 24_046, 114_105, ("introdb", "server_markers"))]
+            decision = store.get_decisions(rec.id)[T.INTRO]
+            assert decision.status is DecisionStatus.DECIDED
+            assert store.get_markers(rec.id)[T.INTRO] == Marker(T.INTRO, 24_046, 114_105, ("introdb", "server_markers"))
+            plex.write.assert_not_called()
         else:
             plex.write.assert_not_called()
-            assert out.outcome_key == FileOutcome.NO_MARKERS.value
+            assert out.outcome_key == FileOutcome.SKIPPED.value
             assert store.get_decisions(rec.id)[T.INTRO].status is DecisionStatus.NO_EVIDENCE
         server.get_plugin_names.assert_called_once_with()
         reg.get("plex-1").get_plugin_names.assert_not_called()  # Plex detects its own markers
@@ -2704,13 +2699,17 @@ class TestServerMarkersFromVendors:
         assert [c.origin for c in copies] == ["jellyfin-1"]
         assert store.get_decisions(rec.id)[T.INTRO].reason == reason
         if plugins == ["SkipDB"]:
-            assert out.outcome_key == FileOutcome.NO_MARKERS.value
+            assert out.outcome_key == FileOutcome.SKIPPED.value
             assert store.get_decisions(rec.id)[T.INTRO].status is DecisionStatus.NO_EVIDENCE
             plex.write.assert_not_called()
         else:
-            assert out.outcome_key == FileOutcome.PUBLISHED.value
-            published = [Marker(T.INTRO, 24_046, 114_105, ("skipdb", "server_markers_imported"))]
-            assert plex.write.call_args.args[1] == published
+            assert out.outcome_key == FileOutcome.SKIPPED.value
+            decision = store.get_decisions(rec.id)[T.INTRO]
+            assert decision.status is DecisionStatus.DECIDED
+            assert store.get_markers(rec.id)[T.INTRO] == Marker(
+                T.INTRO, 24_046, 114_105, ("skipdb", "server_markers_imported")
+            )
+            plex.write.assert_not_called()
 
     def test_a_row_naming_one_of_two_importers_is_read_again_and_its_database_becomes_unknown(self, store, media):
         # Reader version 1 stored only the first importer plugin: ["SkipDB", "TheIntroDB"] read as a SkipDB copy, which
@@ -2760,7 +2759,7 @@ class TestServerMarkersFromVendors:
         copies = [c for c in store.get_evidence(rec.id) if c.source is Source.SERVER_MARKERS_IMPORTED]
         assert [(c.start_ms, c.end_ms, c.copied_from) for c in copies] == [(24_046, 114_105, "")]
         plex.write.assert_not_called()
-        assert out.outcome_key == FileOutcome.NO_MARKERS.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         assert store.get_decisions(rec.id)[T.INTRO].status is DecisionStatus.NO_EVIDENCE
         assert store.get_decisions(rec.id)[T.INTRO].reason == (
             "only IntroDB and a server's imported marker have the intro; an online answer needs a check against the file"
@@ -2794,7 +2793,7 @@ class TestServerMarkersFromVendors:
         )
         assert [c for c in store.get_evidence(rec.id) if c.origin == "jellyfin-1"] == []
         plex.write.assert_not_called()
-        assert out.outcome_key == FileOutcome.NO_MARKERS.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         decision = store.get_decisions(rec.id)[T.INTRO]
         assert (decision.status, decision.reason) == (
             DecisionStatus.NO_EVIDENCE,
@@ -2823,15 +2822,19 @@ class TestServerMarkersFromVendors:
             {"plex-1": plex},
             probe=_probe(duration=S03E05_BLURAY_MS),
         )
-        # SkipDB never decides alone: with the copy counted the two agree and publish; without it
+        # SkipDB never decides alone: with the copy counted the two agree and propose; without it
         # SkipDB waits for a second source.
         if server_markers_on:
-            published = [Marker(T.INTRO, 25_000, 113_000, ("skipdb", "server_markers_imported"))]
-            assert plex.write.call_args.args[1] == published
-            assert out.outcome_key == FileOutcome.PUBLISHED.value
+            decision = store.get_decisions(store.get_file(media).id)[T.INTRO]
+            assert decision.status is DecisionStatus.DECIDED
+            assert store.get_markers(store.get_file(media).id)[T.INTRO] == Marker(
+                T.INTRO, 25_000, 113_000, ("skipdb", "server_markers_imported")
+            )
+            plex.write.assert_not_called()
+            assert out.outcome_key == FileOutcome.SKIPPED.value
         else:
             plex.write.assert_not_called()
-            assert out.outcome_key == FileOutcome.NO_MARKERS.value
+            assert out.outcome_key == FileOutcome.SKIPPED.value
             decision = store.get_decisions(store.get_file(media).id)[T.INTRO]
             assert (decision.status, decision.reason) == (
                 DecisionStatus.NO_EVIDENCE,
@@ -2934,6 +2937,8 @@ class TestRulesVersions:
         out, probe_mock = _run(_ctx(store, reg, settings_raw=raw), media, {"jellyfin-1": jf}, probe=probe)
         assert probe_mock.call_count == 1
         assert store.evidence_version(rec.id, Source.CHAPTERS) == pipeline.CHAPTER_RULES_VERSION
+        decision = store.get_decisions(rec.id)[T.INTRO]
+        assert decision.status is DecisionStatus.DECIDED
         assert store.get_markers(rec.id)[T.INTRO] == Marker(T.INTRO, 274_700, 363_900, ("chapters",))
         # With the current version stored nothing is probed again.
         _, probe_mock = _run(_ctx(store, reg, settings_raw=raw), media, {"jellyfin-1": jf}, probe=probe)
@@ -2981,6 +2986,8 @@ class TestRulesVersions:
         _, probe_mock = _run(_ctx(store, reg, settings_raw=raw), media, {"jellyfin-1": jf}, probe=probe)
         assert probe_mock.call_count == 1
         assert store.evidence_version(rec.id, Source.CHAPTERS) == pipeline.CHAPTER_RULES_VERSION
+        decision = store.get_decisions(rec.id)[T.CREDITS]
+        assert decision.status is DecisionStatus.DECIDED
         assert store.get_markers(rec.id)[T.CREDITS] == Marker(T.CREDITS, 1_323_000, 1_413_000, ("chapters",))
         # And the other half of why the bump is needed: at the current version the file is never read
         # again, so a rule change that forgot to bump would never reach a file the app had seen.
@@ -3006,7 +3013,7 @@ class TestRulesVersions:
             (T.INTRO, "Opening"),
             (T.PREVIEW, "Preview"),
         ]
-        assert store.get_markers(rec.id).get(T.CREDITS) is None
+        assert store.get_decisions(rec.id)[T.CREDITS].status is DecisionStatus.NO_EVIDENCE
 
     @pytest.mark.parametrize("source", [Source.THEINTRODB, Source.INTRODB, Source.SKIPDB], ids=lambda s: s.value)
     def test_online_answers_from_an_older_parser_are_asked_again(self, store, media, source):
@@ -3058,7 +3065,6 @@ class TestRulesVersions:
         ]
         server.get_bridge_markers.return_value = None  # can't tell ours apart: not evidence, nothing published yet
         pubs = {"jellyfin-1": ready_publisher("jellyfin_bridge")}
-        pubs["jellyfin-1"].capability.return_value = CapabilityReport(Capability.NEEDS_PLUGIN, "Install the plugin")
         _run(_ctx(store, reg, settings_raw=INTRO_DEFAULTS), media, pubs)
         server.get_bridge_markers.return_value = []
         _run(_ctx(store, reg, settings_raw=INTRO_DEFAULTS), media, pubs)
@@ -3161,526 +3167,52 @@ class TestPriorMarkers:
         )
 
 
-class TestPublishFanOut:
-    def _decided(self, store, media, reg, pubs):
-        return _run(_ctx(store, reg), media, pubs, probe=_probe(CHAPTERS_BOTH))[0]
-
-    @pytest.mark.parametrize(
-        ("setup", "status", "reason_code"),
-        [
-            (
-                lambda pub, server: setattr(
-                    pub.capability, "return_value", CapabilityReport(Capability.NEEDS_PLUGIN, "Install the plugin")
-                ),
-                ServerStatus.SKIPPED,
-                None,
-            ),
-            (
-                lambda pub, server: setattr(server.resolve_remote_path_to_item_id, "return_value", None),
-                ServerStatus.WAITING,
-                "not_in_library",
-            ),
-            (
-                lambda pub, server: setattr(pub.write, "side_effect", ItemNotFoundError("not indexed")),
-                ServerStatus.WAITING,
-                "not_in_library",
-            ),
-            (lambda pub, server: setattr(pub.write, "side_effect", PublishError("boom")), ServerStatus.FAILED, None),
-            (
-                lambda pub, server: setattr(
-                    pub.write, "side_effect", PublishError("locked", state=Capability.NEEDS_LOCAL_DB)
-                ),
-                ServerStatus.FAILED,
-                None,
-            ),
-            (lambda pub, server: setattr(pub.write, "side_effect", RuntimeError("bug")), ServerStatus.FAILED, None),
-            (
-                lambda pub, server: setattr(pub.capability, "side_effect", RuntimeError("bug")),
-                ServerStatus.FAILED,
-                None,
-            ),
-        ],
-        ids=[
-            "capability",
-            "no-item-id",
-            "item-not-found",
-            "publish-error",
-            "publish-error-with-state",
-            "unexpected",
-            "capability-raises",
-        ],
-    )
-    def test_one_server_problem_does_not_block_the_other(self, store, media, setup, status, reason_code):
+class TestProposalOnly:
+    def test_proposals_are_stored_without_contacting_publishers(self, store, media):
         reg = _registry(media, ServerType.PLEX, ServerType.JELLYFIN)
         plex, jf = ready_publisher(), ready_publisher("jellyfin_bridge")
-        setup(plex, reg.get("plex-1"))
-        out = self._decided(store, media, reg, {"plex-1": plex, "jellyfin-1": jf})
-        rows = _rows(out)
-        assert rows["plex-1"]["status"] == status.value and rows["plex-1"]["message"]
-        assert rows["jellyfin-1"]["status"] == ServerStatus.WRITTEN.value
-        # Only "the server hasn't indexed the file yet" carries a code: the job retries those files later.
-        assert rows["plex-1"].get("reason_code", "absent") == (reason_code or "absent")
-        assert "reason_code" not in rows["jellyfin-1"]
-        # A server still waiting or failed shows on the file; a skipped one leaves it published.
-        expected_outcome = {
-            ServerStatus.SKIPPED: FileOutcome.PUBLISHED,
-            ServerStatus.WAITING: FileOutcome.WAITING,
-            ServerStatus.FAILED: FileOutcome.FAILED,
-        }
-        assert out.outcome_key == expected_outcome[status].value
-        state = _state(store, media, "plex-1")
-        expected_state = {
-            ServerStatus.SKIPPED: "skipped",
-            ServerStatus.WAITING: "waiting",
-            ServerStatus.FAILED: "failed",
-        }
-        assert state.status == expected_state[status] and state.markers == () and state.message
-
-    def test_a_write_that_shows_less_than_decided_is_written_not_waiting(self, store, media):
-        # A Plex item never waits for its versions: what the publisher returns is what the item shows.
-        reg = _registry(media, ServerType.PLEX)
-        plex = ready_publisher()
-        plex.write.side_effect = lambda item_id, markers, **kwargs: [INTRO_CH]  # another version's credits won
-        out = self._decided(store, media, reg, {"plex-1": plex})
-        row = out.publisher_rows[0]
-        assert (row["status"], row["message"]) == (ServerStatus.WRITTEN.value, "1 marker(s)")
-        assert "reason_code" not in row and "unchecked_files" not in row
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
-
-    @pytest.mark.parametrize("state", [c for c in Capability if c is not Capability.READY], ids=lambda c: c.value)
-    def test_every_capability_state_other_than_ready_skips_with_its_message(self, store, media, state):
-        reg = _registry(media, ServerType.PLEX)
-        plex = ready_publisher()
-        plex.capability.return_value = CapabilityReport(state, f"because {state.value}")
-        # Only chapters are on, so only publishing could need the server's item.
-        off = ("theintrodb", "introdb", "skipdb", "server_markers")
-        raw = {"sources": [{"id": sid, "enabled": False} for sid in off]}
-        out, _ = _run(_ctx(store, reg, settings_raw=raw), media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        plex.write.assert_not_called()
-        assert out.publisher_rows[0]["status"] == ServerStatus.SKIPPED.value
-        assert out.publisher_rows[0]["message"] == f"because {state.value}"
+        out, _ = _run(_ctx(store, reg), media, {"plex-1": plex, "jellyfin-1": jf}, probe=_probe(CHAPTERS_BOTH))
+        rec = store.get_file(media)
+        assert store.get_markers(rec.id) == {T.INTRO: INTRO_CH, T.CREDITS: CREDITS_CH}
+        assert store.get_evidence(rec.id)
+        assert all(row["status"] == ServerStatus.SKIPPED.value for row in out.publisher_rows)
         assert out.outcome_key == FileOutcome.SKIPPED.value
-        reg.get("plex-1").resolve_remote_path_to_item_id.assert_not_called()
+        for publisher in (plex, jf):
+            publisher.capability.assert_not_called()
+            publisher.write.assert_not_called()
+        assert store.get_publish_state(rec.id, "plex-1") is None
+        assert store.get_publish_state(rec.id, "jellyfin-1") is None
 
-    def test_publish_error_with_a_capability_state_checks_the_server_again(self, store, media):
+    def test_locked_marker_survives_disabled_detection(self, store, media):
         reg = _registry(media, ServerType.PLEX)
-        plex = ready_publisher()
-        plex.write.side_effect = PublishError("Plex's database is on a network share", state=Capability.NEEDS_LOCAL_DB)
-        ctx = _ctx(store, reg)
-        out, _ = _run(ctx, media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        assert out.outcome_key == FileOutcome.FAILED.value
-        plex.capability.return_value = CapabilityReport(Capability.NEEDS_LOCAL_DB, "network share")
-        out, _ = _run(ctx, media, {"plex-1": plex})
-        assert plex.capability.call_count == 2 and plex.write.call_count == 1
-        assert out.publisher_rows[0]["status"] == ServerStatus.SKIPPED.value
-
-    def test_publish_error_without_a_state_keeps_the_cached_capability_and_retries(self, store, media):
-        reg = _registry(media, ServerType.PLEX)
-        plex = ready_publisher()
-        plex.write.side_effect = PublishError("boom")
-        ctx = _ctx(store, reg)
-        _run(ctx, media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        plex.write.side_effect = plex.succeed
-        out, _ = _run(ctx, media, {"plex-1": plex})
-        assert plex.capability.call_count == 1 and plex.write.call_count == 2
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
-
-    def test_capability_exception_is_not_cached(self, store, media):
-        reg = _registry(media, ServerType.PLEX)
-        plex = ready_publisher()
-        plex.capability.side_effect = [RuntimeError("HTTP 500"), CapabilityReport(Capability.READY, "ok")]
-        ctx = _ctx(store, reg)
-        out, _ = _run(ctx, media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        assert "RuntimeError" in out.publisher_rows[0]["message"]
-        out, _ = _run(ctx, media, {"plex-1": plex})
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
-
-    def test_nothing_found_is_markers_none_and_writes_nothing(self, store, media):
-        reg = _registry(media, ServerType.PLEX)
-        plex = ready_publisher()
-        out, _ = _run(_ctx(store, reg), media, {"plex-1": plex}, probe=_probe())
-        plex.write.assert_not_called()
-        assert [r["status"] for r in out.publisher_rows] == [ServerStatus.NONE.value]
-        assert out.outcome_key == FileOutcome.NO_MARKERS.value
-        assert store.get_publish_state(store.get_file(media).id, "plex-1") is None
-
-    def test_decided_types_the_server_cant_show_are_markers_none(self, store, media):
-        chapters = (Chapter(0, 40_000, "Previously"), Chapter(40_000, None, "Chapter 1"))
-        reg = _registry(media, ServerType.PLEX)
-        plex = ready_publisher()
-        out, _ = _run(
-            _ctx(store, reg, settings_raw={"detect": {"recap": True}}), media, {"plex-1": plex}, probe=_probe(chapters)
+        st = os.stat(media)
+        rec = store.upsert_file(
+            FileIdentity(media, st.st_size, st.st_mtime_ns), duration_ms=DUR, season_key=None, is_movie=False
         )
-        plex.write.assert_not_called()
-        assert out.publisher_rows[0]["status"] == ServerStatus.NONE.value
-        assert "can't show" in out.publisher_rows[0]["message"]
-
-    def test_item_not_in_server_yet_is_markers_waiting(self, store, media):
-        reg = _registry(media, ServerType.PLEX)
-        reg.get("plex-1").resolve_remote_path_to_item_id.return_value = None
-        plex = ready_publisher()
-        out, _ = _run(_ctx(store, reg), media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        plex.write.assert_not_called()
-        assert [r["status"] for r in out.publisher_rows] == [ServerStatus.WAITING.value]
-        assert out.outcome_key == FileOutcome.WAITING.value
-        assert _state(store, media, "plex-1").status == "waiting"
-
-    def test_item_id_lookup_exception_is_markers_waiting(self, store, media):
-        reg = _registry(media, ServerType.PLEX)
-        reg.get("plex-1").resolve_remote_path_to_item_id.side_effect = RuntimeError("HTTP 500")
-        out, _ = _run(_ctx(store, reg), media, {"plex-1": ready_publisher()}, probe=_probe(CHAPTERS_BOTH))
-        assert out.outcome_key == FileOutcome.WAITING.value
-
-    def test_hint_item_id_is_used_without_lookup(self, store, media):
-        reg = _registry(media, ServerType.PLEX)
-        plex = ready_publisher()
-        with (
-            patch.object(pipeline, "probe_media", return_value=_probe(CHAPTERS_BOTH)),
-            patch.object(pipeline, "publisher_for", return_value=plex),
-        ):
-            check_item(_item(media, hints={"plex-1": "4242"}), ctx=_ctx(store, reg))
-        assert plex.write.call_args.args[0] == "4242"
-        reg.get("plex-1").resolve_remote_path_to_item_id.assert_not_called()
-
-    def test_new_item_id_is_published_again(self, store, media):
-        reg = _registry(media, ServerType.PLEX)
-        plex = ready_publisher()
-        ctx = _ctx(store, reg)
-        _run(ctx, media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH), hints={"plex-1": "1"})
-        out, _ = _run(ctx, media, {"plex-1": plex}, hints={"plex-1": "2"})
-        assert plex.write.call_args.args == ("2", [INTRO_CH, CREDITS_CH])
-        assert plex.write.call_args.kwargs["previous"] == []  # nothing of ours was ever left on item 2
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
-
-    @pytest.mark.parametrize(
-        "later",
-        [
-            lambda pub, server: setattr(
-                pub.capability, "return_value", CapabilityReport(Capability.UNREACHABLE, "down")
-            ),
-            lambda pub, server: setattr(server.resolve_remote_path_to_item_id, "return_value", None),
-            lambda pub, server: setattr(pub.capability, "side_effect", RuntimeError("HTTP 500")),
-        ],
-        ids=["skipped", "waiting", "capability-raises"],
-    )
-    def test_rows_that_dont_know_the_item_keep_the_published_item_id(self, store, media, later):
-        # Another version of the same Plex item must keep seeing that our markers are still on it.
-        reg = _registry(media, ServerType.PLEX)
-        plex = ready_publisher()
-        _run(_ctx(store, reg), media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        os.utime(media, ns=(6, 6))
-        later(plex, reg.get("plex-1"))
-        _run(_ctx(store, reg), media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        state = _state(store, media, "plex-1")
-        assert state.status in ("skipped", "waiting", "failed") and state.item_id == "item-plex-1"
-        assert store.published_to_item("plex-1", "item-plex-1") is True
-
-    def test_a_failed_write_is_sent_again_even_when_the_set_matches_the_last_publish(self, store, media):
-        # A write that raised may still have landed (a timeout after Jellyfin stored it), so only a clean "written"
-        # row says what the server shows.
-        reg = _registry(media, ServerType.JELLYFIN)
-        jf = ready_publisher("jellyfin_bridge")
-        _run(_ctx(store, reg), media, {"jellyfin-1": jf}, probe=_probe(CHAPTERS_BOTH))
-        jf.write.side_effect = PublishError("Can't reach Jellyfin (ReadTimeout)", state=Capability.UNREACHABLE)
-        _run(_ctx(store, reg, settings_raw={"detect": {"credits": False}}), media, {"jellyfin-1": jf})
-        assert jf.write.call_args.args[1] == [INTRO_CH]
-        jf.write.side_effect = jf.succeed
-        out, _ = _run(_ctx(store, reg), media, {"jellyfin-1": jf})
-        assert jf.write.call_count == 3
-        assert jf.write.call_args.args[1] == [INTRO_CH, CREDITS_CH]
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
-
-    @pytest.mark.parametrize(
-        ("settings_raw", "clients"),
-        [
-            ({"detect": {"intro": False, "credits": False}}, None),
-            (INTRO_ONLY, {"theintrodb": FakeClient(LookupResult("ok", (TIDB_INTRO,)))}),
-        ],
-        ids=["nothing-to-show", "needs-review"],
-    )
-    def test_after_a_failed_publish_an_empty_set_is_still_written_with_unknown_previous(
-        self, store, media, settings_raw, clients
-    ):
-        # A write that raised may have left markers on the server (the plugin stores before its check fails, or a
-        # POST times out after Jellyfin received it), so "nothing to publish" still clears the server.
-        reg = _registry(media, ServerType.JELLYFIN)
-        jf = ready_publisher("jellyfin_bridge")
-        jf.write.side_effect = PublishError("Media Preview Bridge returned HTTP 500")
-        _run(_ctx(store, reg), media, {"jellyfin-1": jf}, probe=_probe(CHAPTERS_BOTH))
-        assert _state(store, media, "jellyfin-1").status == "failed"
-        assert _state(store, media, "jellyfin-1").markers == ()
-        jf.write.side_effect = jf.succeed
-        os.utime(media, ns=(4, 4))
-        ctx = _ctx(store, reg, settings_raw=settings_raw, clients={**_clients(), **(clients or {})})
-        out, _ = _run(ctx, media, {"jellyfin-1": jf}, probe=_probe())
-        args, kwargs = jf.write.call_args
-        assert args == ("item-jellyfin-1", [])
-        assert kwargs == {
-            "previous": None,
-            "own_previous": None,
-            "duration_ms": DUR,
-            "canonical_path": media,
-            "kept_types": frozenset(),
-            "limits": EPISODE_LIMITS,
-        }
-        assert out.publisher_rows[0]["status"] == ServerStatus.WRITTEN.value
-        assert _state(store, media, "jellyfin-1").status == "written"
-
-    @pytest.mark.parametrize(
-        "error", [PublishError("Plex's database is busy"), RuntimeError("bug")], ids=["publish-error", "unexpected"]
-    )
-    def test_a_write_that_raises_marks_the_item_failed_and_keeps_its_markers(self, store, media, error):
-        reg = _registry(media, ServerType.PLEX)
-        plex = ready_publisher()
-        _run(_ctx(store, reg), media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        written = store.get_item_publish_state("plex-1", "item-plex-1")
-        os.utime(media, ns=(4, 4))
-        plex.write.side_effect = error
-        out, _ = _run(_ctx(store, reg), media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        row = store.get_item_publish_state("plex-1", "item-plex-1")
-        assert out.outcome_key == FileOutcome.FAILED.value
-        assert (row.status, row.markers) == ("failed", written.markers) and row.version > written.version
-        assert store.get_publish_basis(store.get_file(media).id, "plex-1") is None
-
-    @pytest.mark.parametrize(
-        ("stype", "name", "expected_previous"),
-        [
-            # One transaction: after a failure the item row still says exactly what is ours there.
-            (ServerType.PLEX, "plex_db", [INTRO_CH, CREDITS_CH]),
-            # The plugin may have stored before the error: what it holds is unknown.
-            (ServerType.JELLYFIN, "jellyfin_bridge", None),
-        ],
-        ids=["atomic", "not-atomic"],
-    )
-    def test_after_a_failed_publish_previous_follows_atomic_writes(self, store, media, stype, name, expected_previous):
-        reg = _registry(media, stype)
-        sid = f"{stype.value}-1"
-        pub = ready_publisher(name)
-        _run(_ctx(store, reg), media, {sid: pub}, probe=_probe(CHAPTERS_BOTH))
-        os.utime(media, ns=(4, 4))
-        pub.write.side_effect = PublishError("boom")
-        _run(_ctx(store, reg), media, {sid: pub}, probe=_probe(CHAPTERS_BOTH[:3], NEW_CUT))  # a cut without credits
-        item_row = store.get_item_publish_state(sid, f"item-{sid}")
-        assert (item_row.status, item_row.markers) == ("failed", (INTRO_CH, CREDITS_CH))
-        pub.write.side_effect = pub.succeed
-        _run(_ctx(store, reg), media, {sid: pub})
-        assert pub.write.call_args.args[1] == [INTRO_CH]
-        assert pub.write.call_args.kwargs["previous"] == expected_previous
-
-    @pytest.mark.parametrize("between", ["skipped", "waiting"])
-    def test_unknown_previous_survives_a_skipped_or_waiting_run(self, store, media, between):
-        reg = _registry(media, ServerType.JELLYFIN)
-        jf = ready_publisher("jellyfin_bridge")
-        jf.write.side_effect = PublishError("Media Preview Bridge returned HTTP 500")
-        _run(_ctx(store, reg), media, {"jellyfin-1": jf}, probe=_probe(CHAPTERS_BOTH))
-        jf.write.side_effect = jf.succeed
-        server = reg.get("jellyfin-1")
-        if between == "skipped":
-            jf.capability.return_value = CapabilityReport(Capability.UNREACHABLE, "Can't reach this Jellyfin server")
-        else:
-            server.resolve_remote_path_to_item_id.return_value = None
-        _run(_ctx(store, reg), media, {"jellyfin-1": jf})
-        assert _state(store, media, "jellyfin-1").status == between
-        jf.capability.return_value = CapabilityReport(Capability.READY, "ok")
-        server.resolve_remote_path_to_item_id.return_value = "item-jellyfin-1"
-        _run(_ctx(store, reg, settings_raw={"detect": {"intro": False, "credits": False}}), media, {"jellyfin-1": jf})
-        assert jf.write.call_count == 2
-        assert jf.write.call_args.args == ("item-jellyfin-1", [])
-        assert jf.write.call_args.kwargs["previous"] is None
-
-    def test_nothing_on_record_for_an_item_never_reached_is_not_cleared(self, store, media):
-        reg = _registry(media, ServerType.JELLYFIN)
-        jf = ready_publisher("jellyfin_bridge")
-        jf.capability.return_value = CapabilityReport(Capability.NEEDS_PLUGIN, "Install the plugin")
-        _run(_ctx(store, reg), media, {"jellyfin-1": jf}, probe=_probe(CHAPTERS_BOTH))
-        assert _state(store, media, "jellyfin-1").item_id is None
-        jf.capability.return_value = CapabilityReport(Capability.READY, "ok")
-        out, _ = _run(
-            _ctx(store, reg, settings_raw={"detect": {"intro": False, "credits": False}}), media, {"jellyfin-1": jf}
-        )
-        jf.write.assert_not_called()
-        assert out.outcome_key == FileOutcome.NO_MARKERS.value
-
-    def test_cancel_during_one_servers_write_stops_before_the_next(self, store, media):
-        reg = _registry(media, ServerType.PLEX, ServerType.JELLYFIN)
-        cancelled = threading.Event()
-        plex, jf = ready_publisher(), ready_publisher("jellyfin_bridge")
-        plex.write.side_effect = lambda *a, **k: cancelled.set() or a[1]
-        out, _ = _run(
-            _ctx(store, reg),
-            media,
-            {"plex-1": plex, "jellyfin-1": jf},
-            probe=_probe(CHAPTERS_BOTH),
-            cancel_check=cancelled.is_set,
-        )
-        assert out.message == "cancelled by user"
-        jf.write.assert_not_called()
-        assert _state(store, media, "plex-1").status == "written"
+        locked = Marker(T.INTRO, 5_000, 30_000, ("user",), locked=True)
+        store.lock_marker(rec.id, locked)
+        ctx = _ctx(store, reg, settings_raw={"detect": {"intro": False, "credits": False}})
+        publisher = ready_publisher()
+        _run(ctx, media, {"plex-1": publisher})
+        assert store.get_markers(rec.id)[T.INTRO] == locked
+        assert all(c.calls == [] for c in ctx.clients.values())
+        publisher.write.assert_not_called()
 
     def test_unchanged_decisions_are_not_saved_again(self, tmp_path, media):
         clock = {"t": datetime(2026, 9, 13, tzinfo=UTC)}
         store = MarkerStore(str(tmp_path / "clocked.db"), clock=lambda: clock["t"])
         reg = _registry(media, ServerType.PLEX)
-        plex = ready_publisher()
-
-        def decided_at():
-            return {t: d.decided_at for t, d in store.get_decisions(store.get_file(media).id).items()}
-
-        _run(_ctx(store, reg), media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        first = decided_at()
+        _run(_ctx(store, reg), media, {}, probe=_probe(CHAPTERS_BOTH))
+        rec = store.get_file(media)
+        first = {t: d.decided_at for t, d in store.get_decisions(rec.id).items()}
         clock["t"] += timedelta(hours=1)
-        _run(_ctx(store, reg), media, {"plex-1": plex})
-        assert decided_at() == first
+        _run(_ctx(store, reg), media, {})
+        assert {t: d.decided_at for t, d in store.get_decisions(rec.id).items()} == first
         clock["t"] += timedelta(hours=1)
         recap_on = {"sources": [{"id": "theintrodb", "enabled": True}], "detect": {"recap": True}}
-        _run(_ctx(store, reg, settings_raw=recap_on), media, {"plex-1": plex})
-        assert all(at == clock["t"].isoformat() for at in decided_at().values())  # settings changed: saved again
+        _run(_ctx(store, reg, settings_raw=recap_on), media, {})
+        assert all(d.decided_at == clock["t"].isoformat() for d in store.get_decisions(rec.id).values())
         store.close()
-
-    @pytest.mark.parametrize(
-        ("state", "rechecked"),
-        [
-            (None, False),
-            (Capability.READY, False),
-            (Capability.UNREACHABLE, True),
-            (Capability.NEEDS_LOCAL_DB, True),
-            (Capability.MISCONFIGURED, True),
-            (Capability.UNSUPPORTED_SCHEMA, True),
-            (Capability.NEEDS_PLUGIN, True),
-        ],
-        ids=lambda v: v.value if isinstance(v, Capability) else str(v),
-    )
-    def test_only_capability_level_failures_recheck_the_server_for_the_next_file(
-        self, store, media, tmp_path, state, rechecked
-    ):
-        # Per-item failures (Jellyfin's write check: provider off for a library, stale file size) come back without a
-        # state and say nothing about the server.
-        other = os.path.join(os.path.dirname(media), "Rick and Morty (2013) - S01E02 - Lawnmower Dog.mkv")
-        Path(other).write_bytes(b"y" * 10)
-        reg = _registry(media, ServerType.JELLYFIN)
-        jf = ready_publisher("jellyfin_bridge")
-        jf.write.side_effect = [PublishError("write check failed", state=state), [INTRO_CH, CREDITS_CH]]
-        ctx = _ctx(store, reg)
-        _run(ctx, media, {"jellyfin-1": jf}, probe=_probe(CHAPTERS_BOTH))
-        out, _ = _run(ctx, other, {"jellyfin-1": jf}, probe=_probe(CHAPTERS_BOTH))
-        assert jf.capability.call_count == (2 if rechecked else 1)
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
-
-    def test_all_servers_failed_is_failed(self, store, media):
-        reg = _registry(media, ServerType.PLEX)
-        plex = ready_publisher()
-        plex.write.side_effect = PublishError("boom")
-        out = self._decided(store, media, reg, {"plex-1": plex})
-        assert out.outcome_key == FileOutcome.FAILED.value
-
-    def test_waiting_for_an_unindexed_item_keeps_the_last_published_markers(self, store, media):
-        reg = _registry(media, ServerType.JELLYFIN)
-        jf = ready_publisher("jellyfin_bridge")
-        _run(_ctx(store, reg), media, {"jellyfin-1": jf}, probe=_probe(CHAPTERS_BOTH))
-        os.utime(media, ns=(2, 2))
-        jf.write.side_effect = ItemNotFoundError("Jellyfin doesn't know item item-jellyfin-1 (yet)")
-        _run(_ctx(store, reg), media, {"jellyfin-1": jf}, probe=_probe(CHAPTERS_BOTH[:3]))
-        assert _state(store, media, "jellyfin-1").markers == (INTRO_CH, CREDITS_CH)
-
-    def test_markers_hash_is_kept_per_server(self, store, media):
-        chapters = (Chapter(0, 40_000, "Previously"), *CHAPTERS_BOTH[1:])
-        reg = _registry(media, ServerType.PLEX, ServerType.JELLYFIN)
-        plex, jf = ready_publisher(), ready_publisher("jellyfin_bridge", ("intro", "credits", "recap"))
-        pubs = {"plex-1": plex, "jellyfin-1": jf}
-        _run(_ctx(store, reg), media, pubs, probe=_probe(chapters))
-        out, _ = _run(_ctx(store, reg, settings_raw={"detect": {"recap": True}}), media, pubs)
-        assert plex.write.call_count == 1 and jf.write.call_count == 2
-        assert jf.write.call_args.args[1] == [Marker(T.RECAP, 0, 40_000, ("chapters",)), INTRO_CH, CREDITS_CH]
-        assert {r["server_id"]: r["status"] for r in out.publisher_rows} == {
-            "plex-1": ServerStatus.UP_TO_DATE.value,
-            "jellyfin-1": ServerStatus.WRITTEN.value,
-        }
-
-    def test_up_to_date_leaves_publish_state_untouched(self, tmp_path, media):
-        clock = {"t": datetime(2026, 9, 13, tzinfo=UTC)}
-        store = MarkerStore(str(tmp_path / "clocked.db"), clock=lambda: clock["t"])
-        reg = _registry(media, ServerType.PLEX)
-        plex = ready_publisher()
-        _run(_ctx(store, reg), media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        before = _state(store, media, "plex-1")
-        clock["t"] += timedelta(hours=1)
-        _run(_ctx(store, reg), media, {"plex-1": plex})
-        assert _state(store, media, "plex-1") == before
-        store.close()
-
-    def test_capability_is_cached_per_context(self, store, media):
-        reg = _registry(media, ServerType.PLEX)
-        plex = ready_publisher()
-        ctx = _ctx(store, reg)
-        _run(ctx, media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        os.utime(media, ns=(9, 9))
-        _run(ctx, media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        assert plex.capability.call_count == 1
-
-    def test_capability_is_fetched_again_after_the_ttl(self, store, media):
-        reg = _registry(media, ServerType.PLEX)
-        plex = ready_publisher()
-        ctx = _ctx(store, reg, ttl=0.0)
-        _run(ctx, media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        os.utime(media, ns=(9, 9))
-        _run(ctx, media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        assert plex.capability.call_count == 2
-
-    def test_capability_is_fetched_once_when_many_checks_start_together(self, store, media):
-        # 32 checking threads hit an empty cache at job start (and at every TTL expiry); Plex's check reads prefs
-        # over HTTP and opens its DB, so it must run once per server, not once per thread.
-        reg = _registry(media, ServerType.PLEX)
-        ctx = _ctx(store, reg)
-        cfg = reg.get_config("plex-1")
-        plex = ready_publisher()
-
-        def slow_capability():
-            time.sleep(0.05)
-            return CapabilityReport(Capability.READY, "ok")
-
-        plex.capability.side_effect = slow_capability
-        barrier = threading.Barrier(16)
-        reports = []
-
-        def check():
-            barrier.wait()
-            reports.append(pipeline.cached_capability(ctx, cfg, plex))
-
-        threads = [threading.Thread(target=check) for _ in range(16)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=10)
-        assert plex.capability.call_count == 1
-        assert len(reports) == 16 and all(r.ready for r in reports)
-
-    def test_publisher_gets_a_sibling_lookup_backed_by_the_store(self, store, media):
-        # Without this lookup Plex can never see that the versions of an item agree, so nothing is shown on them.
-        reg = _registry(media, ServerType.PLEX)
-        with (
-            patch.object(pipeline, "probe_media", return_value=_probe(CHAPTERS_BOTH)),
-            patch.object(pipeline, "publisher_for", return_value=ready_publisher()) as factory,
-        ):
-            check_item(_item(media), ctx=_ctx(store, reg))
-        assert factory.call_args.args == (reg.get("plex-1"), reg.get_config("plex-1"))
-        lookup = factory.call_args.kwargs["sibling_markers"]
-        assert lookup(media) == {T.INTRO: INTRO_CH, T.CREDITS: CREDITS_CH}
-        assert lookup("/elsewhere/never-decided.mkv") is None
-
-    def test_locked_marker_is_published_even_when_detection_is_off(self, store, media):
-        reg = _registry(media, ServerType.PLEX)
-        plex = ready_publisher()
-        raw = {"detect": {"intro": False, "credits": False}}
-        st = os.stat(media)
-        rec = store.upsert_file(
-            FileIdentity(media, st.st_size, st.st_mtime_ns), duration_ms=DUR, season_key=None, is_movie=False
-        )
-        store.lock_marker(rec.id, Marker(T.INTRO, 5_000, 30_000, ("user",), locked=True))
-        ctx = _ctx(store, reg, settings_raw=raw)
-        out, _ = _run(ctx, media, {"plex-1": plex})
-        assert plex.write.call_args.args[1] == [Marker(T.INTRO, 5_000, 30_000, ("user",), locked=True)]
-        assert all(c.calls == [] for c in ctx.clients.values())
-        assert "intro" in out.message
 
 
 @pytest.fixture(autouse=True)
@@ -3699,179 +3231,7 @@ def saved_settings(tmp_path):
     sm_mod.reset_settings_manager()
 
 
-def _second_episode(media):
-    other = os.path.join(os.path.dirname(media), "Rick and Morty (2013) - S01E02 - Lawnmower Dog.mkv")
-    with open(other, "wb") as f:
-        f.write(b"y" * 100)
-    return other
-
-
-class TestConsentBeforeEachWrite:
-    """Turning Intro & Credits off (or the server, or a library) stops a running job's writes."""
-
-    @pytest.mark.parametrize(
-        ("flip", "message"),
-        [
-            (lambda entry: entry.update(enabled=False), "This server is turned off on the Servers page"),
-            (lambda entry: entry["markers"].update(enabled=False), "Intro & Credits is off for this server"),
-        ],
-        ids=["server-off", "markers-off"],
-    )
-    def test_turning_it_off_after_the_first_file_stops_the_second_write(
-        self, store, media, saved_settings, flip, message
-    ):
-        from media_preview_generator.servers.registry import server_config_to_dict
-
-        other = _second_episode(media)
-        reg = _registry(media, ServerType.PLEX)
-        saved_settings.set("media_servers", [server_config_to_dict(reg.configs_by_id["plex-1"])])
-        plex = ready_publisher()
-        ctx = _ctx(store, reg, live_config=pipeline.live_server_config)
-
-        first, _ = _run(ctx, media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        entries = saved_settings.get("media_servers")
-        flip(entries[0])
-        saved_settings.set("media_servers", entries)
-        second, _ = _run(ctx, other, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-
-        assert first.publisher_rows[0]["status"] == ServerStatus.WRITTEN.value
-        assert (second.publisher_rows[0]["status"], second.publisher_rows[0]["message"]) == (
-            ServerStatus.SKIPPED.value,
-            message,
-        )
-        assert [c.kwargs["canonical_path"] for c in plex.write.call_args_list] == [media]
-        assert _state(store, other, "plex-1").status == "skipped"
-        assert "plex-1" not in ctx._capabilities  # checked again once it's back on
-
-    @pytest.mark.parametrize("stype", [ServerType.PLEX, ServerType.JELLYFIN, ServerType.EMBY])
-    @pytest.mark.parametrize(
-        ("change", "status", "message"),
-        [
-            ("removed", ServerStatus.SKIPPED, "This server was removed"),
-            ("server-off", ServerStatus.SKIPPED, "This server is turned off on the Servers page"),
-            ("markers-off", ServerStatus.SKIPPED, "Intro & Credits is off for this server"),
-            (
-                "library-deselected",
-                ServerStatus.SKIPPED,
-                "This library isn't selected for Intro & Credits on this server",
-            ),
-            ("library-removed", ServerStatus.SKIPPED, "This library isn't selected for Intro & Credits on this server"),
-            ("path-excluded", ServerStatus.SKIPPED, "This file is excluded on this server"),
-            ("unreadable", ServerStatus.FAILED, "Couldn't read this server's saved settings (RuntimeError)"),
-            ("unchanged", ServerStatus.WRITTEN, "2 marker(s)"),
-        ],
-    )
-    def test_saved_settings_matrix(self, store, media, stype, change, status, message):
-        reg = _registry(media, stype)
-        sid = f"{stype.value}-1"
-        live = copy.deepcopy(reg.configs_by_id[sid])
-        if change == "server-off":
-            live.enabled = False
-        elif change == "markers-off":
-            live.markers["enabled"] = False
-        elif change == "library-deselected":
-            live.markers["library_ids"] = ["9"]
-        elif change == "library-removed":
-            live.libraries = [Library("1", "TV Shows", ("/somewhere/else",))]
-        elif change == "path-excluded":
-            live.exclude_paths = [{"value": "Rick and Morty", "type": "regex"}]
-
-        def live_config(server_id):
-            assert server_id == sid
-            if change == "unreadable":
-                raise RuntimeError("settings.json unreadable")
-            return None if change == "removed" else live
-
-        pub = ready_publisher(
-            {ServerType.PLEX: "plex_db", ServerType.JELLYFIN: "jellyfin_bridge"}.get(stype, "emby_bridge")
-        )
-        ctx = _ctx(store, reg, live_config=live_config)
-        out, _ = _run(ctx, media, {sid: pub}, probe=_probe(CHAPTERS_BOTH))
-        row = out.publisher_rows[0]
-        assert (row["status"], row["message"]) == (status.value, message)
-        assert pub.write.call_count == (1 if change == "unchanged" else 0)
-        assert (sid in ctx._capabilities) is (change == "unchanged")
-
-    @pytest.mark.parametrize(
-        ("report", "cached"),
-        [
-            (CapabilityReport(Capability.DISABLED, "Intro & Credits is off for this server"), False),
-            (CapabilityReport(Capability.NEEDS_CONFIRMATION, "Confirm the Plex database write to turn this on"), False),
-            # Not from the saved settings: a server problem is still reused for the job's TTL.
-            (CapabilityReport(Capability.UNREACHABLE, "Can't reach this Jellyfin server"), True),
-        ],
-        ids=["off", "confirmation-cleared", "unreachable"],
-    )
-    def test_an_answer_from_the_saved_settings_is_not_reused_for_the_next_file(self, store, media, report, cached):
-        # Plex's capability reads the saved settings live: off for file 1, on again a minute later for file 2.
-        other = _second_episode(media)
-        reg = _registry(media, ServerType.PLEX)
-        plex = ready_publisher()
-        plex.capability.side_effect = [report, CapabilityReport(Capability.READY, "ok", {"plex_pass": True})]
-        ctx = _ctx(store, reg)  # the 300 s job cache
-        first, _ = _run(ctx, media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        second, _ = _run(ctx, other, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-
-        assert (first.publisher_rows[0]["status"], first.publisher_rows[0]["message"]) == (
-            ServerStatus.SKIPPED.value,
-            report.message,
-        )
-        expected = (
-            (ServerStatus.SKIPPED.value, report.message) if cached else (ServerStatus.WRITTEN.value, "2 marker(s)")
-        )
-        assert (second.publisher_rows[0]["status"], second.publisher_rows[0]["message"]) == expected
-        assert plex.capability.call_count == (1 if cached else 2)
-        assert [c.kwargs["canonical_path"] for c in plex.write.call_args_list] == ([] if cached else [other])
-
-    def test_plex_confirmation_cleared_loads_as_off(self, store, media):
-        reg = _registry(media, ServerType.PLEX)
-        live = copy.deepcopy(reg.configs_by_id["plex-1"])
-        live.markers["plex"]["db_write_confirmed_at"] = None
-        plex = ready_publisher()
-        out, _ = _run(
-            _ctx(store, reg, live_config=lambda _sid: live), media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH)
-        )
-        assert (out.publisher_rows[0]["status"], out.publisher_rows[0]["message"]) == (
-            ServerStatus.SKIPPED.value,
-            "Intro & Credits is off for this server",
-        )
-        plex.write.assert_not_called()
-
-    def test_back_on_checks_the_server_again_and_writes(self, store, media):
-        other = _second_episode(media)
-        reg = _registry(media, ServerType.JELLYFIN)
-        live = copy.deepcopy(reg.configs_by_id["jellyfin-1"])
-        live.markers["enabled"] = False
-        jf = ready_publisher("jellyfin_bridge")
-        ctx = _ctx(store, reg, live_config=lambda _sid: live)
-        _run(ctx, media, {"jellyfin-1": jf}, probe=_probe(CHAPTERS_BOTH))
-        live.markers["enabled"] = True
-        out, _ = _run(ctx, other, {"jellyfin-1": jf}, probe=_probe(CHAPTERS_BOTH))
-        assert out.publisher_rows[0]["status"] == ServerStatus.WRITTEN.value
-        assert jf.capability.call_count == 2
-        assert [c.kwargs["canonical_path"] for c in jf.write.call_args_list] == [other]
-
-    def test_the_publisher_reads_the_saved_settings_on_every_check(self, store, media):
-        reg = _registry(media, ServerType.PLEX)
-        live = copy.deepcopy(reg.configs_by_id["plex-1"])
-        factory_kwargs = []
-
-        def factory(server, cfg, **kwargs):
-            factory_kwargs.append(kwargs)
-            return ready_publisher()
-
-        with (
-            patch.object(pipeline, "probe_media", return_value=_probe(CHAPTERS_BOTH)),
-            patch.object(pipeline, "publisher_for", side_effect=factory),
-        ):
-            check_item(_item(media), ctx=_ctx(store, reg, live_config=lambda _sid: live))
-        provider = factory_kwargs[0]["settings_provider"]
-        assert (provider().enabled, provider().db_write_confirmed_at) == (True, "2026-09-13T00:00:00+00:00")
-        live.markers["enabled"] = False
-        assert provider().enabled is False
-        live.markers["enabled"], live.enabled = True, False
-        assert provider().enabled is False
-
+class TestSavedSettings:
     def test_build_context_reads_the_saved_settings(self, store, saved_settings):
         from media_preview_generator.servers.registry import server_config_to_dict
 
@@ -3887,486 +3247,6 @@ class TestConsentBeforeEachWrite:
             ctx = pipeline.build_context(registry=MagicMock(), config=MagicMock(ffmpeg_path=None), priority=3)
         assert ctx.live_config("plex-1") == cfg
         assert ctx.live_config("gone") is None
-
-
-class TestPlexPassUnknown:
-    """A READY Plex whose Plex Pass couldn't be read isn't written: Plex serves nothing without a Pass.
-
-    The file waits with a retry code, and the answer is reused only for a few seconds: a Plex restart during a webhook follow-up must not leave the file for the next scheduled run, and
-    a backfill while Plex's HTTP is down must not run the whole capability check for every file.
-    """
-
-    @pytest.mark.parametrize(
-        ("stype", "details", "status", "message", "reason_code"),
-        [
-            (
-                ServerType.PLEX,
-                {"plex_pass": None},
-                ServerStatus.WAITING,
-                "Can't reach Plex to confirm Plex Pass",
-                "plex_pass_unknown",
-            ),
-            (ServerType.PLEX, {"plex_pass": True}, ServerStatus.WRITTEN, "2 marker(s)", None),
-            (ServerType.JELLYFIN, {"plugin_version": "10.11.1.0"}, ServerStatus.WRITTEN, "2 marker(s)", None),
-            (ServerType.EMBY, {"plugin_version": "1.0.0.0"}, ServerStatus.WRITTEN, "2 marker(s)", None),
-        ],
-        ids=["plex-unknown", "plex-pass", "jellyfin", "emby"],
-    )
-    def test_unknown_pass_is_not_ready_for_writes(self, store, media, stype, details, status, message, reason_code):
-        reg = _registry(media, stype)
-        sid = f"{stype.value}-1"
-        pub = ready_publisher(
-            {ServerType.PLEX: "plex_db", ServerType.JELLYFIN: "jellyfin_bridge"}.get(stype, "emby_bridge")
-        )
-        pub.capability.return_value = CapabilityReport(Capability.READY, "ready", details)
-        ctx = _ctx(store, reg)
-        out, _ = _run(ctx, media, {sid: pub}, probe=_probe(CHAPTERS_BOTH))
-        row = out.publisher_rows[0]
-        assert (row["status"], row["message"], row.get("reason_code")) == (status.value, message, reason_code)
-        assert pub.write.call_count == (0 if status is ServerStatus.WAITING else 1)
-        assert sid in ctx._capabilities
-        assert _state(store, media, sid).status == ("waiting" if status is ServerStatus.WAITING else "written")
-
-    def test_files_a_few_seconds_apart_share_one_check(self, store, media):
-        other = _second_episode(media)
-        reg = _registry(media, ServerType.PLEX)
-        plex = ready_publisher()
-        plex.capability.return_value = CapabilityReport(Capability.READY, "", {"plex_pass": None})
-        ctx = _ctx(store, reg)
-        outs = [_run(ctx, path, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))[0] for path in (media, other)]
-        assert [(o.publisher_rows[0]["status"], o.publisher_rows[0].get("reason_code")) for o in outs] == [
-            (ServerStatus.WAITING.value, "plex_pass_unknown")
-        ] * 2
-        assert plex.capability.call_count == 1
-        plex.write.assert_not_called()
-
-    def test_the_next_file_checks_plex_again_and_writes_once_it_answers(self, store, media, monkeypatch):
-        monkeypatch.setattr(pipeline, "PLEX_PASS_UNKNOWN_TTL_S", 0.0)  # the next file comes after the short reuse
-        other = _second_episode(media)
-        reg = _registry(media, ServerType.PLEX)
-        plex = ready_publisher()
-        plex.capability.side_effect = [
-            CapabilityReport(Capability.READY, "", {"plex_pass": None}),
-            CapabilityReport(Capability.READY, "", {"plex_pass": True}),
-        ]
-        ctx = _ctx(store, reg)  # the 300 s job cache
-        first, _ = _run(ctx, media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        second, _ = _run(ctx, other, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        assert first.outcome_key == FileOutcome.WAITING.value
-        assert (second.publisher_rows[0]["status"], second.publisher_rows[0]["message"]) == (
-            ServerStatus.WRITTEN.value,
-            "2 marker(s)",
-        )
-        assert [c.kwargs["canonical_path"] for c in plex.write.call_args_list] == [other]
-
-
-class TestReadBackVerify:
-    """Before an unchanged file is "Up to date" on a server, the server is asked whether it still shows ours."""
-
-    @staticmethod
-    def _published_then_checked(store, media, stype, shows, *, redetect="restore"):
-        reg = _registry(media, stype)
-        sid = f"{stype.value}-1"
-        if stype is ServerType.PLEX:
-            reg.configs_by_id[sid].markers["plex"]["on_plex_redetect"] = redetect
-        pub = ready_publisher("plex_db" if stype is ServerType.PLEX else "jellyfin_bridge")
-        _run(_ctx(store, reg), media, {sid: pub}, probe=_probe(CHAPTERS_BOTH))
-        if isinstance(shows, Exception):
-            pub.shows.side_effect = shows
-        else:
-            pub.shows.return_value = shows
-        pub.write.side_effect = lambda item_id, markers, **kw: (setattr(pub, "last_write_changed", True), markers)[1]
-        out, _ = _run(_ctx(store, reg), media, {sid: pub})
-        return pub, out.publisher_rows[0], out
-
-    @pytest.mark.parametrize("stype", [ServerType.PLEX, ServerType.JELLYFIN])
-    @pytest.mark.parametrize(
-        ("shows", "redetect", "status", "message", "writes"),
-        [
-            (Shown.OURS, "restore", ServerStatus.UP_TO_DATE, "Up to date", 1),
-            (None, "restore", ServerStatus.UP_TO_DATE, "Up to date", 1),  # couldn't be read
-            (RuntimeError("HTTP 500"), "restore", ServerStatus.UP_TO_DATE, "Up to date", 1),
-            (Shown.MISSING, "restore", ServerStatus.WRITTEN, "2 marker(s)", 2),
-            (Shown.MISSING, "keep_plex", ServerStatus.WRITTEN, "2 marker(s)", 2),
-            (Shown.REPLACED, "restore", ServerStatus.WRITTEN, "2 marker(s)", 2),
-            # Whether Plex's own markers are kept is the publisher's call in its write (see the kept tests below).
-            (Shown.REPLACED, "keep_plex", ServerStatus.WRITTEN, "2 marker(s)", 2),
-            (Shown.VERSIONS_CHANGED, "restore", ServerStatus.WRITTEN, "2 marker(s)", 2),
-        ],
-        ids=[
-            "ours",
-            "unreadable",
-            "read-raises",
-            "missing",
-            "missing-keep",
-            "replaced",
-            "replaced-keep",
-            "versions-changed",
-        ],
-    )
-    def test_matrix(self, store, media, stype, shows, redetect, status, message, writes):
-        pub, row, out = self._published_then_checked(store, media, stype, shows, redetect=redetect)
-        files = ("/plex/item-7.mkv",) if stype is ServerType.PLEX else None  # Jellyfin item ids are per version
-        assert (row["status"], row["message"]) == (status.value, message)
-        assert pub.write.call_count == writes
-        assert [(c.args, c.kwargs) for c in pub.shows.call_args_list] == [
-            ((f"item-{stype.value}-1", [INTRO_CH, CREDITS_CH]), {"kept_types": frozenset(), "item_files": files})
-        ]
-        # A read that failed is still "Up to date", but the job says it couldn't check.
-        assert row.get("read_back_failed", False) is (shows is None or isinstance(shows, Exception))
-        assert "verify_later" not in row
-        if writes == 2:
-            assert pub.write.call_args.kwargs["previous"] == [INTRO_CH, CREDITS_CH]
-            assert out.outcome_key == FileOutcome.PUBLISHED.value
-
-    @staticmethod
-    def _keeping(pub, kept, shown, *, changed):
-        def write(item_id, markers, **kwargs):
-            pub.last_write_changed, pub.last_kept_types = changed, frozenset(kept)
-            return [m for m in markers if m.type in shown]
-
-        pub.write.side_effect = write
-
-    @pytest.mark.parametrize("redetect", ["keep_plex", "restore"])
-    def test_types_the_publisher_keeps_are_recorded_reported_and_passed_back(self, store, media, redetect):
-        reg = _registry(media, ServerType.PLEX)
-        reg.configs_by_id["plex-1"].markers["plex"]["on_plex_redetect"] = redetect
-        pub = ready_publisher()
-        _run(_ctx(store, reg), media, {"plex-1": pub}, probe=_probe(CHAPTERS_BOTH))
-        pub.shows.return_value = Shown.REPLACED
-        self._keeping(pub, {T.CREDITS}, {T.INTRO}, changed=False)
-
-        first, _ = _run(_ctx(store, reg), media, {"plex-1": pub})
-
-        assert pub.write.call_args.kwargs["kept_types"] == frozenset()
-        assert (first.publisher_rows[0]["status"], first.publisher_rows[0]["message"]) == (
-            ServerStatus.UP_TO_DATE.value,
-            "Keeping Plex's credits",
-        )
-        item = store.get_item_publish_state("plex-1", "item-plex-1")
-        assert (item.markers, item.kept_types) == ((INTRO_CH,), {T.CREDITS})
-
-        pub.shows.return_value = Shown.OURS
-        second, _ = _run(_ctx(store, reg), media, {"plex-1": pub})
-
-        assert pub.shows.call_args.args == ("item-plex-1", [INTRO_CH])
-        assert pub.shows.call_args.kwargs == {"kept_types": {T.CREDITS}, "item_files": ("/plex/item-7.mkv",)}
-        if redetect == "keep_plex":
-            assert pub.write.call_count == 2
-            assert (second.publisher_rows[0]["status"], second.publisher_rows[0]["message"]) == (
-                ServerStatus.UP_TO_DATE.value,
-                "Keeping Plex's credits",
-            )
-        else:
-            # Switched to restore: the kept credits go through the publisher again, which puts ours back.
-            assert pub.write.call_count == 3
-            assert pub.write.call_args.kwargs["kept_types"] == {T.CREDITS}
-
-    @pytest.mark.parametrize(
-        ("kept", "shown", "changed", "status", "message"),
-        [
-            ({T.CREDITS}, {T.INTRO}, True, ServerStatus.WRITTEN, "1 marker(s); keeping Plex's credits"),
-            (
-                {T.CREDITS},
-                set(),
-                True,
-                ServerStatus.WRITTEN,
-                "Cleared our markers from this server; keeping Plex's credits",
-            ),
-            ({T.INTRO, T.CREDITS}, set(), False, ServerStatus.UP_TO_DATE, "Keeping Plex's intro and credits"),
-            (
-                {T.INTRO, T.CREDITS},
-                set(),
-                True,
-                ServerStatus.WRITTEN,
-                "Cleared our markers from this server; keeping Plex's intro and credits",
-            ),
-            (set(), {T.INTRO, T.CREDITS}, True, ServerStatus.WRITTEN, "2 marker(s)"),
-        ],
-        ids=["written", "intro-not-shown", "all-kept", "cleared", "none-kept"],
-    )
-    def test_file_row_names_the_kept_types(self, store, media, kept, shown, changed, status, message):
-        reg = _registry(media, ServerType.PLEX)
-        pub = ready_publisher()
-        self._keeping(pub, kept, shown, changed=changed)
-        out, _ = _run(_ctx(store, reg), media, {"plex-1": pub}, probe=_probe(CHAPTERS_BOTH))
-        assert (out.publisher_rows[0]["status"], out.publisher_rows[0]["message"]) == (status.value, message)
-        assert store.get_item_publish_state("plex-1", "item-plex-1").kept_types == kept
-
-    @pytest.mark.parametrize(
-        ("stype", "setting", "writes"),
-        [
-            (ServerType.PLEX, "keep_plex", 2),
-            (ServerType.PLEX, "restore", 3),
-            (ServerType.EMBY, "keep_emby", 2),
-            (ServerType.EMBY, "restore", 3),
-        ],
-    )
-    def test_each_vendors_keep_setting_holds_or_releases_kept_types(self, store, media, stype, setting, writes):
-        reg = _registry(media, stype)
-        sid = f"{stype.value}-1"
-        vendor = "Plex" if stype is ServerType.PLEX else "Emby"
-        pub = ready_publisher("plex_db" if stype is ServerType.PLEX else "emby_bridge")
-        _run(_ctx(store, reg), media, {sid: pub}, probe=_probe(CHAPTERS_BOTH))
-        pub.shows.return_value = Shown.REPLACED
-        self._keeping(pub, {T.CREDITS}, {T.INTRO}, changed=False)
-        first, _ = _run(_ctx(store, reg), media, {sid: pub})
-        assert first.publisher_rows[0]["message"] == f"Keeping {vendor}'s credits"
-
-        block = "plex" if stype is ServerType.PLEX else "emby"
-        key = "on_plex_redetect" if stype is ServerType.PLEX else "on_emby_redetect"
-        reg.configs_by_id[sid].markers.setdefault(block, {})[key] = setting
-        pub.shows.return_value = Shown.OURS
-        second, _ = _run(_ctx(store, reg), media, {sid: pub})
-
-        assert pub.write.call_count == writes
-        if writes == 3:  # released: the kept credits go through the publisher again
-            assert pub.write.call_args.kwargs["kept_types"] == {T.CREDITS}
-        else:
-            assert second.publisher_rows[0]["message"] == f"Keeping {vendor}'s credits"
-
-    @pytest.mark.parametrize("publisher", ["plex_db", "emby_bridge"])
-    def test_nothing_decided_on_an_item_of_kept_types_only_goes_through_the_write(self, store, media, publisher):
-        # Emby's plugin still stores ours for a kept type; a Plex record left holding one is drift on every Check servers
-        # run. The real Plex publisher sends nothing to Plex's DB then (test_publisher_contract).
-        stype = ServerType.PLEX if publisher == "plex_db" else ServerType.EMBY
-        sid = f"{stype.value}-1"
-        reg = _registry(media, stype)
-        pub = ready_publisher(publisher)
-        self._keeping(pub, {T.INTRO, T.CREDITS}, set(), changed=True)
-        _run(_ctx(store, reg), media, {sid: pub}, probe=_probe(CHAPTERS_BOTH))
-        assert store.get_item_publish_state(sid, f"item-{sid}").kept_types == {T.INTRO, T.CREDITS}
-        pub.write.side_effect = pub.succeed
-        pub.last_kept_types = frozenset()
-        off = {"sources": [{"id": "theintrodb", "enabled": True}], "detect": {"intro": False, "credits": False}}
-
-        _run(_ctx(store, reg, settings_raw=off), media, {sid: pub}, probe=_probe(CHAPTERS_BOTH))
-
-        assert pub.write.call_count == 2
-        call = pub.write.call_args
-        assert call.args == (f"item-{sid}", []) and call.kwargs["previous"] == []
-        assert call.kwargs["kept_types"] == {T.INTRO, T.CREDITS}
-        assert store.get_item_publish_state(sid, f"item-{sid}").kept_types == frozenset()
-
-    @pytest.mark.parametrize(
-        ("kept", "shown", "changed", "status", "message"),
-        [
-            (set(), {T.INTRO, T.CREDITS}, True, ServerStatus.WRITTEN, "2 marker(s); Emby skips to the end of the file"),
-            (set(), {T.INTRO, T.CREDITS}, False, ServerStatus.UP_TO_DATE, "Up to date; Emby skips to the end of the file"),
-            ({T.INTRO}, {T.CREDITS}, True, ServerStatus.WRITTEN, "1 marker(s); keeping Emby's intro; Emby skips to the end of the file"),
-        ],
-        ids=["written", "unchanged", "kept"],
-    )  # fmt: skip
-    def test_a_note_for_markers_the_server_shows_differently_reaches_the_row(
-        self, store, media, kept, shown, changed, status, message
-    ):
-        reg = _registry(media, ServerType.EMBY)
-        emby = ready_publisher("emby_bridge")
-        emby.projection_note.side_effect = lambda ms, **kw: (
-            "Emby skips to the end of the file" if any(m.type is T.CREDITS for m in ms) else ""
-        )
-        self._keeping(emby, kept, shown, changed=changed)
-        out, _ = _run(_ctx(store, reg), media, {"emby-1": emby}, probe=_probe(CHAPTERS_BOTH))
-        row = out.publisher_rows[0]
-        assert (row["status"], row["message"]) == (status.value, message)
-        call = emby.projection_note.call_args
-        assert call.args == ([m for m in (INTRO_CH, CREDITS_CH) if m.type in shown],)
-        assert call.kwargs == {"duration_ms": DUR}
-
-    def test_a_kept_type_is_kept_after_a_failed_write(self, store, media):
-        reg = _registry(media, ServerType.PLEX)
-        pub = ready_publisher()
-        self._keeping(pub, {T.CREDITS}, {T.INTRO}, changed=True)
-        _run(_ctx(store, reg), media, {"plex-1": pub}, probe=_probe(CHAPTERS_BOTH))
-        pub.write.side_effect = PublishError("Plex is busy", state=Capability.UNREACHABLE)
-        os.utime(media, ns=(4, 4))
-        _run(_ctx(store, reg), media, {"plex-1": pub}, probe=_probe(CHAPTERS_BOTH))
-        assert store.get_item_publish_state("plex-1", "item-plex-1").kept_types == {T.CREDITS}
-        self._keeping(pub, {T.CREDITS}, {T.INTRO}, changed=False)
-        _run(_ctx(store, reg), media, {"plex-1": pub}, probe=_probe(CHAPTERS_BOTH))
-        assert pub.write.call_args.kwargs["kept_types"] == {T.CREDITS}
-
-    def test_nothing_of_ours_on_the_item_is_not_read_back(self, store, media):
-        reg = _registry(media, ServerType.PLEX)
-        plex = ready_publisher()
-        _run(_ctx(store, reg), media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        off = {"sources": [{"id": "theintrodb", "enabled": True}], "detect": {"intro": False, "credits": False}}
-        cleared, _ = _run(_ctx(store, reg, settings_raw=off), media, {"plex-1": plex})
-        assert cleared.publisher_rows[0]["message"] == "Cleared our markers from this server"
-        again, _ = _run(_ctx(store, reg, settings_raw=off), media, {"plex-1": plex})
-        assert again.publisher_rows[0]["status"] == ServerStatus.UP_TO_DATE.value
-        plex.shows.assert_not_called()  # the item record holds nothing of ours to look for
-        assert plex.write.call_count == 2  # nor is it written to record the item's versions
-        assert "read_back_failed" not in again.publisher_rows[0]
-
-    @pytest.mark.parametrize(
-        ("history", "verify_later"),
-        [("new", False), ("unchanged", False), ("replaced", True), ("replaced-no-op", True)],
-    )
-    def test_a_replaced_files_rows_ask_for_a_later_check(self, store, media, history, verify_later):
-        reg = _registry(media, ServerType.JELLYFIN)
-        jf = ready_publisher("jellyfin_bridge")
-        if history != "new":
-            _run(_ctx(store, reg), media, {"jellyfin-1": jf}, probe=_probe(CHAPTERS_BOTH))
-        if history.startswith("replaced"):
-            os.utime(media, ns=(7, 7))
-        if history == "replaced":
-            jf.write.side_effect = lambda item_id, markers, **kw: (setattr(jf, "last_write_changed", True), markers)[1]
-        out, _ = _run(_ctx(store, reg), media, {"jellyfin-1": jf}, probe=_probe(CHAPTERS_BOTH))
-        row = out.publisher_rows[0]
-        assert row.get("verify_later", False) is verify_later
-        expected = ServerStatus.UP_TO_DATE if history in ("unchanged", "replaced-no-op") else ServerStatus.WRITTEN
-        assert row["status"] == expected.value
-
-    def test_a_replaced_file_a_worker_finishes_asks_for_a_later_check(self, store, media):
-        # The checking stage stores the new file before it hands it to a worker (here credit text, checking the
-        # chapter); the worker's stage still publishes a replaced file and says so.
-        reg = _registry(media, ServerType.JELLYFIN)
-        jf = ready_publisher("jellyfin_bridge")
-        spec = pipeline.LocalDetectorSpec(
-            Source.CREDITS_TEXT, frozenset({T.CREDITS}), MagicMock(return_value=[]), checks_chapters=True
-        )
-        _run(
-            _ctx(store, reg, detectors=(spec,)), media, {"jellyfin-1": jf}, probe=_probe(CHAPTERS_BOTH), stage="process"
-        )
-        os.utime(media, ns=(7, 7))
-        ctx = _ctx(store, reg, detectors=(spec,))
-        handed_on, _ = _run(ctx, media, {"jellyfin-1": jf}, probe=_probe(CHAPTERS_BOTH))
-        assert handed_on is None
-        out, _ = _run(ctx, media, {"jellyfin-1": jf}, probe=_probe(CHAPTERS_BOTH), stage="process")
-        assert out.publisher_rows[0].get("verify_later") is True
-        assert not ctx._replaced_at_start  # dropped with the file's outcome
-
-    def test_a_replaced_file_that_waits_asks_for_no_later_check(self, store, media):
-        reg = _registry(media, ServerType.PLEX)
-        plex = ready_publisher()
-        _run(_ctx(store, reg), media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        os.utime(media, ns=(7, 7))
-        reg.get("plex-1").resolve_remote_path_to_item_id.return_value = None
-        out, _ = _run(_ctx(store, reg), media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        assert out.publisher_rows[0]["status"] == ServerStatus.WAITING.value
-        assert "verify_later" not in out.publisher_rows[0]
-
-
-class TestReadBackVersions:
-    def test_read_back_passes_the_item_files_recorded_at_the_last_write(self, store, media):
-        reg = _registry(media, ServerType.PLEX)
-        plex = ready_publisher()
-
-        def write(item_id, markers, **kwargs):
-            plex.last_item_files = ("/plex/a.mkv", "/plex/b.mkv")
-            return plex.succeed(item_id, markers, **kwargs)
-
-        plex.write.side_effect = write
-        _run(_ctx(store, reg), media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        row = store.get_item_publish_state("plex-1", "item-plex-1")
-        assert row.item_files == ("/plex/a.mkv", "/plex/b.mkv")
-        out, _ = _run(_ctx(store, reg), media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        assert plex.shows.call_args.args == ("item-plex-1", [INTRO_CH, CREDITS_CH])
-        assert plex.shows.call_args.kwargs == {"kept_types": frozenset(), "item_files": ("/plex/a.mkv", "/plex/b.mkv")}
-        assert out.outcome_key == FileOutcome.UP_TO_DATE.value
-
-    def test_changed_versions_publish_again(self, store, media):
-        reg = _registry(media, ServerType.PLEX)
-        plex = ready_publisher()
-        _run(_ctx(store, reg), media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        plex.shows.return_value = Shown.VERSIONS_CHANGED
-        _run(_ctx(store, reg), media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        assert plex.write.call_count == 2
-        assert plex.write.call_args.kwargs["previous"] == [INTRO_CH, CREDITS_CH]
-
-    @pytest.mark.parametrize(
-        ("stype", "kept_only", "drift"),
-        [
-            (ServerType.PLEX, False, True),
-            (ServerType.PLEX, True, False),  # none of ours on the item for a version added since to disagree with
-            # Jellyfin and Emby item ids are per version: they record no versions, and the recording write is Plex's
-            # only, so a record without files is never drift there. A kept-only row would be the same cell.
-            (ServerType.JELLYFIN, False, False),
-            (ServerType.EMBY, False, False),
-        ],
-        ids=["plex", "plex-kept-only", "jellyfin", "emby"],
-    )
-    def test_a_plex_record_without_item_files_is_written_once_to_record_them(
-        self, store, media, stype, kept_only, drift
-    ):
-        reg = _registry(media, stype)
-        sid = f"{stype.value}-1"
-        pub = ready_publisher(
-            {ServerType.PLEX: "plex_db", ServerType.EMBY: "emby_bridge"}.get(stype, "jellyfin_bridge")
-        )
-        pub.last_item_files = None  # published before item versions were recorded
-        if kept_only:
-            reg.configs_by_id[sid].markers["plex"]["on_plex_redetect"] = "keep_plex"
-            TestReadBackVerify._keeping(pub, {T.INTRO, T.CREDITS}, set(), changed=True)
-        _run(_ctx(store, reg), media, {sid: pub}, probe=_probe(CHAPTERS_BOTH))
-        row = store.get_item_publish_state(sid, f"item-{sid}")
-        assert row.item_files is None and bool(row.markers) is not kept_only
-        if stype is ServerType.PLEX:
-            pub.last_item_files = ("/plex/a.mkv",)
-        outs = [_run(_ctx(store, reg), media, {sid: pub}, probe=_probe(CHAPTERS_BOTH))[0] for _ in range(2)]
-        assert [o.outcome_key for o in outs] == [FileOutcome.UP_TO_DATE.value] * 2
-        assert pub.write.call_count == (2 if drift else 1)
-        if drift:
-            assert pub.write.call_args.kwargs["previous"] == [INTRO_CH, CREDITS_CH]
-            assert pub.shows.call_count == 1 and pub.shows.call_args.kwargs["item_files"] == ("/plex/a.mkv",)
-        else:
-            assert pub.shows.call_count == 2
-
-
-class TestAOneVersionPlexItemShowingOtherTimes:
-    """The Plex publisher used to keep what a one-version item showed when a decision moved by under 2 s
-    (intros ended at 113.0 s where 110.5-112.4 s was decided). The decision
-    didn't change since, so its publish basis still matches: the next run publishes again instead of "Up to date"."""
-
-    SHOWN_INTRO = Marker(T.INTRO, 126_771, 158_000, ("chapters",))
-
-    def _published_as(self, store, media, shown, files):
-        reg = _registry(media, ServerType.PLEX)
-        plex = ready_publisher()
-
-        def write(item_id, markers, **kwargs):
-            plex.last_item_files = files
-            plex.last_write_changed = True
-            return shown
-
-        plex.write.side_effect = write
-        _run(_ctx(store, reg), media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        assert store.get_item_publish_state("plex-1", "item-plex-1").markers == tuple(shown)
-        plex.write.side_effect = plex.succeed
-        return reg, plex
-
-    def test_a_one_version_item_showing_other_times_is_published_again(self, store, media):
-        reg, plex = self._published_as(store, media, [self.SHOWN_INTRO, CREDITS_CH], ("/plex/a.mkv",))
-
-        outs = [_run(_ctx(store, reg), media, {"plex-1": plex})[0] for _ in range(2)]
-
-        assert plex.write.call_count == 2  # once more, then up to date
-        assert plex.write.call_args.args == ("item-plex-1", [INTRO_CH, CREDITS_CH])
-        assert plex.write.call_args.kwargs["previous"] == [self.SHOWN_INTRO, CREDITS_CH]
-        assert store.get_item_publish_state("plex-1", "item-plex-1").markers == (INTRO_CH, CREDITS_CH)
-        assert [o.outcome_key for o in outs] == [FileOutcome.PUBLISHED.value, FileOutcome.UP_TO_DATE.value]
-        assert plex.shows.call_count == 1
-
-    @pytest.mark.parametrize(
-        ("shown", "files"),
-        [
-            (
-                [SHOWN_INTRO, CREDITS_CH],
-                ("/plex/a.mkv", "/plex/b.mkv"),
-            ),  # another version: the item keeps agreeing times
-            ([INTRO_CH, CREDITS_CH], ("/plex/a.mkv",)),  # shows what was decided
-        ],
-        ids=["two-versions", "same-times"],
-    )
-    def test_otherwise_the_item_is_up_to_date_without_a_write(self, store, media, shown, files):
-        reg, plex = self._published_as(store, media, shown, files)
-
-        out, _ = _run(_ctx(store, reg), media, {"plex-1": plex})
-
-        assert plex.write.call_count == 1
-        assert plex.shows.call_count == 1
-        assert out.outcome_key == FileOutcome.UP_TO_DATE.value
 
 
 class TestDecideRulesVersion:
@@ -4403,14 +3283,14 @@ class TestDecideRulesVersion:
         reg = _registry(media, ServerType.PLEX)
         with monkeypatch.context() as older:
             older.setattr(decide, "_AGREEMENT_ONLY", decide._AGREEMENT_ONLY - {Source.SKIPDB})
-            if not published:
-                plex.capability.return_value = CapabilityReport(Capability.UNREACHABLE, "Plex is down")
-            out = self._run(store, reg, plex, clients)
-            plex.capability.return_value = CapabilityReport(Capability.READY, "ok")
+            self._run(store, reg, plex, clients)
         rec = store.get_file(media)
         store.record_version_reruns([(media, DECIDE_RULES, DECIDE_RULES_VERSION - 1)])
         assert store.get_markers(rec.id) == {T.INTRO: self.SKIPDB_MARKER}
-        assert out.outcome_key == (FileOutcome.PUBLISHED.value if published else FileOutcome.SKIPPED.value)
+        if published:
+            store.set_publish_state(
+                rec.id, "plex-1", item_id="item-plex-1", markers=[self.SKIPDB_MARKER], status="written"
+            )
         return reg, rec
 
     @pytest.fixture(autouse=True)
@@ -4437,15 +3317,15 @@ class TestDecideRulesVersion:
         assert decision.status is DecisionStatus.DECIDED
         assert decision.reason.startswith("kept: published before a rule change")
         assert store.get_markers(rec.id) == {T.INTRO: self.SKIPDB_MARKER}
-        assert out.outcome_key == FileOutcome.UP_TO_DATE.value
-        assert all(c.args[1] != [] for c in plex.write.call_args_list)  # never taken off Plex
+        assert out.outcome_key == FileOutcome.SKIPPED.value
+        plex.write.assert_not_called()
         assert _state(store, media, "plex-1").markers == (self.SKIPDB_MARKER,)
         assert "kept: published before a rule change" in loguru_caplog.text
         assert len(clients["skipdb"].calls) == 1  # decided from the stored answer, not asked again
         assert store.version_rerun(rec.id, DECIDE_RULES) == DECIDE_RULES_VERSION
 
         # Later runs, under today's rules all along, keep it too.
-        assert self._run(store, reg, plex, clients).outcome_key == FileOutcome.UP_TO_DATE.value
+        assert self._run(store, reg, plex, clients).outcome_key == FileOutcome.SKIPPED.value
         assert store.get_markers(rec.id) == {T.INTRO: self.SKIPDB_MARKER}
 
     @pytest.mark.parametrize(
@@ -4487,7 +3367,7 @@ class TestDecideRulesVersion:
             assert decision.status is DecisionStatus.DECIDED
             assert decision.reason.startswith("kept: published before a rule change")
             assert store.get_markers(rec.id) == {T.INTRO: self.SKIPDB_MARKER}
-            assert all(c.args[1] != [] for c in plex.write.call_args_list)
+            plex.write.assert_not_called()
         elif outcome == "agrees":
             # Agreeing, season audio makes SkipDB's intro a decision of today's rules: no keep needed.
             assert (decision.status, decision.reason) == (DecisionStatus.DECIDED, "sources agree: skipdb, season_audio")
@@ -4498,7 +3378,7 @@ class TestDecideRulesVersion:
                 "only SkipDB has the intro; an online answer needs a check against the file",
             )
             assert store.get_markers(rec.id) == {}
-            assert plex.write.call_args.args == ("item-plex-1", [])
+            plex.write.assert_not_called()
 
     def test_a_nothing_due_again_whose_read_fails_checks_nothing(self, store, media, monkeypatch):
         # Season audio stored "nothing" with no other episode to compare (kept). A sibling fingerprinted later makes that
@@ -4538,7 +3418,7 @@ class TestDecideRulesVersion:
         decision = store.get_decisions(rec.id)[T.INTRO]
         assert decision.reason.startswith("kept: published before a rule change")
         assert store.get_markers(rec.id) == {T.INTRO: self.SKIPDB_MARKER}
-        assert all(c.args[1] != [] for c in plex.write.call_args_list)
+        plex.write.assert_not_called()
 
     @pytest.mark.parametrize("arrives", ["with-the-rule-change", "on-a-later-run"])
     def test_new_evidence_that_contradicts_the_kept_intro_replaces_it(self, store, media, monkeypatch, arrives):
@@ -4560,8 +3440,8 @@ class TestDecideRulesVersion:
             "sources disagree: introdb/theintrodb, skipdb",
         )
         assert store.get_markers(rec.id) == {}
-        assert plex.write.call_args.args == ("item-plex-1", [])  # the SkipDB intro comes off
-        assert out.publisher_rows[0]["status"] == ServerStatus.WRITTEN.value
+        plex.write.assert_not_called()
+        assert out.publisher_rows[0]["status"] == ServerStatus.SKIPPED.value
 
     def test_a_changed_answer_from_the_source_it_rests_on_replaces_it(self, store, media, monkeypatch):
         # SkipDB's own entry moved: the published intro no longer has the answer it was decided from.
@@ -4581,7 +3461,7 @@ class TestDecideRulesVersion:
         assert decision.status is DecisionStatus.NO_EVIDENCE
         assert (decision.proposed_start_ms, decision.proposed_end_ms) == (200_000, 230_000)
         assert store.get_markers(rec.id) == {}
-        assert plex.write.call_args.args == ("item-plex-1", [])
+        plex.write.assert_not_called()
 
     def test_an_intro_no_server_was_sent_before_the_rule_change_isnt_kept(self, store, media, monkeypatch):
         plex = ready_publisher()
@@ -4605,7 +3485,7 @@ class TestDecideRulesVersion:
         self._run(store, reg, plex, clients, settings_raw=skipdb_off)
 
         assert store.get_markers(rec.id) == {}
-        assert plex.write.call_args.args == ("item-plex-1", [])
+        plex.write.assert_not_called()
 
     def test_an_answer_that_disagreed_before_the_rule_change_and_is_only_stored_again_doesnt_replace_it(
         self, store, media, monkeypatch
@@ -4633,6 +3513,7 @@ class TestDecideRulesVersion:
         with patch.object(pipeline, "decide", older_rules):
             run()
         rec = store.get_file(media)
+        store.set_publish_state(rec.id, "plex-1", item_id="item-plex-1", markers=[self.SKIPDB_MARKER], status="written")
         store.record_version_reruns([(media, DECIDE_RULES, DECIDE_RULES_VERSION - 1)])
         run()
         assert store.get_markers(rec.id) == {T.INTRO: self.SKIPDB_MARKER}
@@ -4642,7 +3523,7 @@ class TestDecideRulesVersion:
         assert [len(c.calls) for c in (clients["skipdb"], clients["theintrodb"])] == [2, 2]
         assert store.get_decisions(rec.id)[T.INTRO].reason.startswith("kept: published before a rule change")
         assert store.get_markers(rec.id) == {T.INTRO: self.SKIPDB_MARKER}
-        assert all(c.args[1] != [] for c in plex.write.call_args_list)
+        plex.write.assert_not_called()
 
     def test_an_intro_whose_last_times_never_reached_a_server_isnt_kept(self, store, media, monkeypatch):
         # Plex shows the intro the older rules first sent; they then moved it and that write failed, so the times the
@@ -4685,7 +3566,7 @@ class TestDecideRulesVersion:
             "only SkipDB has the intro; an online answer needs a check against the file",
         )
         assert store.get_markers(rec.id) == {}
-        assert out.outcome_key == FileOutcome.NO_MARKERS.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
 
     def test_a_rule_change_that_decides_a_different_answer_updates_the_marker(self, store, media, monkeypatch):
         # The older rules decided the Intro chapter somewhere else; today's decide the chapter as it is.
@@ -4709,8 +3590,8 @@ class TestDecideRulesVersion:
 
         assert store.get_markers(rec.id) == {T.INTRO: INTRO_CH}
         assert not store.get_decisions(rec.id)[T.INTRO].reason.startswith("kept")
-        assert plex.write.call_args.args[1] == [INTRO_CH]
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        plex.write.assert_not_called()
+        assert out.outcome_key == FileOutcome.SKIPPED.value
 
 
 class TestStages:
@@ -4735,7 +3616,7 @@ class TestStages:
             {"plex-1": ready_publisher()},
             probe=_probe(CHAPTERS_BOTH),
         )
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
 
     def test_detector_for_a_disabled_source_is_ignored(self, store, media):
         reg = _registry(media, ServerType.PLEX)
@@ -4743,7 +3624,7 @@ class TestStages:
         spec = LocalDetectorSpec(Source.SEASON_AUDIO, frozenset({T.INTRO}), detector)
         raw = {"sources": [{"id": "season_audio", "enabled": False}]}
         out, _ = _run(_ctx(store, reg, detectors=(spec,), settings_raw=raw), media, {"plex-1": ready_publisher()})
-        assert out is not None and out.outcome_key == FileOutcome.NO_MARKERS.value
+        assert out is not None and out.outcome_key == FileOutcome.SKIPPED.value
 
     def test_process_forwards_worker_gpu_and_callbacks_to_detectors_and_lookups(self, store, media):
         reg = _registry(media, ServerType.PLEX)
@@ -4784,7 +3665,7 @@ class TestStages:
         assert kwargs["pause_check"] is ctx.freeze_check and kwargs["pause_check"] is not pause
         assert clients["theintrodb"].calls[0]["cancel_check"] is cancel
         assert set(store.get_evidence(rec.id)) == {TIDB_INTRO, *detected}
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         assert any("Looking up" in c.args[0] for c in phase.call_args_list)
 
     def test_process_never_returns_none(self, store, media):
@@ -4813,7 +3694,7 @@ class TestStages:
         out, probe = _run(ctx, media, pubs, stage="process")
         assert probe.call_count == 0
         assert [len(c.calls) for c in clients.values()] == [1, 1, 1]
-        assert out.outcome_key == FileOutcome.NO_MARKERS.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
 
     def test_cancel_before_work(self, store, media):
         reg = _registry(media, ServerType.PLEX)
@@ -4848,7 +3729,7 @@ class TestStages:
             probe=_probe(CHAPTERS_BOTH),
             pause_check=pause,
         )
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         pause.assert_not_called()
 
     def test_cancel_while_reading_chapters_stops_before_asking_servers(self, store, ambiguous):
@@ -4897,22 +3778,25 @@ class TestStages:
         out, probe_mock = _run(_ctx(store, reg), media, {"plex-1": ready_publisher()}, probe_effect=probe)
         assert probe_mock.call_count == 2
         assert store.get_file(media).mtime_ns == 7
-        assert out.outcome_key == FileOutcome.NO_MARKERS.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
 
-    def test_forced_check_that_fails_after_refreshing_does_not_refresh_again_on_the_worker(self, store, media):
+    def test_forced_check_failure_does_not_refresh_sources_again_on_worker(self, store, media):
         reg = _registry(media, ServerType.PLEX)
         clients = _clients()
         ctx = _ctx(store, reg, clients=clients, force=True)
+        save = store.save_decisions
         with (
             patch.object(pipeline, "probe_media", return_value=_probe()) as probe,
-            patch.object(pipeline, "publisher_for", side_effect=[RuntimeError("bad config"), ready_publisher()]),
+            patch.object(store, "save_decisions", side_effect=[RuntimeError("storage error"), save]) as saved,
         ):
-            with pytest.raises(RuntimeError):
+            with pytest.raises(RuntimeError, match="storage error"):
                 check_item(_item(media), ctx=ctx)
+            saved.side_effect = save
             out = process_item(_item(media), ctx=ctx)
         assert probe.call_count == 1
         assert [len(c.calls) for c in clients.values()] == [1, 1, 1]
-        assert out.outcome_key == FileOutcome.NO_MARKERS.value
+        assert store.get_decisions(store.get_file(media).id)
+        assert out.outcome_key == FileOutcome.SKIPPED.value
 
     def test_detector_for_a_type_the_file_cant_have_does_not_defer(self, store, tmp_path):
         folder = tmp_path / "media" / "movies" / "Toy Story (1995) {tmdb-862}"
@@ -4923,242 +3807,8 @@ class TestStages:
         detector = MagicMock(return_value=[])
         spec = LocalDetectorSpec(Source.SEASON_AUDIO, frozenset({T.INTRO}), detector)
         out, _ = _run(_ctx(store, reg, detectors=(spec,)), path, {"plex-1": ready_publisher()})
-        assert out is not None and out.outcome_key == FileOutcome.NO_MARKERS.value
+        assert out is not None and out.outcome_key == FileOutcome.SKIPPED.value
         detector.assert_not_called()
-
-
-CHAPTERS_EARLY_CREDITS = (
-    Chapter(0, 126_771, "Chapter 1"),
-    Chapter(126_771, 157_068, "Intro"),
-    Chapter(157_068, 1_276_324, "Chapter 2"),
-    Chapter(1_276_324, None, "Credits"),
-)
-CHAPTERS_CREDITS_ONLY = (Chapter(0, 1_295_324, "Chapter 1"), Chapter(1_295_324, None, "Credits"))
-SERVED_INTRO = ("intro", 126_771, 157_068)
-SERVED_CREDITS = ("credits", 1_295_324, DUR)
-EARLY_CREDITS_CH = Marker(T.CREDITS, 1_276_324, DUR, ("chapters",))
-SERVED_EARLY_CREDITS = ("credits", 1_276_324, DUR)
-
-
-class TestPlexItems:
-    """Plex serves one marker set per item: previous, outcomes and up-to-date checks follow the item, not the file."""
-
-    @pytest.fixture
-    def versions(self, tmp_path):
-        folder = tmp_path / "media" / "tv" / "Rick and Morty (2013) {tvdb-275274}" / "Season 01"
-        folder.mkdir(parents=True)
-        paths = []
-        for tag in ("1080p", "2160p"):
-            path = folder / f"Rick and Morty (2013) - S01E01 - Pilot - {tag}.mkv"
-            path.write_bytes(b"x" * 100)
-            paths.append(str(path))
-        return paths
-
-    @staticmethod
-    def _plex(path, parts):
-        reg = _registry(path, ServerType.PLEX)
-        reg.get("plex-1").resolve_remote_path_to_item_id.return_value = "42"
-        return reg, FakePlexItems({"42": parts})
-
-    @staticmethod
-    def _check(store, reg, items, path, chapters=(), duration=DUR, **ctx_kwargs):
-        with (
-            patch.object(pipeline, "probe_media", return_value=_probe(chapters, duration)),
-            patch.object(
-                pipeline, "publisher_for", side_effect=lambda server, cfg, **kw: items.publisher(kw["sibling_markers"])
-            ),
-        ):
-            return check_item(_item(path), ctx=_ctx(store, reg, **ctx_kwargs))
-
-    def test_a_single_version_item_is_written_once(self, store, media):
-        reg, items = self._plex(media, [media])
-        first = self._check(store, reg, items, media, CHAPTERS_BOTH)
-        second = self._check(store, reg, items, media)
-        assert [c["previous"] for c in items.calls] == [[]]
-        assert (first.outcome_key, second.outcome_key) == (FileOutcome.PUBLISHED.value, FileOutcome.UP_TO_DATE.value)
-        assert items.served("42") == [SERVED_INTRO, SERVED_CREDITS]
-        assert store.get_item_publish_state("plex-1", "42").markers == (INTRO_CH, CREDITS_CH)
-
-    def test_a_version_added_later_that_disagrees_keeps_the_first_versions_markers(self, store, versions):
-        a, b = versions
-        reg, items = self._plex(a, [a])
-        assert self._check(store, reg, items, a, CHAPTERS_BOTH).outcome_key == FileOutcome.PUBLISHED.value
-        assert items.served("42") == [SERVED_INTRO, SERVED_CREDITS]
-
-        items.parts["42"] = [a, b]  # the user adds a 2160p version whose credits start 19 s earlier
-        out_b = self._check(store, reg, items, b, CHAPTERS_EARLY_CREDITS)
-        assert items.calls[-1]["path"] == b and items.calls[-1]["previous"] == [INTRO_CH, CREDITS_CH]
-        assert items.served("42") == [SERVED_INTRO, SERVED_CREDITS]  # A came first in Plex's order: its credits stay
-        assert out_b.outcome_key == FileOutcome.UP_TO_DATE.value
-        assert "reason_code" not in out_b.publisher_rows[0]
-        assert _state(store, b, "plex-1").markers == (INTRO_CH, CREDITS_CH)
-        assert store.get_item_publish_state("plex-1", "42").markers == (INTRO_CH, CREDITS_CH)
-
-        version = store.get_item_publish_state("plex-1", "42").version
-        again_a, again_b = self._check(store, reg, items, a), self._check(store, reg, items, b)
-        assert again_a.outcome_key == again_b.outcome_key == FileOutcome.UP_TO_DATE.value
-        assert items.served("42") == [SERVED_INTRO, SERVED_CREDITS]
-        assert store.get_item_publish_state("plex-1", "42").version == version
-
-    def test_the_first_version_in_plex_s_order_decides_each_type_it_holds(self, store, versions):
-        a, b = versions
-        reg, items = self._plex(a, [b, a])  # Plex numbered the 2160p version first
-        assert self._check(store, reg, items, a, CHAPTERS_BOTH).outcome_key == FileOutcome.PUBLISHED.value
-        assert items.served("42") == [SERVED_INTRO, SERVED_CREDITS]  # B not decided yet: A decides alone
-
-        out_b = self._check(store, reg, items, b, CHAPTERS_EARLY_CREDITS)
-        assert items.served("42") == [SERVED_INTRO, SERVED_EARLY_CREDITS]  # B's credits replace A's
-        assert out_b.outcome_key == FileOutcome.PUBLISHED.value
-        out_a = self._check(store, reg, items, a)  # A's own decision didn't change, but the item did
-        assert out_a.outcome_key == FileOutcome.UP_TO_DATE.value and "reason_code" not in out_a.publisher_rows[0]
-        assert items.served("42") == [SERVED_INTRO, SERVED_EARLY_CREDITS]
-        assert _state(store, a, "plex-1").markers == (INTRO_CH, EARLY_CREDITS_CH)
-
-    def test_a_disagreeing_version_does_not_hold_back_a_file_with_an_undecided_type(self, store, versions):
-        # A's intro is undecided (one online source, no chapter) and B's credits disagree with A's: nothing waits.
-        # A is first in Plex's order, so its credits are written, next to B's intro (the only one decided).
-        a, b = versions
-        reg, items = self._plex(a, [a, b])
-        self._check(store, reg, items, b, CHAPTERS_EARLY_CREDITS)  # its credits start 19 s before A's
-        review = _clients(theintrodb=LookupResult("ok", (TIDB_INTRO,)))
-        out = self._check(store, reg, items, a, CHAPTERS_CREDITS_ONLY, clients=review)
-        (row,) = out.publisher_rows
-        assert row["status"] == ServerStatus.WRITTEN.value and "reason_code" not in row
-        assert items.served("42") == [SERVED_INTRO, SERVED_CREDITS]
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
-        assert store.get_decisions(store.get_file(a).id)[T.INTRO].status is DecisionStatus.NO_EVIDENCE
-
-    def test_a_version_with_nothing_to_show_leaves_what_the_first_version_decided(self, store, versions):
-        a, b = versions
-        reg, items = self._plex(a, [a])
-        self._check(store, reg, items, a, CHAPTERS_BOTH)
-        items.parts["42"] = [a, b]
-        out_b = self._check(store, reg, items, b)  # no chapters and no online answers: nothing decided for B
-        assert items.calls[-1]["markers"] == [] and items.calls[-1]["previous"] == [INTRO_CH, CREDITS_CH]
-        assert items.served("42") == [SERVED_INTRO, SERVED_CREDITS]
-        assert out_b.outcome_key == FileOutcome.UP_TO_DATE.value
-        assert store.published_to_item("plex-1", "42") is True
-
-    def test_a_version_decided_without_markers_hands_its_types_to_the_next_that_has_them(self, store, versions):
-        # B found no markers; A has both: the item shows A's, whichever runs first.
-        a, b = versions
-        reg, items = self._plex(a, [b, a])  # B first in Plex's order
-        assert self._check(store, reg, items, b).outcome_key == FileOutcome.NO_MARKERS.value
-        assert self._check(store, reg, items, a, CHAPTERS_BOTH).outcome_key == FileOutcome.PUBLISHED.value
-        assert items.served("42") == [SERVED_INTRO, SERVED_CREDITS]
-
-    def test_an_item_that_comes_back_is_written_again_not_reported_from_an_old_basis(self, store, media):
-        reg, items = self._plex(media, [media])
-        server = reg.get("plex-1")
-        self._check(store, reg, items, media, CHAPTERS_BOTH)
-        server.resolve_remote_path_to_item_id.return_value = None
-        missing = self._check(store, reg, items, media)
-        assert missing.outcome_key == FileOutcome.WAITING.value
-        server.resolve_remote_path_to_item_id.return_value = "42"
-        items.shown.pop("42")  # removed and added again: Plex rebuilt the item without our markers
-        back = self._check(store, reg, items, media)
-        assert len(items.calls) == 2 and back.outcome_key == FileOutcome.PUBLISHED.value
-
-    def test_the_next_version_gets_its_credits_once_the_first_version_is_gone(self, store, versions):
-        a, b = versions
-        reg, items = self._plex(a, [b, a])  # Plex numbered the 2160p version first
-        self._check(store, reg, items, b, CHAPTERS_EARLY_CREDITS)
-        self._check(store, reg, items, a, CHAPTERS_BOTH)
-        assert self._check(store, reg, items, a).outcome_key == FileOutcome.UP_TO_DATE.value
-        assert items.served("42") == [SERVED_INTRO, SERVED_EARLY_CREDITS]
-
-        items.parts["42"] = [a]  # the user deletes the 2160p version; A's decision and the item row are unchanged
-        out = self._check(store, reg, items, a)
-        assert items.calls[-1]["path"] == a and items.calls[-1]["previous"] == [INTRO_CH, EARLY_CREDITS_CH]
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
-        assert items.served("42") == [SERVED_INTRO, SERVED_CREDITS]
-        calls = len(items.calls)
-        assert self._check(store, reg, items, a).outcome_key == FileOutcome.UP_TO_DATE.value
-        assert len(items.calls) == calls
-
-    def test_a_forced_run_keeps_the_markers_a_new_undecided_version_takes_no_part_in(self, store, versions):
-        a, b = versions
-        reg, items = self._plex(a, [a])
-        self._check(store, reg, items, a, CHAPTERS_BOTH)
-        items.parts["42"] = [a, b]  # added, never decided (its disk isn't mapped into the container)
-
-        forced = self._check(store, reg, items, a, CHAPTERS_BOTH, force=True)
-        assert items.calls[-1]["previous"] == [INTRO_CH, CREDITS_CH]
-        assert items.served("42") == [SERVED_INTRO, SERVED_CREDITS]
-        assert forced.outcome_key == FileOutcome.UP_TO_DATE.value
-        assert "reason_code" not in forced.publisher_rows[0]
-        assert store.get_item_publish_state("plex-1", "42").markers == (INTRO_CH, CREDITS_CH)
-
-    def test_own_previous_follows_the_file_to_its_new_item_after_a_merge_or_split(self, store, media):
-        reg, items = self._plex(media, [media])
-        items.parts["43"] = [media]
-        server = reg.get("plex-1")
-        self._check(store, reg, items, media, CHAPTERS_BOTH)
-        server.resolve_remote_path_to_item_id.return_value = "43"
-        out = self._check(store, reg, items, media, CHAPTERS_BOTH)
-        moved = items.calls[-1]
-        assert (moved["item_id"], moved["previous"], moved["own_previous"]) == ("43", [], [INTRO_CH, CREDITS_CH])
-        assert out.outcome_key == FileOutcome.PUBLISHED.value and _state(store, media, "plex-1").item_id == "43"
-        self._check(store, reg, items, media, CHAPTERS_BOTH, force=True)
-        assert items.calls[-1]["own_previous"] is None  # published on the new item now
-
-    def test_a_moved_file_with_nothing_to_show_still_writes_to_take_its_copy_off(self, store, media):
-        reg, items = self._plex(media, [media])
-        items.parts["43"] = [media]
-        self._check(store, reg, items, media, CHAPTERS_BOTH)
-        reg.get("plex-1").resolve_remote_path_to_item_id.return_value = "43"
-        os.utime(media, ns=(4, 4))  # replaced by a cut without chapters: nothing decided, and item 43 has no row
-        out = self._check(store, reg, items, media, duration=NEW_CUT)
-        last = items.calls[-1]
-        assert (last["item_id"], last["markers"], last["previous"]) == ("43", [], [])
-        assert last["own_previous"] == [INTRO_CH, CREDITS_CH]
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
-        assert _state(store, media, "plex-1").item_id == "43"
-
-    @pytest.mark.parametrize(
-        "error",
-        [PublishError("Plex's database is busy"), ItemNotFoundError("Plex item 43 not found"), RuntimeError("bug")],
-        ids=["publish-error", "item-not-found", "unexpected"],
-    )
-    def test_a_move_whose_write_fails_offers_the_old_markers_again(self, store, media, error):
-        reg, items = self._plex(media, [media])
-        items.parts["43"] = [media]
-        self._check(store, reg, items, media, CHAPTERS_BOTH)
-        reg.get("plex-1").resolve_remote_path_to_item_id.return_value = "43"
-        items.fail_next = error
-        self._check(store, reg, items, media, CHAPTERS_BOTH)
-        # The part still carries what was published on item 42, so the row keeps pointing there.
-        assert _state(store, media, "plex-1").item_id == "42"
-        self._check(store, reg, items, media, CHAPTERS_BOTH)
-        assert items.calls[-1]["own_previous"] == [INTRO_CH, CREDITS_CH]
-        assert _state(store, media, "plex-1").item_id == "43"
-
-    def test_own_previous_is_none_when_the_file_left_nothing_on_its_old_item(self, store, versions):
-        a, b = versions
-        reg, items = self._plex(a, [a, b])
-        items.parts["43"] = [a]
-        assert self._check(store, reg, items, a).outcome_key == FileOutcome.NO_MARKERS.value  # nothing to leave
-        assert items.calls == []
-        reg.get("plex-1").resolve_remote_path_to_item_id.return_value = "43"
-        os.utime(a, ns=(5, 5))  # replaced by a cut with chapters
-        self._check(store, reg, items, a, CHAPTERS_BOTH)
-        assert items.calls[-1]["item_id"] == "43" and items.calls[-1]["own_previous"] is None
-
-    def test_a_transient_plex_failure_keeps_the_item_row_for_the_next_removal(self, store, media):
-        reg, items = self._plex(media, [media])
-        self._check(store, reg, items, media, CHAPTERS_BOTH)
-        os.utime(media, ns=(3, 3))
-        items.fail_next = PublishError("Plex's database is busy", state=Capability.UNREACHABLE)
-        failed = self._check(store, reg, items, media, CHAPTERS_BOTH[:3], duration=NEW_CUT)  # a cut without credits
-        assert failed.outcome_key == FileOutcome.FAILED.value
-        row = store.get_item_publish_state("plex-1", "42")
-        assert (row.status, row.markers) == ("failed", (INTRO_CH, CREDITS_CH))
-        assert items.served("42") == [SERVED_INTRO, SERVED_CREDITS]
-        out = self._check(store, reg, items, media)
-        assert items.calls[-1]["previous"] == [INTRO_CH, CREDITS_CH]
-        assert items.served("42") == [SERVED_INTRO]  # the credits we left are removed after all
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
-        assert store.get_item_publish_state("plex-1", "42").markers == (INTRO_CH,)
 
 
 NO_INTRO_CHAPTER = (Chapter(0, 200_000, "Chapter 1"), Chapter(200_000, None, "Chapter 2"))
@@ -5195,7 +3845,7 @@ class TestForce:
             runs.append(
                 (
                     (decision.status, decision.reason, decision.proposed_start_ms),
-                    _state(store, media, "jellyfin-1").markers,
+                    tuple(store.get_markers(rec.id).values()),
                 )
             )
         first_shown = runs[0][1]
@@ -5204,44 +3854,8 @@ class TestForce:
         assert runs[1][0][1].startswith("chapters contradicted by agreeing sources: ")
         assert runs[1][0][2] == 150_000  # the chapter is still the closest answer
         assert runs[2:] == [runs[1]] * 3  # later forced and normal runs keep the same decision
-        assert jf.write.call_count == 2  # the publish, then its removal; never again
+        jf.write.assert_not_called()
         assert [len(c.calls) for c in clients.values()] == [3, 3, 3]  # run 1 and both forced runs ask every source
-
-    @pytest.mark.parametrize("stype", [ServerType.PLEX, ServerType.JELLYFIN], ids=lambda t: t.value)
-    def test_forced_run_writes_again_and_reports_up_to_date_when_nothing_changed(self, store, media, stype):
-        reg = _registry(media, stype)
-        sid = f"{stype.value}-1"
-        pub = ready_publisher("plex_db" if stype is ServerType.PLEX else "jellyfin_bridge")
-        _run(_ctx(store, reg), media, {sid: pub}, probe=_probe(CHAPTERS_BOTH))
-        _run(_ctx(store, reg), media, {sid: pub})
-        assert pub.write.call_count == 1
-        before = _state(store, media, sid)
-        out, _ = _run(_ctx(store, reg, force=True), media, {sid: pub}, probe=_probe(CHAPTERS_BOTH))
-        assert pub.write.call_count == 2
-        assert pub.write.call_args.args == (f"item-{sid}", [INTRO_CH, CREDITS_CH])
-        assert pub.write.call_args.kwargs == {
-            "previous": [INTRO_CH, CREDITS_CH],
-            "own_previous": None,
-            "duration_ms": DUR,
-            "canonical_path": media,
-            "kept_types": frozenset(),
-            "limits": EPISODE_LIMITS,
-        }
-        assert out.outcome_key == FileOutcome.UP_TO_DATE.value
-        assert out.publisher_rows[0]["status"] == ServerStatus.UP_TO_DATE.value
-        assert _state(store, media, sid) == before
-
-    def test_forced_run_that_changes_the_item_is_published(self, store, media):
-        reg = _registry(media, ServerType.PLEX)
-        plex = ready_publisher()
-        _run(_ctx(store, reg), media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        plex.write.side_effect = lambda item_id, markers, **kw: [INTRO_CH]  # the server now takes only the intro
-        out, _ = _run(_ctx(store, reg, force=True), media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
-        plex.write.side_effect = plex.succeed
-        out, _ = _run(_ctx(store, reg, force=True), media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
-        assert _state(store, media, "plex-1").markers == (INTRO_CH, CREDITS_CH)
 
     def test_forced_run_asks_every_source_even_when_chapters_decide(self, store, media):
         reg = _registry(media, ServerType.PLEX, ServerType.JELLYFIN)
@@ -5259,10 +3873,10 @@ class TestForce:
         ctx.priority = lambda: 3
         out, _ = _run(ctx, media, {"plex-1": ready_publisher()}, probe=_probe(CHAPTERS_BOTH))
         assert [len(c.calls) for c in clients.values()] == [1, 2, 2]
-        # Plex now shows our markers, so only the server we never published to is read again.
-        assert (plex_server.get_markers.call_count, jellyfin_server.get_media_segments.call_count) == (1, 2)
+        # Both servers remain readable on a forced refresh: proposals have not been published.
+        assert (plex_server.get_markers.call_count, jellyfin_server.get_media_segments.call_count) == (2, 2)
         jellyfin_server.get_media_segments.assert_called_with("item-jellyfin-1")
-        assert out.outcome_key == FileOutcome.UP_TO_DATE.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
 
     def test_forced_run_decides_from_the_answers_it_just_refreshed(self, store, media):
         # SkipDB withdrew its answer since the first run: the forced run must not publish from the stale agreement.
@@ -5273,13 +3887,15 @@ class TestForce:
             skipdb=LookupResult("ok", (Candidate(T.INTRO, 61_000, 91_000, Source.SKIPDB),)),
         )
         _run(_ctx(store, reg, settings_raw=INTRO_ONLY, clients=clients), media, {"jellyfin-1": jf})
-        assert [(m.start_ms, m.end_ms) for m in _state(store, media, "jellyfin-1").markers] == [(61_000, 90_000)]
+        assert [(m.start_ms, m.end_ms) for m in store.get_markers(store.get_file(media).id).values()] == [
+            (61_000, 90_000)
+        ]
         clients["skipdb"].result = NO_DATA
         out, _ = _run(_ctx(store, reg, settings_raw=INTRO_ONLY, clients=clients, force=True), media, {"jellyfin-1": jf})
         decision = store.get_decisions(store.get_file(media).id)[T.INTRO]
         assert (decision.status, decision.reason) == (DecisionStatus.NO_EVIDENCE, ONLINE_ALONE_REASON.format("intro"))
-        assert jf.write.call_args.args == ("item-jellyfin-1", [])
-        assert out.publisher_rows[0]["status"] == ServerStatus.WRITTEN.value
+        jf.write.assert_not_called()
+        assert out.publisher_rows[0]["status"] == ServerStatus.SKIPPED.value
 
     def test_forced_run_with_moved_chapter_times_saves_and_publishes_them(self, store, media):
         # Same status and reason ("chapters"), different times: the stored marker must still be replaced.
@@ -5295,7 +3911,7 @@ class TestForce:
         _run(_ctx(store, reg, force=True), media, {"plex-1": plex}, probe=_probe(moved))
         moved_intro = Marker(T.INTRO, 130_000, 160_000, ("chapters",))
         assert store.get_markers(store.get_file(media).id)[T.INTRO] == moved_intro
-        assert plex.write.call_args.args == ("item-plex-1", [moved_intro, CREDITS_CH])
+        plex.write.assert_not_called()
 
     def test_forced_run_hands_detector_sources_to_the_worker_even_when_decided(self, store, media):
         reg = _registry(media, ServerType.PLEX)
@@ -5309,7 +3925,7 @@ class TestForce:
         detector.assert_called_once()
         assert detector.call_args.args[0].canonical_path == media
         assert probe.call_count == 0 and [len(c.calls) for c in clients.values()] == [1, 1, 1]
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
 
 
 class TestConcurrentJobs:
@@ -5394,99 +4010,13 @@ class TestConcurrentJobs:
         assert [(c.start_ms, c.end_ms) for c in store.get_evidence(rec.id) if c.source is Source.SKIPDB] == [
             (186_000, 216_000)
         ]
-        assert _state(store, media, "plex-1").markers == (new_intro,)
-        assert plex.write.call_args.args[1] == [new_intro]
+        assert store.get_markers(rec.id)[T.INTRO] == new_intro
+        plex.write.assert_not_called()
         assert {out_l.outcome_key, results["N"].outcome_key} <= {
-            FileOutcome.PUBLISHED.value,
-            FileOutcome.UP_TO_DATE.value,
+            FileOutcome.SKIPPED.value,
+            FileOutcome.SKIPPED.value,
         }
-        assert later.outcome_key == FileOutcome.UP_TO_DATE.value
-
-    @pytest.mark.parametrize(
-        ("chapters", "write_effect", "runs_before", "status", "rows_written"),
-        [
-            (CHAPTERS_BOTH, None, 0, ServerStatus.WRITTEN, ["item", "basis", "file"]),
-            (
-                CHAPTERS_BOTH,
-                lambda item_id, markers, **kw: [INTRO_CH],
-                0,
-                ServerStatus.WRITTEN,
-                ["item", "basis", "file"],
-            ),
-            (CHAPTERS_BOTH, None, 1, ServerStatus.UP_TO_DATE, []),
-            ((), None, 0, ServerStatus.NONE, []),
-            (CHAPTERS_BOTH, ItemNotFoundError("gone"), 0, ServerStatus.WAITING, ["clear basis", "file"]),
-            (CHAPTERS_BOTH, PublishError("busy"), 0, ServerStatus.FAILED, ["item", "clear basis", "file"]),
-            (CHAPTERS_BOTH, RuntimeError("bug"), 0, ServerStatus.FAILED, ["item", "clear basis", "file"]),
-        ],
-        ids=[
-            "written",
-            "written-less-than-decided",
-            "up-to-date",
-            "nothing-to-show",
-            "item-not-found",
-            "publish-error",
-            "unexpected",
-        ],
-    )
-    def test_the_item_lock_covers_the_item_row_read_the_write_and_the_rows_written_after(
-        self, store, media, chapters, write_effect, runs_before, status, rows_written
-    ):
-        # Versions of one Plex item publish on different threads, each holding only its own path's lock: one version
-        # must never read the item row before another's write and record the item after it.
-        reg = _registry(media, ServerType.PLEX)
-        settings = {"sources": [{"id": "server_markers", "enabled": False}]}
-        plex = ready_publisher()
-        for _ in range(runs_before):
-            _run(_ctx(store, reg, settings_raw=settings), media, {"plex-1": plex}, probe=_probe(chapters))
-        effect = plex.succeed if write_effect is None else write_effect
-
-        class OwnedLock:
-            def __init__(self):
-                self._lock, self.owner = threading.Lock(), None
-
-            def __enter__(self):
-                self._lock.acquire()
-                self.owner = threading.get_ident()
-
-            def __exit__(self, *exc):
-                self.owner = None
-                self._lock.release()
-
-        locks = pipeline._KeyedLocks(lock_factory=OwnedLock)
-        seen = []
-
-        def spied(label, fn):
-            def call(*args, **kwargs):
-                entry = locks._locks.get(("plex-1", "item-plex-1"))
-                seen.append((label, entry is not None and entry[0].owner == threading.get_ident()))
-                return fn(*args, **kwargs)
-
-            return call
-
-        labels = {
-            "get_item_publish_state": "read item",
-            "set_item_publish_state": "item",
-            "set_publish_basis": "basis",
-            "clear_publish_basis": "clear basis",
-            "set_publish_state": "file",
-        }
-        for name, label in labels.items():
-            setattr(store, name, spied(label, getattr(store, name)))
-
-        def write(*args, **kwargs):
-            if isinstance(effect, Exception):
-                raise effect
-            return effect(*args, **kwargs)
-
-        plex.write.side_effect = spied("write", write)
-        with patch.object(pipeline, "_ITEM_LOCKS", locks):
-            out, _ = _run(_ctx(store, reg, settings_raw=settings), media, {"plex-1": plex}, probe=_probe(chapters))
-        assert out.publisher_rows[0]["status"] == status.value
-        assert [label for label, _ in seen if label not in ("read item", "write")] == rows_written
-        assert seen[0] == ("read item", True)
-        assert all(held for _, held in seen), seen
-        assert locks._locks == {}
+        assert later.outcome_key == FileOutcome.SKIPPED.value
 
     def test_a_keyed_lock_stays_while_a_waiter_is_queued_so_a_later_arrival_waits_too(self):
         # Holder H, waiter W queued behind it, then T arrives while W holds the lock. Dropping the entry when H leaves
@@ -5608,117 +4138,6 @@ class TestWorkerStageWaits:
         _run(ctx, media, {"plex-1": ready_publisher()}, stage="process")
         assert caps == [pipeline.WORKER_LOOKUP_WAIT_S]
 
-    @pytest.mark.parametrize(
-        ("stage", "retried", "expected"),
-        [
-            ("check", True, None),
-            ("check", False, None),
-            ("process", True, plex_db.WORKER_BUSY_TIMEOUT_S),
-            # Nothing retries the file soon: a short wait would leave the write to the next run, maybe a week away.
-            ("process", False, None),
-        ],
-        ids=["check-retried", "check", "worker-retried", "worker-not-retried"],
-    )
-    def test_the_plex_database_wait_is_short_only_on_a_worker_whose_job_retries_a_busy_write(
-        self, store, media, stage, retried, expected
-    ):
-        reg = _registry(media, ServerType.PLEX)
-        ctx = _ctx(store, reg)
-        ctx.busy_writes_retried = retried
-        plex = ready_publisher()
-        timeouts = []
-        with (
-            patch.object(pipeline, "probe_media", return_value=_probe(CHAPTERS_BOTH)),
-            patch.object(
-                pipeline,
-                "publisher_for",
-                side_effect=lambda server, cfg, **kw: timeouts.append(kw["db_timeout_s"]) or plex,
-            ),
-        ):
-            out = (check_item if stage == "check" else process_item)(_item(media), ctx=ctx)
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
-        assert timeouts == [expected]
-
-    def test_a_file_past_the_jobs_retry_cap_waits_on_a_worker_as_long_as_a_check(self, store, media):
-        # The retry takes at most retry_file_cap files a busy database refused: one past it gets no retry soon.
-        reg = _registry(media, ServerType.PLEX)
-        ctx = _ctx(store, reg)
-        ctx.busy_writes_retried = True
-        ctx.retry_file_cap = 1
-        assert ctx.promise_busy_retry("/media/tv/another.mkv")
-        timeouts = []
-        with (
-            patch.object(pipeline, "probe_media", return_value=_probe(CHAPTERS_BOTH)),
-            patch.object(
-                pipeline,
-                "publisher_for",
-                side_effect=lambda server, cfg, **kw: timeouts.append(kw["db_timeout_s"]) or ready_publisher(),
-            ),
-        ):
-            process_item(_item(media), ctx=ctx)
-        assert timeouts == [None]
-        assert ctx.busy_promised() == {"/media/tv/another.mkv"}  # asking didn't take a promise
-
-    @pytest.mark.parametrize(
-        ("stage", "server_type", "busy"),
-        [
-            ("process", ServerType.PLEX, True),
-            ("check", ServerType.PLEX, False),  # the checking stage waits for the other thread's check
-            ("process", ServerType.JELLYFIN, False),  # no database lock behind a Jellyfin check
-            ("process", ServerType.EMBY, False),  # nor an Emby one: both are plugin HTTP calls
-        ],
-        ids=["worker-plex", "check-plex", "worker-jellyfin", "worker-emby"],
-    )
-    def test_a_worker_waits_briefly_for_another_threads_check_of_a_plex_server(
-        self, store, media, monkeypatch, stage, server_type, busy
-    ):
-        # A checking thread's capability check may wait minutes for Plex's busy database; a worker that needs the same
-        # server's answer gives up as a busy write does, and the job retries the file.
-        monkeypatch.setattr(pipeline, "WORKER_BUSY_TIMEOUT_S", 0.05)
-        reg = _registry(media, server_type)
-        sid = f"{server_type.value}-1"
-        ctx = _ctx(store, reg)
-        ctx.busy_writes_retried = True
-        other_check = ctx._capability_locks.setdefault(sid, threading.Lock())
-        other_check.acquire()
-        # Held well past the worker's 0.05 s wait: a slow CI runner reached the lock after a 0.2 s hold had ended.
-        release = threading.Timer(2.0, other_check.release)
-        release.start()
-        try:
-            out, _ = _run(ctx, media, {sid: ready_publisher()}, stage=stage, probe=_probe(CHAPTERS_BOTH))
-        finally:
-            release.join(5)
-        row = _rows(out)[sid]
-        if busy:
-            assert (row["status"], row["reason_code"]) == (ServerStatus.FAILED.value, PLEX_DB_BUSY)
-            assert "this job tries again in a few minutes" in row["message"]
-        else:
-            assert row["status"] == ServerStatus.WRITTEN.value
-
-    def test_a_cancel_during_the_workers_wait_for_another_threads_check_is_no_busy_database(self, store, media):
-        reg = _registry(media, ServerType.PLEX)
-        ctx = _ctx(store, reg)
-        ctx.busy_writes_retried = True
-        cancelled = threading.Event()
-
-        class OtherThreadsCheck:
-            def acquire(self, blocking=True, timeout=-1):
-                cancelled.set()  # the job is cancelled while this worker waits for the other thread's check
-                return False
-
-        ctx._capability_locks["plex-1"] = OtherThreadsCheck()
-        out, _ = _run(
-            ctx,
-            media,
-            {"plex-1": ready_publisher()},
-            stage="process",
-            probe=_probe(CHAPTERS_BOTH),
-            cancel_check=cancelled.is_set,
-        )
-        row = _rows(out)["plex-1"]
-        assert (row["status"], row["message"]) == (ServerStatus.FAILED.value, plex_db.WAIT_CANCELLED)
-        assert "reason_code" not in row  # nothing to retry
-
 
 class TestFileRunLockStages:
     """Another job may run a file for minutes. The checking stage never waits for it: the item goes to a worker, as a
@@ -5766,7 +4185,7 @@ class TestFileRunLockStages:
         with patch.object(pipeline, "_PATH_LOCKS", locks):
             out, _ = _run(_ctx(store, reg), media, {"plex-1": plex}, stage="process", probe=_probe(CHAPTERS_BOTH))
         release.join(5)
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         assert locks._locks == {}
 
     @pytest.mark.parametrize(
@@ -5838,7 +4257,7 @@ class TestFileRunLockStages:
                 pause_check=lambda: True,
             )
         release.join(5)
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
 
     def test_a_cancel_stops_the_workers_wait_for_the_file(self, store, media):
         reg = _registry(media, ServerType.PLEX)
@@ -5851,124 +4270,6 @@ class TestFileRunLockStages:
         probe.assert_not_called()
         plex.write.assert_not_called()
         assert pipeline._PATH_LOCKS._locks == {}
-
-
-class TestRealPlexPublisher:
-    def test_a_job_writes_without_asking_plex_for_its_own_detection_settings(self, store, media, tmp_path, monkeypatch):
-        # The real factory and PlexMarkerPublisher against a Plex 1.43 database file: Plex's detection settings are
-        # for the Edit dialog, and each job's capability check would otherwise ask Plex for them too.
-        from media_preview_generator.markers.publishers import plex_db
-        from tests.markers.test_plex_db_publisher import PLEX_VERSION, _make_db, _served
-
-        folder = tmp_path / "Plex Media Server"
-        db = _make_db(folder, parts=((media, None),))
-        monkeypatch.setattr(plex_db, "shm_lock_held_elsewhere", lambda _db, **_kw: True)  # Plex has it open
-        monkeypatch.setattr(plex_db, "filesystem_type", lambda _path, **_kw: "ext4")
-        reg = _registry(media, ServerType.PLEX)
-        reg.configs_by_id["plex-1"].output = {"plex_config_folder": str(folder)}
-        server = reg.get("plex-1")
-        server.resolve_remote_path_to_item_id.return_value = "7"
-        server.get_server_status.return_value = {"plex_pass": True, "version": PLEX_VERSION}
-        with patch.object(pipeline, "probe_media", return_value=_probe(CHAPTERS_BOTH)):
-            out = check_item(_item(media), ctx=_ctx(store, reg))
-        assert _rows(out)["plex-1"]["status"] == ServerStatus.WRITTEN.value
-        assert [row[0] for row in _served(str(db))] == ["intro", "credits"]
-        server.get_server_status.assert_called_with()  # the capability check did reach Plex
-        server.get_marker_detection_prefs.assert_not_called()
-
-    @pytest.mark.parametrize("left_by", ["plex", "a-run-before-this-fix"])
-    def test_a_run_puts_back_an_episode_of_a_multi_episode_file_missing_its_markers(
-        self, store, media, tmp_path, monkeypatch, left_by
-    ):
-        # One file, two episode items (each with its own copy of the part); the item id the job carries is the first.
-        from media_preview_generator.markers.publishers import plex_db
-        from tests.markers.test_plex_db_publisher import PLEX_VERSION, _add_item, _exec, _make_db, _served
-
-        folder = tmp_path / "Plex Media Server"
-        db = str(_make_db(folder, parts=((media, None),)))
-        _exec(db, "UPDATE metadata_items SET library_section_id=1 WHERE id=7")
-        second_part = _add_item(db, 8, [media])[0]
-        monkeypatch.setattr(plex_db, "shm_lock_held_elsewhere", lambda _db, **_kw: True)
-        monkeypatch.setattr(plex_db, "filesystem_type", lambda _path, **_kw: "ext4")
-        reg = _registry(media, ServerType.PLEX)
-        reg.configs_by_id["plex-1"].output = {"plex_config_folder": str(folder)}
-        server = reg.get("plex-1")
-        server.resolve_remote_path_to_item_id.return_value = "7"
-        server.get_server_status.return_value = {"plex_pass": True, "version": PLEX_VERSION}
-
-        def run() -> dict:
-            with patch.object(pipeline, "probe_media", return_value=_probe(CHAPTERS_BOTH)):
-                return _rows(check_item(_item(media), ctx=_ctx(store, reg)))["plex-1"]
-
-        assert run()["status"] == ServerStatus.WRITTEN.value
-        assert [row[0] for row in _served(db, 8)] == [row[0] for row in _served(db, 7)] == ["intro", "credits"]
-        episode = store.get_item_publish_state("plex-1", "8")
-        assert (episode.status, [m.type for m in episode.markers]) == ("written", [T.INTRO, T.CREDITS])
-        assert episode.item_files == store.get_item_publish_state("plex-1", "7").item_files == (media,)
-        _exec(db, "DELETE FROM taggings WHERE metadata_item_id=8")
-        _exec(db, "UPDATE media_parts SET extra_data=NULL WHERE id=?", second_part)
-        if left_by == "a-run-before-this-fix":
-            # It wrote the first episode only, and kept no record of the second.
-            with store._tx() as conn:
-                conn.execute("DELETE FROM item_publish_state WHERE item_id='8'")
-
-        assert run()["status"] == ServerStatus.WRITTEN.value
-        assert [row[0] for row in _served(db, 8)] == ["intro", "credits"]
-        assert run()["status"] == ServerStatus.UP_TO_DATE.value
-
-    @pytest.mark.parametrize("release", ["set-to-use-ours", "locked"])
-    def test_plexs_own_intro_kept_on_the_second_episode_only_goes_back_to_ours_when_released(
-        self, store, media, tmp_path, monkeypatch, release
-    ):
-        from media_preview_generator.markers.publishers import plex_db
-        from media_preview_generator.markers.publishers.plex_db import encode_extra_data
-        from tests.markers.test_plex_db_publisher import (
-            INTRO_ROW_EXTRA,
-            NATIVE_INTROS,
-            PLEX_VERSION,
-            _add_item,
-            _exec,
-            _insert_taggings,
-            _make_db,
-            _served,
-            _set_part_extra,
-        )
-
-        folder = tmp_path / "Plex Media Server"
-        db = str(_make_db(folder, parts=((media, None),)))
-        _exec(db, "UPDATE metadata_items SET library_section_id=1 WHERE id=7")
-        second_part = _add_item(db, 8, [media])[0]
-        _insert_taggings(db, (8, 563, 0, "intro", 990, 29_306, INTRO_ROW_EXTRA))  # Plex's own, on episode 2 only
-        _set_part_extra(db, second_part, encode_extra_data({"pv:intros": NATIVE_INTROS}))
-        monkeypatch.setattr(plex_db, "shm_lock_held_elsewhere", lambda _db, **_kw: True)
-        monkeypatch.setattr(plex_db, "filesystem_type", lambda _path, **_kw: "ext4")
-        reg = _registry(media, ServerType.PLEX)
-        cfg = reg.configs_by_id["plex-1"]
-        cfg.output = {"plex_config_folder": str(folder)}
-        cfg.markers["plex"]["on_plex_redetect"] = "keep_plex"
-        server = reg.get("plex-1")
-        server.resolve_remote_path_to_item_id.return_value = "7"
-        server.get_server_status.return_value = {"plex_pass": True, "version": PLEX_VERSION}
-
-        def run() -> dict:
-            with patch.object(pipeline, "probe_media", return_value=_probe(CHAPTERS_BOTH)):
-                return _rows(check_item(_item(media), ctx=_ctx(store, reg)))["plex-1"]
-
-        assert run()["status"] == ServerStatus.WRITTEN.value
-        assert _served(db, 8)[0] == ("intro", 990, 29_306)
-        assert store.get_item_publish_state("plex-1", "8").kept_types == {T.INTRO}
-        assert run()["status"] == ServerStatus.UP_TO_DATE.value
-
-        if release == "locked":
-            store.lock_marker(
-                store.get_file(media).id, Marker(T.INTRO, INTRO_CH.start_ms, INTRO_CH.end_ms, ("user",), locked=True)
-            )
-        else:
-            cfg.markers["plex"]["on_plex_redetect"] = "restore"
-        assert run()["status"] == ServerStatus.WRITTEN.value
-        assert _served(db, 8)[0] == _served(db, 7)[0] == ("intro", INTRO_CH.start_ms, INTRO_CH.end_ms)
-        assert store.get_item_publish_state("plex-1", "8").kept_types == frozenset()
-        assert run()["status"] == ServerStatus.UP_TO_DATE.value
 
 
 def test_markers_for_path(store, media):

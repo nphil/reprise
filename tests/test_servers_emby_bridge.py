@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 import requests
 
+from media_preview_generator.markers.publishers.base import PublishError
 from media_preview_generator.servers import EmbyServer, JellyfinServer, ServerConfig, ServerType
 from media_preview_generator.servers import emby as emby_module
 
@@ -157,24 +158,27 @@ class TestEmbyMarkers:
         with patch.object(server, "_request", return_value=answer):
             assert server.get_emby_marker_state("42", missing_route_is_empty=True) is None
 
-    @pytest.mark.parametrize("replace_own", [True, False])
-    def test_put_sends_the_pascal_case_body(self, replace_own):
+    def test_legacy_mutations_are_rejected_without_request(self):
         server = _server()
-        with patch.object(server, "_request", return_value=_resp(200, {})) as req:
-            server.put_emby_markers(
-                "42", intro_start_ticks=1, intro_end_ticks=2, credits_start_ticks=None, file_size=9,
-                replace_own=replace_own,
-            )  # fmt: skip
-        assert req.call_args.args == ("POST", "/MediaPreviewBridge/Markers/42")
-        assert req.call_args.kwargs["json_body"] == {
-            "IntroStartTicks": 1, "IntroEndTicks": 2, "CreditsStartTicks": None, "FileSize": 9, "ReplaceOwn": replace_own,
-        }  # fmt: skip
+        with patch.object(server, "_request") as req:
+            with pytest.raises(PublishError):
+                server.put_emby_markers(
+                    "../System/Restart",
+                    intro_start_ticks=1,
+                    intro_end_ticks=2,
+                    credits_start_ticks=None,
+                    file_size=9,
+                    replace_own=True,
+                )
+            with pytest.raises(PublishError):
+                server.delete_emby_markers("../System/Restart")
+        req.assert_not_called()
 
-    def test_ids_are_quoted_into_the_url(self):
+    def test_reader_quotes_item_ids(self):
         server = _server()
         with patch.object(server, "_request", return_value=_resp(200, {})) as req:
-            server.delete_emby_markers("../System/Restart")
-        assert req.call_args.args == ("DELETE", "/MediaPreviewBridge/Markers/..%2FSystem%2FRestart")
+            server.get_emby_marker_state("../System/Restart")
+        assert req.call_args.args == ("GET", "/MediaPreviewBridge/Markers/..%2FSystem%2FRestart")
 
 
 # Emby 4.9 and 4.10 with an API key: item 53's own version, then another version of it (lab, 2026-09-15).

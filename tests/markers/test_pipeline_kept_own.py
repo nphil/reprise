@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from media_preview_generator.markers import pipeline
-from media_preview_generator.markers.decide import DecisionStatus, FileLimits
+from media_preview_generator.markers.decide import DecisionStatus
 from media_preview_generator.markers.models import Candidate, FileIdentity, Marker, MarkerType, Source
 from media_preview_generator.markers.outcomes import FileOutcome, ServerStatus
 from media_preview_generator.markers.pipeline import LocalDetectorSpec
@@ -115,11 +115,15 @@ def _job(
     return out
 
 
-def _assert_nothing_to_send(publisher, path, item_id="item-plex-1"):
-    call = publisher.write.call_args
-    assert call.args == (item_id, [])
-    assert (call.kwargs["previous"], call.kwargs["own_previous"], call.kwargs["kept_types"]) == ([], None, frozenset())
-    assert call.kwargs["canonical_path"] == path
+def _assert_proposal_only(out, *publishers):
+    assert out.outcome_key == FileOutcome.SKIPPED.value
+    assert all(
+        (row["status"], row["message"])
+        == (ServerStatus.SKIPPED.value, "Review this proposal in Reprise before publishing")
+        for row in out.publisher_rows
+    )
+    for publisher in publishers:
+        publisher.write.assert_not_called()
 
 
 def _decision(store, path, mtype):
@@ -139,11 +143,8 @@ class TestNotRead:
         credits = _decision(store, media, T.CREDITS)
         assert (credits.status, credits.reason) == (DecisionStatus.DISABLED, KEPT_PLEX)
         assert _decision(store, media, T.INTRO).status is DecisionStatus.DECIDED
-        call = plex.write.call_args
-        assert call.args[0] == "item-plex-1" and [m.type for m in call.args[1]] == [T.INTRO]
-        assert (call.kwargs["previous"], call.kwargs["kept_types"]) == ([], frozenset())
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
-        assert out.publisher_rows[0]["message"] == "1 marker(s); keeping Plex's credits"
+        assert set(store.get_markers(store.get_file(media).id)) == {T.INTRO}
+        _assert_proposal_only(out, plex)
         assert "credits: kept Plex's own marker" in out.message
         # One read of Plex: the check and the evidence read share it, and Plex's credits are stored as before.
         rec = store.get_file(media)
@@ -153,7 +154,7 @@ class TestNotRead:
             rec.id
         )
 
-    def test_a_movie_isnt_read_takes_no_worker_and_is_up_to_date(self, store, movie):
+    def test_a_movie_isnt_read_and_takes_no_worker(self, store, movie):
         reg = _plex(movie)
         detectors = _Detectors()
         plex = ready_publisher()
@@ -162,30 +163,18 @@ class TestNotRead:
 
         assert out is not None  # nothing left to read, so the checking thread finishes it
         detectors.credits.assert_not_called()
-        # Nothing decided and nothing of ours there: the write has nothing to send (a real publisher returns before
-        # touching the server), and records the file on its item so Check servers reads Plex's credits back.
-        _assert_nothing_to_send(plex, movie)
-        assert out.outcome_key == FileOutcome.UP_TO_DATE.value
-        row = out.publisher_rows[0]
-        assert (row["status"], row["message"]) == (ServerStatus.UP_TO_DATE.value, "Keeping Plex's credits")
+        _assert_proposal_only(out, plex)
         assert out.message == "credits: kept Plex's own marker"
-        state = store.get_publish_state(store.get_file(movie).id, "plex-1")
-        assert (state.item_id, state.markers, state.status) == ("item-plex-1", (), "written")
-        assert not store.published_to_item("plex-1", "item-plex-1")  # no evidence gating: nothing of ours there
-        (item,) = store.published_items("plex-1")
-        assert (item.item_id, item.markers, item.kept_types, item.own_types) == (
-            "item-plex-1",
-            (),
-            frozenset(),
-            frozenset({T.CREDITS}),
-        )
+        assert store.get_publish_state(store.get_file(movie).id, "plex-1") is None
+        assert not store.published_to_item("plex-1", "item-plex-1")
+        assert not store.published_items("plex-1")
 
     def test_every_later_run_asks_plex_again_and_still_doesnt_read(self, store, movie):
         reg = _plex(movie)
         detectors = _Detectors()
         for _ in range(3):
             out = _job(store, reg, movie, detectors, {"plex-1": ready_publisher()})
-            assert out.outcome_key == FileOutcome.UP_TO_DATE.value
+            _assert_proposal_only(out)
         detectors.credits.assert_not_called()
         # The stored answer isn't read again (it has markers); only the check asks what Plex shows now.
         assert reg.get("plex-1").get_markers.call_count == 3
@@ -210,14 +199,10 @@ class TestNotRead:
         out = _job(store, reg, movie, detectors, {"emby-1": emby})
 
         detectors.credits.assert_not_called()
-        _assert_nothing_to_send(emby, movie, item_id="item-emby-1")
-        assert (out.outcome_key, out.publisher_rows[0]["message"]) == (
-            FileOutcome.UP_TO_DATE.value,
-            "Keeping Emby's credits",
-        )
+        _assert_proposal_only(out, emby)
         assert _decision(store, movie, T.CREDITS).reason == "kept Emby's own marker"
 
-    def test_plex_and_emby_both_keeping_their_own_arent_read_and_both_rows_say_so(self, store, movie):
+    def test_plex_and_emby_both_keeping_their_own_arent_read(self, store, movie):
         reg = _plex(movie)
         reg.configs_by_id["emby-1"] = _emby_config(movie, "keep_emby")
         reg.get("emby-1").get_chapter_markers.return_value = [EMBY_CREDITS]
@@ -228,14 +213,15 @@ class TestNotRead:
         )
 
         detectors.credits.assert_not_called()
-        assert [r["message"] for r in out.publisher_rows] == ["Keeping Plex's credits", "Keeping Emby's credits"]
+        assert len(out.publisher_rows) == 2
+        _assert_proposal_only(out)
         assert _decision(store, movie, T.CREDITS).reason == "kept Plex's and Emby's own markers"
 
 
 class TestAServersMarkerThatCantBeRight:
     """ "Keep Plex's" uses Plex's marker when Plex has processed the file, except when that marker can't be right for it
-    (``decide.unusable_server_marker``): then Plex counts as not having processed the file, so the file is read for the
-    type, and the write carries the file's limits so the publisher doesn't keep Plex's rows either."""
+    (``decide.unusable_server_marker``): then Plex counts as not having processed that type, so the file is read
+    for a proposal instead."""
 
     # Plex's credits start and end after the file does (a 25 fps episode).
     PAST_THE_END = {"type": "credits", "start_ms": DUR + 79_779, "end_ms": DUR + 117_344, "final": False}
@@ -250,9 +236,8 @@ class TestAServersMarkerThatCantBeRight:
         assert detectors.credits.call_count == 1
         credits = _decision(store, movie, T.CREDITS)
         assert credits.status is DecisionStatus.DECIDED
-        call = plex.write.call_args
-        assert [m.type for m in call.args[1]] == [T.CREDITS]
-        assert call.kwargs["limits"] == FileLimits(DUR)
+        assert T.CREDITS in store.get_markers(store.get_file(movie).id)
+        plex.write.assert_not_called()
 
     def test_emby_keeps_its_own_whatever_it_says_so_the_file_still_isnt_read(self, store, movie):
         # Emby's plugin leaves Emby's own rows alone under "Keep Emby's", so an answer of ours would never be shown.
@@ -276,12 +261,6 @@ class TestAServersMarkerThatCantBeRight:
         _job(store, _plex(movie), movie, (detectors := _Detectors()), {"plex-1": ready_publisher()})
         detectors.credits.assert_not_called()
 
-    def test_every_write_carries_the_files_limits(self, store, media):
-        # An episode: the TV credits window, and a season key.
-        plex = ready_publisher()
-        _job(store, _plex(media, setting="restore"), media, _Detectors(), {"plex-1": plex})
-        assert plex.write.call_args.kwargs["limits"] == FileLimits(DUR)
-
 
 class TestPlexsMarkerMadeForAnEarlierFile:
     """Plex's markers belong to the item, so a replaced file keeps the old file's markers. A type
@@ -296,23 +275,22 @@ class TestPlexsMarkerMadeForAnEarlierFile:
         out = _job(store, reg, movie, detectors, {"plex-1": plex})
         return out, detectors, plex
 
-    def test_a_stale_visible_marker_runs_detection_and_ours_is_written(self, store, movie):
+    def test_a_stale_visible_marker_runs_detection_and_proposes_ours(self, store, movie):
         out, detectors, plex = self._run_with(store, movie, frozenset({T.CREDITS}))
 
         assert detectors.credits.call_count == 1
         plex.types_not_made_for_file.assert_called_with("item-plex-1")
         assert _decision(store, movie, T.CREDITS).status is DecisionStatus.DECIDED
-        assert [m.type for m in plex.write.call_args.args[1]] == [T.CREDITS]
+        assert T.CREDITS in store.get_markers(store.get_file(movie).id)
+        _assert_proposal_only(out, plex)
 
     @pytest.mark.parametrize("stale", [frozenset(), None], ids=["fresh", "old-agent-cant-tell"])
     def test_a_fresh_marker_or_an_unknown_answer_keeps_todays_behaviour(self, store, movie, stale):
         out, detectors, plex = self._run_with(store, movie, stale)
 
         detectors.credits.assert_not_called()
-        assert (_decision(store, movie, T.CREDITS).status, out.publisher_rows[0]["message"]) == (
-            DecisionStatus.DISABLED,
-            "Keeping Plex's credits",
-        )
+        assert _decision(store, movie, T.CREDITS).status is DecisionStatus.DISABLED
+        _assert_proposal_only(out, plex)
 
     def test_nothing_found_beside_a_stale_marker_still_keeps_plexs(self, store, movie):
         # Close is better than nothing: detection ran and found nothing, so Plex's marker stays, kept rather than undecided.
@@ -325,10 +303,8 @@ class TestPlexsMarkerMadeForAnEarlierFile:
         out = _job(store, reg, movie, detectors, {"plex-1": plex})
 
         assert detectors.credits.call_count == 1
-        assert (_decision(store, movie, T.CREDITS).status, out.publisher_rows[0]["message"]) == (
-            DecisionStatus.DISABLED,
-            "Keeping Plex's credits",
-        )
+        assert _decision(store, movie, T.CREDITS).status is DecisionStatus.DISABLED
+        _assert_proposal_only(out, plex)
 
     def test_a_stale_marker_is_stored_as_evidence_that_confirms_nothing(self, store, movie):
         # Plex only lends evidence here: its stale credits are stored flagged, so decide skips them.
@@ -409,21 +385,13 @@ class TestPlexsMarkerMadeForAnEarlierFile:
 
         assert seen == [True]
 
-    def test_the_row_says_when_ours_replaced_plexs_stale_marker(self, store, movie):
+    def test_stale_marker_produces_a_proposal_without_replacing_it(self, store, movie):
         reg = _plex(movie)
         plex = ready_publisher()
         plex.types_not_made_for_file.return_value = frozenset({T.CREDITS})
-
-        def replaces_stale(item_id, markers, **kwargs):
-            plex.last_replaced_stale_types = frozenset({T.CREDITS})
-            return plex.succeed(item_id, markers, **kwargs)
-
-        plex.write.side_effect = replaces_stale
         out = _job(store, reg, movie, _Detectors(), {"plex-1": plex})
-
-        assert out.publisher_rows[0]["message"] == (
-            "1 marker(s). Replaced Plex's credits: they were detected for an earlier file"
-        )
+        assert T.CREDITS in store.get_markers(store.get_file(movie).id)
+        _assert_proposal_only(out, plex)
 
     def test_the_read_builds_its_publisher_to_wait_briefly_for_plexs_database(self, store, movie):
         # A busy database means "can't tell" (asked again next run), never a writer's minutes-long wait.
@@ -527,7 +495,9 @@ class TestPlexsMarkerMadeForAnEarlierFile:
         _job(store, reg, media, detectors, {"plex-1": plex}, introdb=True)
         rec = store.get_file(media)
         assert _decision(store, media, T.INTRO).reason == "sources agree: introdb, server_markers"
-        assert store.get_publish_state(rec.id, "plex-1").markers
+        store.set_publish_state(
+            rec.id, "plex-1", item_id="item-plex-1", markers=list(store.get_markers(rec.id).values()), status="written"
+        )
         older = [c for c in store.get_evidence(rec.id) if c.origin == "plex-1"]
         store.replace_evidence(
             rec.id, Source.SERVER_MARKERS, older, origin="plex-1", detail="", version=PLEX_CHECKED_SINCE - 1
@@ -557,11 +527,9 @@ class TestPlexsMarkerMadeForAnEarlierFile:
         plex.types_not_made_for_file.return_value = stale
         _job(store, reg, media, detectors, {"plex-1": plex}, introdb=True)
         rec = store.get_file(media)
-        published = store.get_publish_state(rec.id, "plex-1")
-        if not (published and published.markers):
-            # Plex's stale intro confirmed nothing, so nothing was decided or sent: ours is put there by hand.
-            ours = [Marker(T.INTRO, 126_500, 157_000, ("introdb", "season_audio"))]
-            store.set_publish_state(rec.id, "plex-1", item_id="item-plex-1", markers=ours, status="written")
+        # A historical publication predates the proposal-only pipeline.
+        ours = [Marker(T.INTRO, 126_500, 157_000, ("introdb", "season_audio"))]
+        store.set_publish_state(rec.id, "plex-1", item_id="item-plex-1", markers=ours, status="written")
         return reg, detectors, plex, rec
 
     # Every row: an answer stored for a file whose Plex shows our markers now. An older read after our publish can't
@@ -718,10 +686,8 @@ class TestPlexsMarkerMadeForAnEarlierFile:
         # Not due again, so later runs don't look the item up only to skip it.
         assert store.evidence_version(rec.id, Source.SERVER_MARKERS, "plex-1") == READER_VERSION + 1
 
-    def test_with_jellyfin_beside_it_the_intro_only_that_answer_confirmed_comes_off_jellyfin(self, store, media):
-        # Plex keeps its own intro, Jellyfin takes ours. The older answer no longer confirms IntroDB, so the intro is
-        # left undecided and Jellyfin loses it: what a file first read by today's reader, which never reads such an
-        # item, gets. Plex keeps showing its own intro either way.
+    def test_with_jellyfin_beside_it_the_intro_only_that_answer_confirmed_is_no_longer_proposed(self, store, media):
+        # A historical Jellyfin publication stays intact even when the proposal loses its supporting evidence.
         reg = _plex(media, "keep_plex", rows=(PLEX_INTRO,))
         reg.configs_by_id["jellyfin-1"] = server_config("jellyfin-1", ServerType.JELLYFIN, root=_media_root(media))
         reg.get("jellyfin-1").get_media_segments.return_value = []
@@ -733,7 +699,10 @@ class TestPlexsMarkerMadeForAnEarlierFile:
         _job(store, reg, media, detectors, pubs, introdb=True)
         rec = store.get_file(media)
         assert _decision(store, media, T.INTRO).reason == "sources agree: introdb, server_markers"
-        assert [m.type for m in jellyfin.write.call_args.args[1]] == [T.INTRO]
+        assert T.INTRO in store.get_markers(rec.id)
+        jellyfin.write.assert_not_called()
+        previous = [store.get_markers(rec.id)[T.INTRO]]
+        store.set_publish_state(rec.id, "jellyfin-1", item_id="item-jellyfin-1", markers=previous, status="written")
         store.set_publish_state(rec.id, "plex-1", item_id="item-plex-1", markers=[], status="written")
         store.set_item_publish_state("plex-1", "item-plex-1", [], "written", kept_types={T.INTRO})
         older = [c for c in store.get_evidence(rec.id) if c.origin == "plex-1"]
@@ -748,8 +717,9 @@ class TestPlexsMarkerMadeForAnEarlierFile:
             DecisionStatus.NO_EVIDENCE,
             "only IntroDB has the intro; an online answer needs a check against the file",
         )
-        assert jellyfin.write.call_args.args[1] == []
-        assert [m.type for m in jellyfin.write.call_args.kwargs["previous"]] == [T.INTRO]
+        assert T.INTRO not in store.get_markers(rec.id)
+        jellyfin.write.assert_not_called()
+        assert store.get_publish_state(rec.id, "jellyfin-1").markers == tuple(previous)
 
     def test_an_item_published_by_another_version_while_the_read_was_out_drops_it_too(self, store, media):
         # Another version's publish lands between the reader's check and its answer: the item may show ours now.
@@ -806,25 +776,22 @@ class TestADetectorSkippedForEvidenceALaterStepDrops:
     def _decided_with_an_older_readers_answer(
         self, store, media, *, setting="restore", keeps=frozenset(), intro_decided=True
     ):
-        """Run 1 without credit text: IntroDB's and Plex's credits agree and are published, except the types Plex
-        ``keeps``; the Plex answer is then set to reader version 4 (stored before staleness existed). Without
-        ``intro_decided`` season audio finds nothing, so IntroDB's intro alone leaves the intro undecided."""
+        """Build an older reader's answer and its historical publication; no new server write occurs.
+
+        Without ``intro_decided`` season audio finds nothing, so IntroDB alone leaves the intro undecided."""
         reg = _plex(media, setting)
         detectors = _Detectors()
         if not intro_decided:
             detectors.intro.return_value = []
         plex = ready_publisher()
-        succeed = plex.write.side_effect
-
-        def write(item_id, markers, **kwargs):
-            plex.last_kept_types = keeps
-            return [m for m in succeed(item_id, markers, **kwargs) if m.type not in keeps]
-
-        plex.write.side_effect = write
         clients = _clients(introdb=LookupResult("ok", (INTRODB_INTRO, INTRODB_CREDITS)))
         ctx = _ctx(store, reg, settings_raw=_settings(introdb=True), clients=clients, detectors=detectors.specs[:1])
         _run(ctx, media, {"plex-1": plex}, stage="process")
         rec = store.get_file(media)
+        # Model the earlier publication explicitly; detection no longer publishes.
+        sent = [marker for marker in store.get_markers(rec.id).values() if marker.type not in keeps]
+        store.set_publish_state(rec.id, "plex-1", item_id="item-plex-1", markers=sent, status="written")
+        store.set_item_publish_state("plex-1", "item-plex-1", sent, "written", kept_types=keeps)
         assert _decision(store, media, T.CREDITS).reason == "sources agree: introdb, server_markers"
         assert store.evidence_fetched_at(rec.id, Source.CREDITS_TEXT) is None
         older = [c for c in store.get_evidence(rec.id) if c.origin == "plex-1"]
@@ -898,7 +865,7 @@ class TestADetectorSkippedForEvidenceALaterStepDrops:
             DecisionStatus.DISABLED,
             KEPT_PLEX,
         )
-        assert out.publisher_rows[0]["message"] == "Keeping Plex's credits"
+        _assert_proposal_only(out, plex)
 
     def test_a_checking_thread_hands_the_file_to_a_worker_which_reads_it(self, store, media):
         reg, detectors, plex, clients, rec = self._decided_with_an_older_readers_answer(store, media)
@@ -939,6 +906,9 @@ class TestADetectorSkippedForEvidenceALaterStepDrops:
         _run(ctx, media, {"plex-1": plex}, stage="process")
         rec = store.get_file(media)
         assert _decision(store, media, T.CREDITS).reason == "sources agree: skipdb, server_markers"
+        store.set_publish_state(
+            rec.id, "plex-1", item_id="item-plex-1", markers=list(store.get_markers(rec.id).values()), status="written"
+        )
         older = [c for c in store.get_evidence(rec.id) if c.origin == "plex-1"]
         store.replace_evidence(
             rec.id, Source.SERVER_MARKERS, older, origin="plex-1", detail="", version=PLEX_CHECKED_SINCE - 1
@@ -1094,7 +1064,8 @@ class TestReadAsBefore:
         _job(store, reg, movie, detectors, {"plex-1": plex}, force=True)
 
         assert detectors.credits.call_count == 1
-        assert plex.write.call_args.args == ("item-plex-1", [locked])
+        assert store.get_markers(rec.id)[T.CREDITS] == locked
+        plex.write.assert_not_called()
         assert _decision(store, movie, T.CREDITS).status is DecisionStatus.DECIDED
 
 
@@ -1154,12 +1125,7 @@ class TestStoredAnswerLeftUndecided:
         detectors.credits.assert_not_called()
         credits = _decision(store, movie, T.CREDITS)
         assert (credits.status, credits.reason) == (DecisionStatus.DISABLED, KEPT_PLEX)
-        _assert_nothing_to_send(plex, movie)
-        assert out.outcome_key == FileOutcome.UP_TO_DATE.value
-        assert (out.publisher_rows[0]["status"], out.publisher_rows[0]["message"]) == (
-            ServerStatus.UP_TO_DATE.value,
-            "Keeping Plex's credits",
-        )
+        _assert_proposal_only(out, plex)
         assert out.message == "credits: kept Plex's own marker"
 
     def test_use_ours_leaves_it_undecided(self, store, movie):
@@ -1171,9 +1137,7 @@ class TestStoredAnswerLeftUndecided:
         credits = _decision(store, movie, T.CREDITS)
         assert credits.status is DecisionStatus.NO_EVIDENCE
         assert credits.proposed_start_ms == PLEX_SERVED_CREDITS["start_ms"]  # Plex's own marker never decides alone
-        plex.write.assert_not_called()
-        assert out.outcome_key == FileOutcome.NO_MARKERS.value
-        assert out.publisher_rows[0]["message"] == "No markers found"
+        _assert_proposal_only(out, plex)
 
     @pytest.mark.parametrize("setting", ["keep_plex", "restore"], ids=["keep-plexs", "use-ours"])
     def test_a_stored_answer_disagreeing_with_plexs_credits_decides(self, store, movie, setting):
@@ -1187,16 +1151,17 @@ class TestStoredAnswerLeftUndecided:
             DecisionStatus.DECIDED,
             "single source (credits_text); sources disagree: credits_text, server_markers",
         )
-        # Under "Keep Plex's" the publisher itself keeps Plex's credits (its kept note); the decision is the same.
-        assert plex.write.call_args.args[1] == [Marker(T.CREDITS, 1_190_000, DUR, ("credits_text",))]
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert store.get_markers(store.get_file(movie).id)[T.CREDITS] == Marker(
+            T.CREDITS, 1_190_000, DUR, ("credits_text",)
+        )
+        _assert_proposal_only(out, plex)
 
     @pytest.mark.parametrize(("version", "read"), [(1, 0), (2, 1)], ids=["answer-current", "answer-due"])
     def test_a_marker_plex_since_lost_leaves_nothing_found_or_reads_a_due_answer(self, store, movie, version, read):
         _stored_text_answer(store, movie, ())
         reg = _plex(movie, rows=(PLEX_SERVED_CREDITS,))
         first = _job(store, reg, movie, _Detectors(), {"plex-1": ready_publisher()})
-        assert first.outcome_key == FileOutcome.UP_TO_DATE.value
+        _assert_proposal_only(first)
 
         reg.get("plex-1").get_markers.return_value = []
         detectors = _Detectors(version=version)
@@ -1211,26 +1176,19 @@ class TestStoredAnswerLeftUndecided:
                 DecisionStatus.DECIDED,
                 "single source (credits_text); sources disagree: credits_text, server_markers",
             )
-            assert plex.write.call_args.args[1] == [Marker(T.CREDITS, TEXT_CREDITS.start_ms, DUR, ("credits_text",))]
-            assert out.outcome_key == FileOutcome.PUBLISHED.value
+            assert store.get_markers(store.get_file(movie).id)[T.CREDITS] == Marker(
+                T.CREDITS, TEXT_CREDITS.start_ms, DUR, ("credits_text",)
+            )
         else:
-            # The stored "nothing" is still current, and Plex's credits as stored never decide alone: nothing to send,
-            # which the first run already recorded on the item.
+            # The current empty answer and Plex's stored credits do not decide alone.
             assert credits.status is DecisionStatus.NO_EVIDENCE
-            plex.write.assert_not_called()
-            assert out.outcome_key == FileOutcome.UP_TO_DATE.value
-            assert out.publisher_rows[0]["message"] == "Up to date"
+        _assert_proposal_only(out, plex)
 
-    def test_a_decided_type_stays_decided_with_the_publishers_kept_note(self, store, movie):
+    def test_a_decided_type_stays_decided_in_the_proposal(self, store, movie):
         _stored_text_answer(store, movie, (TEXT_CREDITS,))  # agrees with Plex's credits: decided, as before
         reg = _plex(movie)
         plex = ready_publisher()
 
-        def keeps_plexs(item_id, markers, **kwargs):
-            plex.last_write_changed, plex.last_kept_types = False, frozenset({T.CREDITS})
-            return []
-
-        plex.write.side_effect = keeps_plexs
         detectors = _Detectors()
 
         out = _job(store, reg, movie, detectors, {"plex-1": plex})
@@ -1238,29 +1196,27 @@ class TestStoredAnswerLeftUndecided:
         detectors.credits.assert_not_called()
         credits = _decision(store, movie, T.CREDITS)
         assert credits.status is DecisionStatus.DECIDED and credits.reason != KEPT_PLEX
-        assert [(m.type, m.start_ms, m.end_ms) for m in plex.write.call_args.args[1]] == [(T.CREDITS, 1_291_000, DUR)]
-        assert (out.outcome_key, out.publisher_rows[0]["message"]) == (
-            FileOutcome.UP_TO_DATE.value,
-            "Keeping Plex's credits",
-        )
+        marker = store.get_markers(store.get_file(movie).id)[T.CREDITS]
+        assert (marker.start_ms, marker.end_ms) == (1_291_000, DUR)
+        _assert_proposal_only(out, plex)
 
     EARLY_PLEX_CREDITS = {"type": "credits", "start_ms": 600_000, "end_ms": 650_000, "final": False}
     PAST_THE_END = {"type": "credits", "start_ms": DUR + 80_000, "end_ms": DUR + 117_000, "final": False}
 
     @pytest.mark.parametrize(
-        ("setting", "plex_credits", "status", "row"),
+        ("setting", "plex_credits", "status"),
         [
             # Credits that start too early for our own answers are still Plex's: only an impossible marker isn't.
-            ("keep_plex", EARLY_PLEX_CREDITS, DecisionStatus.DISABLED, "Keeping Plex's credits"),
+            ("keep_plex", EARLY_PLEX_CREDITS, DecisionStatus.DISABLED),
             # Credits after the end of the file can't be right: Plex counts as not having processed the file, so
             # nothing found is nothing found, as under Use ours.
-            ("keep_plex", PAST_THE_END, DecisionStatus.NO_EVIDENCE, "No markers found"),
-            ("restore", EARLY_PLEX_CREDITS, DecisionStatus.NO_EVIDENCE, "No markers found"),
+            ("keep_plex", PAST_THE_END, DecisionStatus.NO_EVIDENCE),
+            ("restore", EARLY_PLEX_CREDITS, DecisionStatus.NO_EVIDENCE),
         ],
         ids=["keep-plexs-early", "keep-plexs-cant-be-right", "use-ours"],
     )
     def test_nothing_found_beside_plexs_own_marker_is_kept_only_when_it_can_be_right(
-        self, store, movie, setting, plex_credits, status, row
+        self, store, movie, setting, plex_credits, status
     ):
         # The credit text found nothing: the type ends kept (not undecided) only while Plex's marker can be right.
         _stored_text_answer(store, movie, ())
@@ -1271,7 +1227,7 @@ class TestStoredAnswerLeftUndecided:
 
         detectors.credits.assert_not_called()
         assert _decision(store, movie, T.CREDITS).status is status
-        assert out.publisher_rows[0]["message"] == row
+        _assert_proposal_only(out)
 
     def test_an_undecided_recap_asks_no_server(self, store, media):
         # Intro and credits are decided by chapters and the recap has nothing: Plex can't show a recap, so the check
@@ -1289,10 +1245,10 @@ class TestStoredAnswerLeftUndecided:
 
 
 class TestRealPlexDatabase:
-    """End to end on Plex's database: the kept status sends Plex exactly what an undecided type sent."""
+    """Kept and undecided proposals both leave the Plex database untouched."""
 
     @pytest.mark.parametrize("kind", ["movie", "episode"])
-    def test_an_undecided_type_writes_the_item_byte_for_byte_as_before(self, tmp_path, monkeypatch, request, kind):
+    def test_an_undecided_type_leaves_the_database_untouched(self, tmp_path, monkeypatch, request, kind):
         from media_preview_generator.markers.probe import Chapter
         from media_preview_generator.markers.publishers import plex_db
         from media_preview_generator.markers.store import MarkerStore
@@ -1307,7 +1263,7 @@ class TestRealPlexDatabase:
 
         monkeypatch.setattr(plex_db, "shm_lock_held_elsewhere", lambda _db, **_kw: True)  # Plex has its DB open
         path = request.getfixturevalue("media" if kind == "episode" else "movie")
-        # An episode's intro is decided by its chapter and written; the credits are left to Plex either way.
+        # An episode's intro is proposed; the credits are left to Plex either way.
         chapters = (Chapter(0, 126_771, "Chapter 1"), Chapter(126_771, 157_068, "Intro"), Chapter(157_068, None, "B"))
         probe = pipeline_helpers._probe(chapters if kind == "episode" else ())
 
@@ -1334,25 +1290,14 @@ class TestRealPlexDatabase:
         undecided_out, undecided_status, undecided_plex, undecided_item = run("undecided", kept_status=False)
 
         assert (kept_status, undecided_status) == (DecisionStatus.DISABLED, DecisionStatus.NO_EVIDENCE)
-        # An episode's intro is written either way, so the file counts as written; a movie has nothing else to write.
-        assert undecided_out.outcome_key == (
-            FileOutcome.PUBLISHED.value if kind == "episode" else FileOutcome.NO_MARKERS.value
-        )
-        assert kept_out.outcome_key == (
-            FileOutcome.PUBLISHED.value if kind == "episode" else FileOutcome.UP_TO_DATE.value
-        )
+        _assert_proposal_only(undecided_out)
+        _assert_proposal_only(kept_out)
         assert kept_plex == undecided_plex  # Plex's database, byte for byte
         taggings, parts = kept_plex
         assert (0, "credits", 1_154_521, 1_188_521, CREDITS_ROW_EXTRA) in taggings  # Plex's own row, untouched
         assert plex_db.decode_extra_data(parts[0][2])[0]["pv:credits"] == NATIVE_CREDITS
-        if kind == "episode":
-            assert [t[1] for t in taggings] == ["credits", "intro"]
-            assert kept_item == undecided_item and kept_item[1] == frozenset()
-        else:
-            # Only this app's record differs: the kept file is recorded on its item (nothing of ours, nothing kept),
-            # so Check servers reads Plex's credits back.
-            assert [t[1] for t in taggings] == ["credits"]
-            assert (kept_item, undecided_item) == (((), frozenset()), None)
+        assert [t[1] for t in taggings] == ["credits"]
+        assert (kept_item, undecided_item) == (None, None)
 
 
 class TestSeasonAudioBesidePlexsOwnIntro:
@@ -1369,7 +1314,7 @@ class TestSeasonAudioBesidePlexsOwnIntro:
         intro = _decision(store, media, T.INTRO)
         assert (intro.status, intro.reason) == (DecisionStatus.DECIDED, "single source (season_audio)")
         assert store.get_markers(store.get_file(media).id)[T.INTRO] == self.AUDIO_ONLY
-        assert [m for m in plex.write.call_args.args[1] if m.type is T.INTRO] == [self.AUDIO_ONLY]
+        plex.write.assert_not_called()
 
     def test_a_disagreeing_plex_intro_leaves_the_intro_undecided(self, store, media):
         # An intro disagreement writes nothing so Plex's own intro stays as it is.
@@ -1383,7 +1328,7 @@ class TestSeasonAudioBesidePlexsOwnIntro:
             "sources disagree: season_audio, server_markers",
         )
         assert T.INTRO not in store.get_markers(store.get_file(media).id)
-        assert [m for m in plex.write.call_args.args[1] if m.type is T.INTRO] == []
+        plex.write.assert_not_called()
 
     def test_keep_plexs_still_leaves_the_intro_to_plex_unread(self, store, media):
         detectors = _Detectors()

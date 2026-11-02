@@ -185,24 +185,6 @@ def known(app, episode):
 
 
 @pytest.fixture
-def published(monkeypatch):
-    """Captures every ``publish_now`` call and answers with the rows a test asks for."""
-
-    class Recorder:
-        def __init__(self):
-            self.calls = []
-            self.rows = []
-
-        def __call__(self, path, **kwargs):
-            self.calls.append({"path": path, **kwargs})
-            return self.rows
-
-    recorder = Recorder()
-    monkeypatch.setattr(pipeline, "publish_now", recorder)
-    return recorder
-
-
-@pytest.fixture
 def loguru_caplog(caplog):
     """Forward loguru records into pytest's caplog so tests can assert on them.
 

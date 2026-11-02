@@ -1,9 +1,4 @@
-"""The Inspector editor's write API: save + lock + publish now, and unlock.
-
-`POST /api/markers/item/markers` and `DELETE /api/markers/item/markers`. The publish itself is
-covered in test_publish_now.py; here the contract is the request shape, the refusals, what reaches `publish_now`, and
-the per-server answer the editor renders.
-"""
+"""The Inspector editor API saves and unlocks legacy markers without publishing."""
 
 from __future__ import annotations
 
@@ -11,26 +6,17 @@ import os
 
 import pytest
 
-from media_preview_generator.markers import pipeline
 from media_preview_generator.markers.decide import DecisionStatus
 from media_preview_generator.markers.models import FileIdentity, Marker, MarkerType
-from media_preview_generator.markers.outcomes import ServerStatus
-from media_preview_generator.markers.publishers.emby import CREDITS_BEFORE_END_NOTE
 from media_preview_generator.markers.store import LOCKED_BY_USER, UNLOCKED_PENDING, get_marker_store
-from media_preview_generator.web.routes.api_markers import _EDITOR_RESULTS
 from tests.markers.conftest import api_headers as _api_headers
 from tests.markers.fakes import (
     EDITOR_DURATION_MS,
-    EDITOR_PLEX_TOKEN,
-    editor_server,
-    publish_row,
     save_markers,
 )
 
 T = MarkerType
 DUR = EDITOR_DURATION_MS
-_server = editor_server
-_row = publish_row
 _save = save_markers
 
 
@@ -132,34 +118,11 @@ class TestSaveRefusals:
         assert resp.get_json()["reason"] == "file_changed"
         assert get_marker_store().get_markers(known.id) == {}
 
-    @pytest.mark.parametrize(
-        "entry",
-        [
-            {"type": "recap", "start_ms": 1_000, "end_ms": 20_000},
-            {"type": "preview", "start_ms": 1_300_000, "end_ms": 1_310_000},
-        ],
-        ids=["recap", "preview"],
-    )
-    def test_a_type_no_enabled_owner_can_show_is_refused(self, client, only_plex_and_emby, known, episode, entry):
-        resp = _save(client, episode, [entry])
-        assert resp.status_code == 400
-        assert entry["type"] in resp.get_json()["error"]
-        assert get_marker_store().get_markers(known.id) == {}  # nothing was saved before the refusal
-
-    def test_the_same_type_is_accepted_once_a_jellyfin_that_shows_it_is_on(
-        self, client, servers, known, episode, published
-    ):
-        """The refusal is about the owners, not the type: Jellyfin shows recaps and previews."""
-        resp = _save(client, episode, [{"type": "preview", "start_ms": 1_300_000, "end_ms": 1_310_000}])
+    @pytest.mark.parametrize("mtype", ["recap", "preview"])
+    def test_a_type_is_saved_even_if_no_server_can_show_it(self, client, only_plex_and_emby, known, episode, mtype):
+        resp = _save(client, episode, [{"type": mtype, "start_ms": 1_000, "end_ms": 20_000}])
         assert resp.status_code == 200
-
-    def test_no_server_with_intro_and_credits_on_is_refused(self, app, client, media, known, episode):
-        from media_preview_generator.web.settings_manager import get_settings_manager
-
-        get_settings_manager().set("media_servers", [_server("plex-1", "plex", media, markers=False)])
-        resp = _save(client, episode, [{"type": "intro", "start_ms": 0, "end_ms": 5_000}])
-        assert resp.status_code == 409
-        assert resp.get_json()["reason"] == "no_marker_owner"
+        assert get_marker_store().get_markers(known.id)[T(mtype)].locked is True
 
 
 class TestSaveAccepts:
@@ -173,14 +136,14 @@ class TestSaveAccepts:
         ],
     )
     def test_the_bounds_that_only_catch_a_wrong_source_do_not_apply_to_the_user(
-        self, client, servers, known, episode, published, markers, kind
+        self, client, servers, known, episode, markers, kind
     ):
         resp = _save(client, episode, markers)
         assert resp.status_code == 200, kind
         assert resp.get_json()["markers"][markers[0]["type"]]["locked"] is True
 
     @pytest.mark.parametrize("end", [None, "missing"])
-    def test_no_end_means_the_marker_runs_to_the_end_of_the_file(self, client, servers, known, episode, published, end):
+    def test_no_end_means_the_marker_runs_to_the_end_of_the_file(self, client, servers, known, episode, end):
         entry = {"type": "credits", "start_ms": 1_290_000}
         if end is None:
             entry["end_ms"] = None
@@ -189,189 +152,30 @@ class TestSaveAccepts:
         assert resp.get_json()["markers"]["credits"]["end_ms"] == DUR
 
     def test_an_end_a_couple_of_seconds_past_the_file_is_clamped_like_any_candidate(
-        self, client, servers, known, episode, published
+        self, client, servers, known, episode
     ):
         resp = _save(client, episode, [{"type": "credits", "start_ms": 1_290_000, "end_ms": DUR + 2_000}])
         assert resp.status_code == 200
         assert resp.get_json()["markers"]["credits"]["end_ms"] == DUR
 
 
-class TestSaveStoresAndPublishes:
-    def test_the_save_is_stored_and_locked_before_any_server_is_asked(
-        self, client, servers, known, episode, monkeypatch
-    ):
-        """The request that publishes must not be able to lose the edit."""
-        seen = {}
-
-        def capture(path, **kwargs):
-            store = get_marker_store()
-            seen["locked"] = store.get_locked(known.id)
-            seen["reason"] = store.get_decisions(known.id)[T.INTRO].reason
-            return []
-
-        monkeypatch.setattr(pipeline, "publish_now", capture)
+class TestSaveStores:
+    def test_adjusting_is_locking(self, client, servers, known, episode):
         resp = _save(client, episode, [{"type": "intro", "start_ms": 5_000, "end_ms": 35_000}])
         assert resp.status_code == 200
-        assert seen["locked"] == {T.INTRO: Marker(T.INTRO, 5_000, 35_000, ("user",), locked=True)}
-        assert seen["reason"] == LOCKED_BY_USER
-
-    def test_adjusting_is_locking(self, client, servers, known, episode, published):
-        """There is no adjusted-but-unlocked state."""
-        _save(client, episode, [{"type": "intro", "start_ms": 5_000, "end_ms": 35_000}])
         store = get_marker_store()
         assert store.get_markers(known.id)[T.INTRO].locked is True
         assert store.get_decisions(known.id)[T.INTRO].status is DecisionStatus.DECIDED
-
-    def test_the_publish_runs_on_a_registry_whose_servers_cannot_hold_the_request(
-        self, client, servers, known, episode, published
-    ):
-        _save(client, episode, [{"type": "intro", "start_ms": 5_000, "end_ms": 35_000}])
-        [call] = published.calls
-        assert call["path"] == episode
-        timeouts = {cfg.id: cfg.timeout for cfg in call["registry"].configs()}
-        assert timeouts == {sid: pipeline.PUBLISH_NOW_SERVER_TIMEOUT_S for sid in ("plex-1", "jf-1", "emby-1")}
-
-    def test_a_save_that_publishes_nothing_still_answers_200_with_the_stored_marker(
-        self, client, servers, known, episode, published
-    ):
-        published.rows = [_row("plex-1", "plex", "failed", "Can't reach this server")]
-        resp = _save(client, episode, [{"type": "intro", "start_ms": 5_000, "end_ms": 35_000}])
-        assert resp.status_code == 200
-        body = resp.get_json()
-        assert body["markers"]["intro"] == {
-            "type": "intro",
-            "start_ms": 5_000,
-            "end_ms": 35_000,
-            "locked": True,
-            "locked_at": body["markers"]["intro"]["locked_at"],
-        }
-        assert body["markers"]["intro"]["locked_at"]
-        assert body["servers"][0]["result"] == "failed"
-
-    def test_the_editors_words_cover_every_publish_outcome_there_is(self):
-        """A new ServerStatus with no entry would leak the job's own `markers_*` wording into the editor."""
-        assert set(_EDITOR_RESULTS) == {s.value for s in ServerStatus}
-
-    @pytest.mark.parametrize("status", list(ServerStatus), ids=lambda s: s.value)
-    def test_every_publish_outcome_reaches_the_editor_in_its_own_words(
-        self, client, servers, known, episode, published, status
-    ):
-        published.rows = [_row("plex-1", "plex", status.value, "why")]
-        resp = _save(client, episode, [{"type": "intro", "start_ms": 5_000, "end_ms": 35_000}])
-        assert resp.get_json()["servers"][0] == {
-            "server_id": "plex-1",
-            "server_name": "PLEX-1",
-            "server_type": "plex",
-            # plex-1 has Intro & Credits on, so a skipped row is a server that couldn't take the markers, not one
-            # that is off (see test_an_enabled_server_that_could_not_take_the_markers_is_reported_as_failed).
-            "result": "failed" if status is ServerStatus.SKIPPED else _EDITOR_RESULTS[status.value],
-            "message": "why",
-            "can_show": ["intro", "credits"],
-            "cant_show": [],
-            "notes": [],
-            "replaced_own": [],
-        }
-        assert not _EDITOR_RESULTS[status.value].startswith("markers_")
-
-    @pytest.mark.parametrize(
-        "message",
-        [
-            "Can't reach this Jellyfin server",
-            "Install the Media Preview Bridge plugin",
-            "Confirm the Plex database write to turn this on",
-        ],
-    )
-    def test_an_enabled_server_that_could_not_take_the_markers_is_reported_as_failed(
-        self, client, servers, known, episode, published, message
-    ):
-        """The editor tells a server with Intro & Credits on that couldn't take the markers (down, no plugin) apart
-        from one that is off: the off badge says "Turn on Intro & Credits", which is wrong advice for the first."""
-        published.rows = [_row("jf-1", "jellyfin", "markers_skipped", message)]
-        resp = _save(client, episode, [{"type": "intro", "start_ms": 5_000, "end_ms": 35_000}])
-        row = resp.get_json()["servers"][0]
-        assert (row["server_id"], row["result"], row["message"]) == ("jf-1", "failed", message)
-
-    def test_a_server_with_intro_and_credits_off_is_still_reported_as_off(
-        self, client, media, known, episode, published
-    ):
-        from media_preview_generator.web.settings_manager import get_settings_manager
-
-        get_settings_manager().set(
-            "media_servers", [_server("plex-1", "plex", media), _server("jf-1", "jellyfin", media, markers=False)]
-        )
-        published.rows = [
-            _row("plex-1", "plex", "markers_skipped", "Can't reach this server"),
-            _row("jf-1", "jellyfin", "markers_skipped", "Intro & Credits is off for this server"),
-        ]
-        resp = _save(client, episode, [{"type": "intro", "start_ms": 5_000, "end_ms": 35_000}])
-        assert {r["server_id"]: r["result"] for r in resp.get_json()["servers"]} == {
-            "plex-1": "failed",
-            "jf-1": "not_enabled",
-        }
-
-    def test_the_types_a_lock_took_off_a_server_reach_the_editor_by_name(
-        self, client, servers, known, episode, published
-    ):
-        """The sentence in ``message`` is the same for one type or two, so only this list tells the editor which
-        types the lock overrode on a server set to keep its own."""
-        row = _row("plex-1", "plex", "markers_written", "1 marker(s). Replaced Plex's own marker.")
-        row["replaced_own"] = ["intro"]
-        published.rows = [row]
-
-        resp = _save(client, episode, [{"type": "intro", "start_ms": 5_000, "end_ms": 35_000}])
-
-        assert resp.get_json()["servers"][0]["replaced_own"] == ["intro"]
-
-    @pytest.mark.parametrize("mtype", ["recap", "preview"])
-    @pytest.mark.parametrize(
-        ("server_id", "server_type", "shows_it"),
-        [("plex-1", "plex", False), ("emby-1", "emby", False), ("jf-1", "jellyfin", True)],
-    )
-    def test_a_type_a_server_cannot_show_is_named_per_server(
-        self, client, servers, known, episode, published, server_id, server_type, shows_it, mtype
-    ):
-        """Recap and preview are type-level -- Plex and Emby simply don't have them."""
-        published.rows = [_row(server_id, server_type, "markers_written", "1 marker(s)")]
-        resp = _save(client, episode, [{"type": mtype, "start_ms": 1_000, "end_ms": 20_000}])
-        assert resp.get_json()["servers"][0]["cant_show"] == ([] if shows_it else [mtype])
-
-    def test_an_edited_credits_end_is_accepted_on_emby_with_the_note_saying_what_emby_does(
-        self, client, servers, known, episode, published
-    ):
-        """Not a refusal -- published start-only, and the editor says so per field."""
-        published.rows = [_row("emby-1", "emby", "markers_written", "1 marker(s)")]
-        resp = _save(client, episode, [{"type": "credits", "start_ms": 1_200_000, "end_ms": 1_250_000}])
-        row = resp.get_json()["servers"][0]
-        assert row["result"] == "written"
-        assert row["cant_show"] == []
-        assert row["notes"] == [{"type": "credits", "field": "end", "note": CREDITS_BEFORE_END_NOTE}]
-
-    def test_credits_that_run_to_the_end_carry_no_emby_note(self, client, servers, known, episode, published):
-        published.rows = [_row("emby-1", "emby", "markers_written", "1 marker(s)")]
-        resp = _save(client, episode, [{"type": "credits", "start_ms": 1_290_000, "end_ms": None}])
-        assert resp.get_json()["servers"][0]["notes"] == []
-
-    def test_only_emby_carries_the_credits_end_note(self, client, servers, known, episode, published):
-        published.rows = [
-            _row("plex-1", "plex", "markers_written", "1 marker(s)"),
-            _row("jf-1", "jellyfin", "markers_written", "1 marker(s)"),
-        ]
-        resp = _save(client, episode, [{"type": "credits", "start_ms": 1_200_000, "end_ms": 1_250_000}])
-        assert [r["notes"] for r in resp.get_json()["servers"]] == [[], []]
-
-    def test_a_failure_message_never_carries_a_servers_credentials(self, client, servers, known, episode, published):
-        published.rows = [_row("plex-1", "plex", "failed", f"401 for http://x/?X-Plex-Token={EDITOR_PLEX_TOKEN}")]
-        resp = _save(client, episode, [{"type": "intro", "start_ms": 5_000, "end_ms": 35_000}])
-        assert EDITOR_PLEX_TOKEN not in resp.get_data(as_text=True)
+        assert resp.get_json()["servers"] == []
+        assert resp.get_json()["queued_job_id"] is None
 
 
 class TestUnlock:
-    def _locked(self, client, episode, published):
+    def _locked(self, client, episode):
         return _save(client, episode, [{"type": "intro", "start_ms": 5_000, "end_ms": 35_000}])
 
-    def test_unlock_drops_the_lock_and_publishes_nothing(self, client, servers, known, episode, published):
-        self._locked(client, episode, published)
-        published.calls.clear()
+    def test_unlock_drops_the_lock_and_publishes_nothing(self, client, servers, known, episode):
+        self._locked(client, episode)
         resp = client.delete(
             "/api/markers/item/markers", headers=_api_headers(), json={"path": episode, "types": ["intro"]}
         )
@@ -380,11 +184,10 @@ class TestUnlock:
         assert body["unlocked"] == ["intro"]
         assert body["markers"] == {}
         assert body["decisions"]["intro"] == {"status": "no_evidence", "reason": UNLOCKED_PENDING}
-        assert published.calls == []  # the next run re-decides and re-publishes; this request contacts nobody
         assert get_marker_store().get_locked(known.id) == {}
 
-    def test_unlocking_a_type_that_was_not_locked_changes_nothing(self, client, servers, known, episode, published):
-        self._locked(client, episode, published)
+    def test_unlocking_a_type_that_was_not_locked_changes_nothing(self, client, servers, known, episode):
+        self._locked(client, episode)
         resp = client.delete(
             "/api/markers/item/markers", headers=_api_headers(), json={"path": episode, "types": ["credits"]}
         )
@@ -392,7 +195,7 @@ class TestUnlock:
         assert resp.get_json()["unlocked"] == []
         assert set(get_marker_store().get_locked(known.id)) == {T.INTRO}
 
-    def test_unlocking_one_type_leaves_the_others_locked(self, client, servers, known, episode, published):
+    def test_unlocking_one_type_leaves_the_others_locked(self, client, servers, known, episode):
         _save(
             client,
             episode,
@@ -466,9 +269,7 @@ class TestAddAMarkerByHand:
     """A type detection found nothing for goes through this same route: there is no add route, and none is needed."""
 
     @pytest.mark.parametrize("mtype", ["intro", "credits", "recap", "preview"])
-    def test_a_type_with_no_stored_row_at_all_is_saved_and_reads_back(
-        self, client, servers, known, episode, published, mtype
-    ):
+    def test_a_type_with_no_stored_row_at_all_is_saved_and_reads_back(self, client, servers, known, episode, mtype):
         """The claim the feature rests on, proved against the database rather than read off the code."""
         store = get_marker_store()
         assert T(mtype) not in store.get_markers(known.id)
@@ -487,18 +288,14 @@ class TestAddAMarkerByHand:
         answered = resp.get_json()["markers"][mtype]
         assert (answered["start_ms"], answered["end_ms"], answered["locked"]) == (entry["start_ms"], end, True)
 
-    def test_the_request_body_is_the_same_one_an_adjusted_marker_sends(
-        self, client, servers, known, episode, published
-    ):
+    def test_the_request_body_is_the_same_one_an_adjusted_marker_sends(self, client, servers, known, episode):
         """No added/adjusted flag reaches the API: an added marker is a user marker like any other."""
         _save(client, episode, [_seed(DUR, "credits")])
-        [call] = published.calls
-        assert call["path"] == episode
         assert get_marker_store().get_locked(known.id) == {
             T.CREDITS: Marker(T.CREDITS, DUR - 60_000, DUR, ("user",), locked=True)
         }
 
-    def test_adding_one_type_leaves_a_type_already_decided_alone(self, client, servers, known, episode, published):
+    def test_adding_one_type_leaves_a_type_already_decided_alone(self, client, servers, known, episode):
         store = get_marker_store()
         store.save_user_markers(known.id, [Marker(T.INTRO, 11_000, 37_000, ("chapters",))], settings_fingerprint="fp")
 
@@ -509,19 +306,9 @@ class TestAddAMarkerByHand:
         # Every stored marker comes back, not only the one just sent, so the Inspector keeps the untouched type.
         assert set(resp.get_json()["markers"]) == {"intro", "credits"}
 
-    @pytest.mark.parametrize("mtype", ["recap", "preview"])
-    def test_a_type_no_enabled_owner_can_show_is_refused_whether_added_or_adjusted(
-        self, client, only_plex_and_emby, known, episode, mtype
-    ):
-        """The editor disables that type's Add button; if one ever got through, the API still says no."""
-        resp = _save(client, episode, [_seed(DUR, mtype)])
-        assert resp.status_code == 400
-        assert mtype in resp.get_json()["error"]
-        assert get_marker_store().get_markers(known.id) == {}
-
     @pytest.mark.parametrize("mtype", ["credits", "preview"])
     def test_the_clamped_tail_seed_is_legal_on_a_file_shorter_than_the_seed(
-        self, client, servers, published, shorter_than_the_seed, mtype
+        self, client, servers, shorter_than_the_seed, mtype
     ):
         path, rec = shorter_than_the_seed
         entry = _seed(40_000, mtype)

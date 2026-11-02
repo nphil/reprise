@@ -58,7 +58,7 @@ class TestPipeline:
     def test_a_moved_file_keeps_its_row_and_isnt_read_again(self, tmp_path, store):
         old = _episode(tmp_path)
         first, _, _ = _process(store, old)
-        assert first.outcome_key == FileOutcome.PUBLISHED.value
+        assert first.outcome_key == FileOutcome.SKIPPED.value
         before = store.get_file(old)
         new = _move(old, tmp_path)
         out, probe, _ = _process(store, new)
@@ -68,20 +68,24 @@ class TestPipeline:
         assert rec.season_key == os.path.dirname(new)
         assert probe.call_count == 0  # its chapters, length and answers are kept: nothing is read from the file
         assert store.get_markers(rec.id)[T.INTRO] == Marker(T.INTRO, 0, 92_000, ("chapters",))
-        assert out.outcome_key == FileOutcome.UP_TO_DATE.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
 
     @pytest.mark.parametrize("stype", list(ServerType))
-    def test_a_moved_file_on_a_new_server_item_is_sent_there(self, tmp_path, store, stype):
+    def test_a_moved_file_on_a_new_server_item_keeps_its_proposal_without_writing(self, tmp_path, store, stype):
         # Emby and Jellyfin give a moved file a new item; Plex does when it doesn't match the move.
         old = _episode(tmp_path)
         _process(store, old, stype, item_id="item-old")
+        before = store.get_file(old)
+        evidence = store.get_evidence(before.id)
         new = _move(old, tmp_path)
         publisher = ready_publisher()
         out, probe, _ = _process(store, new, stype, item_id="item-new", publisher=publisher)
         assert probe.call_count == 0
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
-        assert publisher.write.call_args.args == ("item-new", [Marker(T.INTRO, 0, 92_000, ("chapters",))])
-        assert publisher.write.call_args.kwargs["own_previous"] == [Marker(T.INTRO, 0, 92_000, ("chapters",))]
+        assert out.outcome_key == FileOutcome.SKIPPED.value
+        assert store.get_file(new).id == before.id
+        assert store.get_evidence(before.id) == evidence
+        assert store.get_markers(before.id)[T.INTRO] == Marker(T.INTRO, 0, 92_000, ("chapters",))
+        publisher.write.assert_not_called()
 
     def test_a_row_a_sibling_adopted_first_is_read_as_this_files_own(self, tmp_path, store):
         # A whole show moved: another episode's season step gives this file its old row between this run's lookup and
@@ -99,7 +103,9 @@ class TestPipeline:
         with patch.object(store, "same_identity", side_effect=sibling_first):
             out, probe, _ = _process(store, new)
         assert probe.call_count == 0  # read as the stored file it is, not a new one
-        assert out.outcome_key == FileOutcome.UP_TO_DATE.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
+        assert store.get_file(new).id == before.id
+        assert store.get_markers(before.id)[T.INTRO] == Marker(T.INTRO, 0, 92_000, ("chapters",))
 
     def test_a_copy_still_at_the_old_path_is_another_file(self, tmp_path, store):
         old = _episode(tmp_path)

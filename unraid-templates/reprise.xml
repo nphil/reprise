@@ -1,13 +1,13 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>Reprise</Name>
-  <Repository>ghcr.io/nphil/reprise:sha-REPLACE_WITH_FULL_COMMIT</Repository>
+  <Repository>ghcr.io/nphil/reprise@sha256:91571a47ff1108e4526ec3d2c449877c0aef69815f8d345d39ee3089b9939bd1</Repository>
   <Registry>https://github.com/nphil/reprise/pkgs/container/reprise</Registry>
   <Network>bridge</Network>
   <Privileged>false</Privileged>
   <Support>https://github.com/nphil/reprise/issues</Support>
   <Project>https://github.com/nphil/reprise</Project>
-  <Overview>Self-hosted media analysis and review. In development: review results and keep production publishing disabled during evaluation. Select a published immutable sha tag or digest before use. Media is read-only; Plex database access is not mounted by default.</Overview>
+  <Overview>Self-hosted media analysis and review. In development: review results and keep production publishing disabled during evaluation. The pinned image is a specific published build; select a newer published immutable image to update. Media is read-only; Plex database access is not mounted by default.</Overview>
   <Category>MediaApp:Video</Category>
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
   <Icon>https://raw.githubusercontent.com/nphil/reprise/main/media_preview_generator/web/static/icon-512.png</Icon>

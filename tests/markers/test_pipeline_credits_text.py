@@ -85,13 +85,16 @@ class TestWorkerHandOff:
         rec = store.get_file(media)
         assert store.get_evidence(rec.id) == [Candidate(T.CREDITS, 1_290_250, None, Source.CREDITS_TEXT)]
         assert store.evidence_version(rec.id, Source.CREDITS_TEXT) == detector.CREDITS_TEXT_VERSION
-        assert out.outcome_key == FileOutcome.PUBLISHED.value  # credit text decides credits alone (rule 6)
+        assert out.outcome_key == FileOutcome.SKIPPED.value  # credit text decides credits alone (rule 6)
 
-    def test_it_publishes_the_credits_alone_q1(self, store, media, find):
+    def test_it_proposes_the_credits_alone_q1(self, store, media, find):
         plex = ready_publisher()
         out, _ = _run(ctx_for(store, media), media, {"plex-1": plex}, stage="process")
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
-        assert plex.write.call_args.args == ("item-plex-1", [Marker(T.CREDITS, 1_290_250, DUR, ("credits_text",))])
+        assert out.outcome_key == FileOutcome.SKIPPED.value
+        assert store.get_markers(store.get_file(media).id)[T.CREDITS] == Marker(
+            T.CREDITS, 1_290_250, DUR, ("credits_text",)
+        )
+        plex.write.assert_not_called()
 
     def test_a_scene_after_the_credits_is_kept_q3(self, store, media, find):
         find.answer = (1_200.0, 1_260.0)  # the roll ends 61 s before the end of the file
@@ -100,32 +103,28 @@ class TestWorkerHandOff:
         assert store.get_evidence(store.get_file(media).id) == [
             Candidate(T.CREDITS, 1_200_000, 1_260_000, Source.CREDITS_TEXT)
         ]
-        assert plex.write.call_args.args == (
-            "item-plex-1",
-            [Marker(T.CREDITS, 1_200_000, 1_260_000, ("credits_text",))],
+        assert store.get_markers(store.get_file(media).id)[T.CREDITS] == Marker(
+            T.CREDITS, 1_200_000, 1_260_000, ("credits_text",)
         )
+        plex.write.assert_not_called()
 
-    def test_emby_gets_the_credits_start_and_skips_to_the_end_of_the_file_r1(self, store, media, find, tmp_path):
-        # Emby has no credits end, so it gets the start and the row says so.
-        from media_preview_generator.markers.publishers.emby import CREDITS_BEFORE_END_NOTE
-        from tests.markers.test_emby_publisher import FakeEmby, _publisher, _write
-
+    def test_credits_end_survives_repeated_proposal_runs(self, store, media, find):
         find.answer = (1_200.0, 1_260.0)
         plex = ready_publisher()
-        _run(ctx_for(store, media), media, {"plex-1": plex}, stage="process")
-        (decided,) = plex.write.call_args.args[1]
-        emby = FakeEmby(str(media))
-        emby.publisher = _publisher(emby)
-        assert _write(emby, [decided]) == [decided]
-        sent = emby.server.put_emby_markers.call_args.kwargs
-        assert sent["credits_start_ticks"] == 12_000_000_000 and not any(
-            "end" in k for k in sent if k.startswith("credits")
-        )
-        assert emby.publisher.projection_note([decided], duration_ms=DUR) == CREDITS_BEFORE_END_NOTE
+        ctx = ctx_for(store, media)
+        _run(ctx, media, {"plex-1": plex}, stage="process")
+        rec = store.get_file(media)
+        expected = Marker(T.CREDITS, 1_200_000, 1_260_000, ("credits_text",))
+        assert store.get_markers(rec.id)[T.CREDITS] == expected
+        _run(ctx, media, {"plex-1": plex}, stage="check")
+        assert store.get_markers(rec.id)[T.CREDITS] == expected
+        assert len(find.calls) == 1
+        assert store.get_publish_state(rec.id, "plex-1") is None
+        plex.write.assert_not_called()
 
-    def test_it_publishes_with_a_servers_own_agreeing_marker_q2(self, store, media, find):
+    def test_it_proposes_with_a_servers_own_agreeing_marker_q2(self, store, media, find):
         # End to end: a second server (Intro & Credits off there, so evidence only) serves its own Outro 1.75 s after
-        # the text's start; the two agree, and the published start is the text's own (rule 7: never the server's).
+        # the text's start; the two agree, and the proposed start is the text's own (rule 7: never the server's).
         ctx = ctx_for(store, media, server_markers=True)
         ctx.registry.configs_by_id["jellyfin-1"] = server_config(
             "jellyfin-1",
@@ -138,30 +137,33 @@ class TestWorkerHandOff:
         ]
         plex = ready_publisher()
         out, _ = _run(ctx, media, {"plex-1": plex}, stage="process")
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         decided = Marker(T.CREDITS, 1_290_250, DUR, ("credits_text", "server_markers"))
-        assert plex.write.call_args.args == ("item-plex-1", [decided])
+        assert store.get_markers(store.get_file(media).id)[T.CREDITS] == decided
+        plex.write.assert_not_called()
         assert list(_rows_by_server(out)) == ["plex-1"]  # nothing is written to the evidence-only server
 
-    def test_it_publishes_with_an_agreeing_online_source(self, store, media, find):
+    def test_it_proposes_with_an_agreeing_online_source(self, store, media, find):
         clients = _clients(skipdb=LookupResult("ok", (Candidate(T.CREDITS, 1_295_000, None, Source.SKIPDB),)))
         # SkipDB alone never decides credits (rule 6); with the text agreeing it does, and as the first of the two in
-        # the source order its start is published.
+        # the source order its start is proposed.
         ctx = ctx_for(store, media, clients=clients, skipdb=True)
         plex = ready_publisher()
         out, _ = _run(ctx, media, {"plex-1": plex}, stage="process")
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
-        assert plex.write.call_args.args == (
-            "item-plex-1",
-            [Marker(T.CREDITS, 1_295_000, DUR, ("skipdb", "credits_text"))],
+        assert out.outcome_key == FileOutcome.SKIPPED.value
+        assert store.get_markers(store.get_file(media).id)[T.CREDITS] == Marker(
+            T.CREDITS, 1_295_000, DUR, ("skipdb", "credits_text")
         )
+        plex.write.assert_not_called()
 
     def test_credits_decided_by_other_sources_never_take_a_worker(self, store, media, find):
         clients = _clients(skipdb=LookupResult("ok", (Candidate(T.CREDITS, 1_291_000, None, Source.SKIPDB),)),
                            introdb=LookupResult("ok", (Candidate(T.CREDITS, 1_289_000, None, Source.INTRODB),)))  # fmt: skip
         out, _ = _run(ctx_for(store, media, clients=clients, skipdb=True, introdb=True), media, pubs(), stage="check")
-        assert out is not None and out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out is not None and out.outcome_key == FileOutcome.SKIPPED.value
         assert find.calls == []
+        assert store.get_decisions(store.get_file(media).id)[T.CREDITS].status is DecisionStatus.DECIDED
+        assert store.get_markers(store.get_file(media).id)[T.CREDITS].decided_by == ("introdb", "skipdb")
 
     def test_credits_a_chapter_decided_are_read_on_a_worker_against_the_chapter(self, store, media, find):
         # Credit text reads a file whose credits a chapter decided alone (``checks_chapters``): a
@@ -170,7 +172,7 @@ class TestWorkerHandOff:
         out, _ = _run(ctx_for(store, media), media, pubs(), probe=chapters, stage="check")
         assert out is None and find.calls == []
         out, _ = _run(ctx_for(store, media), media, pubs(), probe=chapters, stage="process")
-        assert out is not None and out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out is not None and out.outcome_key == FileOutcome.SKIPPED.value
         (call,) = find.calls
         assert call["path"] == media
         rec = store.get_file(media)
@@ -188,7 +190,7 @@ class TestWorkerHandOff:
         chapters = _probe((Chapter(0, 1_290_000, "Episode"), Chapter(1_290_000, None, "Credits")))
         find.answer = frames.FrameDecodeError("ffmpeg exited 1")
         out, _ = _run(ctx_for(store, media), media, pubs(), probe=chapters, stage="process")
-        assert out is not None and out.outcome_key == FileOutcome.PUBLISHED.value and len(find.calls) == 1
+        assert out is not None and out.outcome_key == FileOutcome.SKIPPED.value and len(find.calls) == 1
         again, _ = _run(ctx_for(store, media), media, pubs(), probe=chapters, stage="check")
         assert again is not None and len(find.calls) == 1
         assert store.get_markers(store.get_file(media).id)[T.CREDITS] == Marker(
@@ -229,8 +231,11 @@ class TestWorkerHandOff:
     def test_credits_a_chapter_decided_take_no_worker_with_credit_text_off(self, store, media, find):
         chapters = _probe((Chapter(0, 1_290_000, "Episode"), Chapter(1_290_000, None, "Credits")))
         out, _ = _run(ctx_for(store, media, credits_text=False), media, pubs(), probe=chapters, stage="check")
-        assert out is not None and out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out is not None and out.outcome_key == FileOutcome.SKIPPED.value
         assert find.calls == []
+        assert store.get_markers(store.get_file(media).id)[T.CREDITS] == Marker(
+            T.CREDITS, 1_290_000, DUR, ("chapters",)
+        )
 
 
 class TestStoredAnswers:
@@ -359,7 +364,7 @@ class TestStoredAnswers:
             _run(ctx_for(store, media), media, pubs(), stage="process", gpu="NVIDIA", gpu_device_path="cuda:0")
         find.answer = START_S
         out, _ = _run(ctx_for(store, media), media, pubs(), stage="process", gpu=None, gpu_device_path=None)
-        assert find.calls[-1]["gpu"] is None and out.outcome_key == FileOutcome.PUBLISHED.value
+        assert find.calls[-1]["gpu"] is None and out.outcome_key == FileOutcome.SKIPPED.value
 
 
 class TestAvailability:
@@ -560,19 +565,19 @@ class TestMovieWindowReachesTheDecision:
     @pytest.mark.parametrize(
         ("window", "published"), [(None, False), ({"movie_s": 1200}, False), ({"movie_s": 1800}, True)]
     )
-    def test_a_movie_credits_start_beyond_15_min_publishes_only_within_the_window(
+    def test_a_movie_credits_start_beyond_15_min_is_proposed_only_within_the_window(
         self, store, movie, find, window, published
     ):
         find.answer = self.START_S
         plex = ready_publisher()
         ctx = ctx_for(store, movie, credits_window=window)
         out, _ = _run(ctx, movie, {"plex-1": plex}, probe=_probe(duration=self.LONG_MOVIE_MS), stage="process")
-        assert (out.outcome_key == FileOutcome.PUBLISHED.value) is published
+        assert out.outcome_key == FileOutcome.SKIPPED.value
+        marker = store.get_markers(store.get_file(movie).id).get(T.CREDITS)
+        assert (marker is not None) is published
         if published:
-            assert plex.write.call_args.args == (
-                "item-plex-1",
-                [Marker(T.CREDITS, 9_300_000, self.LONG_MOVIE_MS, ("credits_text",))],
-            )
+            assert marker == Marker(T.CREDITS, 9_300_000, self.LONG_MOVIE_MS, ("credits_text",))
+        plex.write.assert_not_called()
 
     def test_a_movie_window_under_15_min_keeps_the_900_s_floor(self, store, movie, find):
         # The cap is max(900 s, window): a small window must not lower it, or a credits start 800 s out (found by
@@ -581,7 +586,11 @@ class TestMovieWindowReachesTheDecision:
         plex = ready_publisher()
         ctx = ctx_for(store, movie, credits_window={"movie_s": 300})
         out, _ = _run(ctx, movie, {"plex-1": plex}, probe=_probe(duration=self.LONG_MOVIE_MS), stage="process")
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
+        assert store.get_markers(store.get_file(movie).id)[T.CREDITS] == Marker(
+            T.CREDITS, 10_000_000, self.LONG_MOVIE_MS, ("credits_text",)
+        )
+        plex.write.assert_not_called()
 
 
 class TestTvWindowReachesTheDecision:
@@ -591,19 +600,19 @@ class TestTvWindowReachesTheDecision:
     START_S = 820.0  # 500 s before the end of the 22 min episode: before its last 25% (330 s)
 
     @pytest.mark.parametrize(("window", "published"), [(None, False), ({"tv_s": 300}, False), ({"tv_s": 600}, True)])
-    def test_a_credits_start_before_the_last_quarter_publishes_only_within_the_window(
+    def test_a_credits_start_before_the_last_quarter_is_proposed_only_within_the_window(
         self, store, media, find, window, published
     ):
         find.answer = self.START_S
         plex = ready_publisher()
         ctx = ctx_for(store, media, credits_window=window)
         out, _ = _run(ctx, media, {"plex-1": plex}, probe=_probe(duration=DUR), stage="process")
-        assert (out.outcome_key == FileOutcome.PUBLISHED.value) is published
+        assert out.outcome_key == FileOutcome.SKIPPED.value
+        marker = store.get_markers(store.get_file(media).id).get(T.CREDITS)
+        assert (marker is not None) is published
         if published:
-            assert plex.write.call_args.args == (
-                "item-plex-1",
-                [Marker(T.CREDITS, 820_000, DUR, ("credits_text",))],
-            )
+            assert marker == Marker(T.CREDITS, 820_000, DUR, ("credits_text",))
+        plex.write.assert_not_called()
 
 
 class TestSkipDbAgainstACreditsChapter:
@@ -632,18 +641,22 @@ class TestSkipDbAgainstACreditsChapter:
         find.answer = text_s
         out, plex = self._run(store, media, ctx_for(store, media, clients=_clients(skipdb=self.SKIPDB), skipdb=True))
         assert len(find.calls) == 1
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
-        assert plex.write.call_args.args == ("item-plex-1", [published])
+        assert out.outcome_key == FileOutcome.SKIPPED.value
+        assert store.get_markers(store.get_file(media).id)[T.CREDITS] == published
+        plex.write.assert_not_called()
 
     def test_credit_text_that_finds_no_roll_leaves_the_chapter_deciding(self, store, media, find):
         # It answered and found nothing: nothing more will come, so the chapter isn't left waiting.
         find.answer = None
         out, plex = self._run(store, media, ctx_for(store, media, clients=_clients(skipdb=self.SKIPDB), skipdb=True))
         assert len(find.calls) == 1
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
-        assert plex.write.call_args.args == ("item-plex-1", [Marker(T.CREDITS, 1_200_000, DUR, ("chapters",))])
+        assert out.outcome_key == FileOutcome.SKIPPED.value
+        assert store.get_markers(store.get_file(media).id)[T.CREDITS] == Marker(
+            T.CREDITS, 1_200_000, DUR, ("chapters",)
+        )
+        plex.write.assert_not_called()
         again, _ = self._run(store, media, ctx_for(store, media, clients=_clients(skipdb=self.SKIPDB), skipdb=True))
-        assert len(find.calls) == 1 and again.outcome_key == FileOutcome.UP_TO_DATE.value
+        assert len(find.calls) == 1 and again.outcome_key == FileOutcome.SKIPPED.value
 
     @pytest.mark.parametrize(
         ("stored_version", "status", "reason"),
@@ -715,8 +728,9 @@ class TestSkipDbAgainstACreditsChapter:
         out, plex = self._run(store, media, self._ctx(store, media))
 
         assert len(find.calls) == 1
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
-        assert plex.write.call_args.args == ("item-plex-1", [self.CHAPTER])
+        assert out.outcome_key == FileOutcome.SKIPPED.value
+        assert store.get_markers(store.get_file(media).id)[T.CREDITS] == self.CHAPTER
+        plex.write.assert_not_called()
         rec = store.get_file(media)
         assert store.evidence_version(rec.id, Source.CREDITS_TEXT) is None  # still no answer of its own
 
@@ -767,5 +781,8 @@ class TestSkipDbAgainstACreditsChapter:
         ctx.credits_text = TextDetState.ABSENT
         out, plex = self._run(store, media, ctx)
         assert find.calls == []
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
-        assert plex.write.call_args.args == ("item-plex-1", [Marker(T.CREDITS, 1_200_000, DUR, ("chapters",))])
+        assert out.outcome_key == FileOutcome.SKIPPED.value
+        assert store.get_markers(store.get_file(media).id)[T.CREDITS] == Marker(
+            T.CREDITS, 1_200_000, DUR, ("chapters",)
+        )
+        plex.write.assert_not_called()

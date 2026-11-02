@@ -25,7 +25,9 @@ def dashboard_html(tmp_path, monkeypatch) -> str:
     get_settings_manager().set("setup_complete", True)
     client = app.test_client()
     client.post("/login", data={"token": get_auth_token()}, follow_redirects=False)
-    return client.get("/").get_data(as_text=True)
+    response = client.get("/dashboard")
+    assert response.status_code == 200
+    return response.get_data(as_text=True)
 
 
 def _section(html: str, start_id: str, end_id: str) -> str:

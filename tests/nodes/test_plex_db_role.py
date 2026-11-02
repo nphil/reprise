@@ -26,7 +26,7 @@ from packaging.version import Version
 
 from media_preview_generator.markers.models import Marker, MarkerType
 from media_preview_generator.markers.publishers import plex_db, plex_remote
-from media_preview_generator.markers.publishers.base import Capability, DatabaseBusyError, PublishError, Shown
+from media_preview_generator.markers.publishers.base import Capability, DatabaseBusyError
 from media_preview_generator.markers.publishers.plex_db import PlexMarkerPublisher
 from media_preview_generator.markers.publishers.plex_remote import RemotePlexDb
 from media_preview_generator.markers.settings import ServerMarkersSettings
@@ -332,11 +332,6 @@ class TestARequestMeantForAnotherNode:
         assert agent.post("/v1/item/write", json=write, headers=self._naming("node-uid-b")).status_code == 409
         assert _served(plex_config) == []
 
-    def test_a_write_naming_this_node_goes_through(self, agent, plex_config):
-        write = _write_body(rating_key=7, wanted=[INTRO])
-        assert agent.post("/v1/item/write", json=write, headers=self._naming(self.UID)).status_code == 200
-        assert _served(plex_config) == [("intro", 11_000, 37_000)]
-
     @pytest.mark.parametrize(("method", "path", "body"), TestTheGuards.ENDPOINTS)
     @pytest.mark.parametrize("named", ["", "  "], ids=["missing", "blank"])
     def test_every_endpoint_refuses_the_protocol_that_names_an_id_without_one(self, agent, method, path, body, named):
@@ -357,11 +352,13 @@ class TestARequestMeantForAnotherNode:
         assert agent.post("/v1/item/write", json=write, headers=headers).status_code == 409
         assert _served(plex_config) == []
 
-    def test_a_request_naming_no_node_goes_through_as_before(self, agent, plex_config):
-        # An app that hasn't saved the id yet (first contact), or one from before the check, speaking protocol 1.
-        write = _write_body(rating_key=7, wanted=[INTRO])
-        assert agent.post("/v1/item/write", json=write, headers=AUTH).status_code == 200
-        assert _served(plex_config) == [("intro", 11_000, 37_000)]
+    @pytest.mark.parametrize("named", [False, True], ids=["legacy-protocol", "named-node"])
+    def test_valid_write_requests_are_refused_without_changing_the_database(self, agent, plex_config, named):
+        headers = self._naming(self.UID) if named else AUTH
+        response = agent.post("/v1/item/write", json=_write_body(rating_key=7, wanted=[INTRO]), headers=headers)
+        assert response.status_code == 409
+        assert "Legacy marker publication" in response.get_json()["error"]["message"]
+        assert _served(plex_config) == []
 
     def test_it_speaks_the_protocol_that_carries_the_check_and_still_the_old_one(self):
         assert plex_db_role.PROTOCOLS == [plex_remote.AGENT_PROTOCOL, plex_remote.AGENT_PROTOCOL_NODE_UID]
@@ -391,10 +388,11 @@ class TestItOwnsThePath:
             "plex_config_folder": str(elsewhere),
         }
         assert agent.post("/v1/item/read", json=body, headers=AUTH).status_code == 200
-        # Proven by writing: the row lands in the agent's own database, never in the one the body named.
+        # A request cannot direct a legacy write to either the node database or another path.
         write = _write_body(rating_key=7, wanted=[INTRO])
-        assert agent.post("/v1/item/write", json={**write, **body}, headers=AUTH).status_code == 200
-        assert _served(plex_config) == [("intro", 11_000, 37_000)]
+        response = agent.post("/v1/item/write", json={**write, **body}, headers=AUTH)
+        assert response.status_code == 409
+        assert _served(plex_config) == []
         assert _served(elsewhere) == []
 
     def test_the_ping_says_whether_the_database_is_even_there(self, agent, plex_config):
@@ -443,32 +441,6 @@ class TestItRefusesWhatTheInProcessWriterRefuses:
         report = agent.post("/v1/checks/file", json={}, headers=AUTH).get_json()["result"]["report"]
         assert report["state"] == Capability.UNREACHABLE.value
 
-    def test_a_schema_it_doesnt_know_stops_the_write(self, agent, plex_config):
-        conn = sqlite3.connect(_db_file(plex_config))
-        conn.execute("CREATE TRIGGER t AFTER INSERT ON taggings BEGIN SELECT 1; END")
-        conn.commit()
-        conn.close()
-        response = agent.post("/v1/item/write", json=_write_body(rating_key=7, wanted=[INTRO]), headers=AUTH)
-        assert response.status_code == 409
-        error = response.get_json()["error"]
-        assert error["state"] == Capability.UNSUPPORTED_SCHEMA.value and "triggers" in error["message"]
-        assert _served(plex_config) == []
-
-    def test_a_plex_that_never_made_its_marker_tag_row_is_refused_and_none_is_created(self, tmp_path):
-        folder = tmp_path / "Plex Media Server"
-        _make_db(folder, tag_row=None, journal_mode="wal")
-        app = node_app(str(folder), mountinfo_path=_mountinfo(tmp_path))
-        response = app.test_client().post(
-            "/v1/item/write", json=_write_body(rating_key=7, wanted=[INTRO]), headers=AUTH
-        )
-        assert response.status_code == 409
-        assert response.get_json()["error"]["state"] == Capability.NEEDS_PLEX_DETECTION_ONCE.value
-        conn = sqlite3.connect(Path(plex_db.plex_db_path(str(folder))))
-        try:
-            assert conn.execute("SELECT COUNT(*) FROM tags WHERE tag_type=12").fetchone()[0] == 0
-        finally:
-            conn.close()
-
     def test_an_item_this_plex_doesnt_have_is_an_item_not_found(self, agent):
         response = agent.post("/v1/item/read", json={"rating_key": 999}, headers=AUTH)
         assert response.status_code == 200 and response.get_json()["result"]["item"]["exists"] is False
@@ -512,90 +484,6 @@ def _publisher_through(session, *, keep_plex=False, identity=None, item_record=N
 class TestTheAppWritesPlexThroughTheAgent:
     """The whole path, both halves: nothing here opens the database except the agent."""
 
-    def test_markers_are_written_read_back_and_cleaned_up(self, agent, plex_config):
-        session = FlaskSession(agent)
-        publisher = _publisher_through(session)
-
-        ours = publisher.write(
-            "7", [INTRO, CREDITS], previous=[], duration_ms=DUR, canonical_path="/data/tv/S01E01.mkv"
-        )
-
-        assert ours == [INTRO, CREDITS]
-        assert publisher.last_write_changed is True
-        assert _served(plex_config) == [("credits", 1_297_000, DUR), ("intro", 11_000, 37_000)]
-        assert publisher.shows_many([("7", ours, frozenset(), publisher.last_item_files)]) == {"7": Shown.OURS}
-
-        # Nothing decided any more: the rows this app left go, and nothing else is touched.
-        assert publisher.write("7", [], previous=ours, duration_ms=DUR, canonical_path="/data/tv/S01E01.mkv") == []
-        assert _served(plex_config) == []
-
-    def test_every_episode_of_a_multi_episode_file_is_written_and_read_back_on_the_node(self, agent, plex_config):
-        conn = sqlite3.connect(_db_file(plex_config))
-        conn.execute("UPDATE metadata_items SET library_section_id=1 WHERE id=7")
-        conn.execute("INSERT INTO metadata_items (id, metadata_type, title, library_section_id) VALUES (8, 4, 'E2', 1)")
-        conn.execute("INSERT INTO media_items (id, metadata_item_id) VALUES (2, 8)")
-        conn.execute("INSERT INTO media_parts (id, media_item_id, file) VALUES (2, 2, '/data/tv/S01E01.mkv')")
-        conn.commit()
-        conn.close()
-        records: dict[str, plex_db.ItemRecord] = {}
-        publisher = _publisher_through(FlaskSession(agent), keep_plex=True, item_record=records.get)
-
-        ours = publisher.write("7", [INTRO], previous=[], duration_ms=DUR, canonical_path="/data/tv/S01E01.mkv")
-
-        assert _served(plex_config, 8) == _served(plex_config, 7) == [("intro", 11_000, 37_000)]
-        assert publisher.last_siblings == {"8": ([INTRO], frozenset())}
-        files = publisher.last_item_files
-        records["8"] = plex_db.ItemRecord([INTRO], frozenset(), files)
-        assert publisher.shows_many([("7", ours, frozenset(), files)]) == {"7": Shown.OURS}
-        conn = sqlite3.connect(_db_file(plex_config))
-        conn.execute("DELETE FROM taggings WHERE metadata_item_id=8")
-        conn.commit()
-        conn.close()
-        assert publisher.shows_many([("7", ours, frozenset(), files)]) == {"7": Shown.MISSING}
-
-    def test_the_second_run_changes_nothing(self, agent, plex_config):
-        publisher = _publisher_through(FlaskSession(agent))
-        publisher.write("7", [INTRO], previous=[], duration_ms=DUR, canonical_path="/data/tv/S01E01.mkv")
-        again = _publisher_through(FlaskSession(agent))
-        again.write("7", [INTRO], previous=[INTRO], duration_ms=DUR, canonical_path="/data/tv/S01E01.mkv")
-        assert again.last_write_changed is False
-        assert _served(plex_config) == [("intro", 11_000, 37_000)]
-
-    def test_a_locked_marker_overrides_keep_plexs(self, agent, plex_config):
-        # Plex's own intro row is there and the server is set to keep Plex's; a marker the user locked still wins.
-        conn = sqlite3.connect(_db_file(plex_config))
-        conn.execute(
-            "INSERT INTO taggings (metadata_item_id, tag_id, [index], text, time_offset, end_time_offset, thumb_url, "
-            "created_at, extra_data) VALUES (7, 563, 0, 'intro', 990, 29306, '', 1, '{\"pv:version\":\"5\"}')"
-        )
-        conn.commit()
-        conn.close()
-
-        publisher = _publisher_through(FlaskSession(agent), keep_plex=True)
-        ours = publisher.write(
-            "7", [LOCKED_INTRO], previous=None, duration_ms=DUR, canonical_path="/data/tv/S01E01.mkv"
-        )
-
-        assert ours == [LOCKED_INTRO]
-        assert _served(plex_config) == [("intro", 20_000, 44_000)]
-        assert publisher.last_replaced_own_types == frozenset({T.INTRO})
-        assert publisher.last_kept_types == frozenset()
-
-    def test_an_unlocked_marker_still_leaves_plexs_own_rows_alone(self, agent, plex_config):
-        conn = sqlite3.connect(_db_file(plex_config))
-        conn.execute(
-            "INSERT INTO taggings (metadata_item_id, tag_id, [index], text, time_offset, end_time_offset, thumb_url, "
-            "created_at, extra_data) VALUES (7, 563, 0, 'intro', 990, 29306, '', 1, '{\"pv:version\":\"5\"}')"
-        )
-        conn.commit()
-        conn.close()
-
-        publisher = _publisher_through(FlaskSession(agent), keep_plex=True)
-        publisher.write("7", [INTRO], previous=None, duration_ms=DUR, canonical_path="/data/tv/S01E01.mkv")
-
-        assert _served(plex_config) == [("intro", 990, 29306)]
-        assert publisher.last_kept_types == frozenset({T.INTRO})
-
     def test_the_capability_is_ready_and_shows_the_agents_own_path(self, agent, plex_config):
         report = _publisher_through(FlaskSession(agent)).capability()
         assert report.state is Capability.READY
@@ -603,33 +491,12 @@ class TestTheAppWritesPlexThroughTheAgent:
         assert report.details["agent"]["state"] == "connected"
         assert report.details["agent"]["version"] == plex_db_role.AGENT_VERSION
 
-    def test_an_agent_that_stops_mid_publish_fails_the_write_and_leaves_plex_untouched(self, agent, plex_config):
-        session = FlaskSession(agent)
-        publisher = _publisher_through(session)
-        publisher.write("7", [INTRO], previous=[], duration_ms=DUR, canonical_path="/data/tv/S01E01.mkv")
-        session.stopped = True
-
-        with pytest.raises(PublishError) as ei:
-            publisher.write("7", [CREDITS], previous=[INTRO], duration_ms=DUR, canonical_path="/data/tv/S01E01.mkv")
-
-        assert ei.value.state is Capability.AGENT_UNAVAILABLE
-        assert "Can't reach the Plex database node" in str(ei.value)
-        assert _served(plex_config) == [("intro", 11_000, 37_000)]  # exactly what the first run left
-
     def test_a_stopped_agent_makes_the_server_not_ready_rather_than_crashing(self, agent):
         session = FlaskSession(agent)
         session.stopped = True
         report = _publisher_through(session).capability()
         assert report.state is Capability.AGENT_UNAVAILABLE
         assert report.details["agent"]["state"] == "unreachable"
-
-    def test_a_wrong_key_writes_nothing_and_says_which_side_to_fix(self, agent, plex_config):
-        publisher = _publisher_through(FlaskSession(agent))
-        publisher._db = RemotePlexDb("http://plex-host.lan:9494", "not-the-key", session=FlaskSession(agent))
-        with pytest.raises(PublishError) as ei:
-            publisher.write("7", [INTRO], previous=[], duration_ms=DUR, canonical_path="/data/tv/S01E01.mkv")
-        assert "refused this app's key" in str(ei.value)
-        assert _served(plex_config) == []
 
     def test_an_item_missing_from_plex_is_reported_through_the_agent(self, agent):
         publisher = _publisher_through(FlaskSession(agent))
@@ -677,41 +544,6 @@ class TestABusyPlexLeavesTheNodeAnswering:
         release.set()
         for holder in holders:
             holder.join(10)
-
-    def test_marker_writes_waiting_on_a_busy_plex_leave_the_health_check_answered(self, plex_config, tmp_path):
-        from media_preview_generator.nodes.server import wsgi
-
-        server = wsgi.create_node_server(
-            node_app(str(plex_config), mountinfo_path=_mountinfo(tmp_path)), host="127.0.0.1", port=0, threads=4
-        )
-        threading.Thread(target=server.run, daemon=True).start()
-        url = f"http://127.0.0.1:{server.effective_port}"
-        write = plex_remote.write_request_from_json(_write_body(rating_key=7, wanted=[INTRO])["write"])
-        outcomes: list[type] = []
-
-        def one_write() -> None:
-            try:
-                RemotePlexDb(url, TOKEN).write_item(write, deadline=time.monotonic() + 3.0)
-                outcomes.append(type(None))
-            except PublishError as exc:
-                outcomes.append(type(exc))
-
-        plex = self._plex_holds_the_write_lock(plex_config)
-        writers = [threading.Thread(target=one_write) for _ in range(4)]
-        try:
-            for writer in writers:
-                writer.start()
-            time.sleep(0.5)  # every write is at the node, waiting for Plex
-            assert requests.get(f"{url}/v1/health", timeout=2).status_code == 200
-            for writer in writers:
-                writer.join(10)
-        finally:
-            plex.close()
-            server.close()
-        # Nothing was written while Plex held the lock, and every write is retried as busy, not failed.
-        assert len(outcomes) == 4
-        assert all(issubclass(kind, DatabaseBusyError) for kind in outcomes), outcomes
-        assert _served(plex_config) == []
 
     def test_a_node_full_of_stuck_requests_answers_busy_at_once_and_its_ping_still_answers(self, stuck):
         app, hold, _release = stuck
@@ -927,21 +759,6 @@ class TestWhichPlexTheAgentServes:
 
     def test_no_preferences_file_is_unknown_not_a_mismatch(self, agent):
         assert agent.post("/v1/checks/file", json={}, headers=AUTH).get_json()["result"]["machine_identifier"] == ""
-
-    def test_the_app_writes_through_an_agent_beside_the_right_plex(self, agent, plex_config):
-        self._preferences(plex_config, "plex-aaa")
-        publisher = _publisher_through(FlaskSession(agent), identity="plex-aaa")
-        publisher.write("7", [INTRO], previous=[], duration_ms=DUR, canonical_path="/data/tv/S01E01.mkv")
-        assert _served(plex_config) == [("intro", 11_000, 37_000)]
-
-    def test_the_app_refuses_an_agent_beside_another_plex_before_it_writes(self, agent, plex_config):
-        self._preferences(plex_config, "plex-bbb")
-        publisher = _publisher_through(FlaskSession(agent), identity="plex-aaa")
-        with pytest.raises(PublishError) as ei:
-            publisher.write("7", [INTRO], previous=[], duration_ms=DUR, canonical_path="/data/tv/S01E01.mkv")
-        assert "different Plex server" in str(ei.value)
-        assert _served(plex_config) == []
-        assert publisher.capability().state is Capability.AGENT_UNAVAILABLE
 
 
 class TestChapterRefusalsNameTheNode:

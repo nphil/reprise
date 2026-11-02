@@ -4,24 +4,24 @@ heading: Skip Intro and Skip Credits
 description: Set up Skip Intro and Skip Credits for Plex, Jellyfin and Emby. Check subscriptions, node or plugin requirements, then inspect one file.
 ---
 
-> **Reprise fork notice:** This is a preserved upstream Media Preview Generator guide, not the Reprise publication workflow. Reprise does not automatically publish reviewed markers: Plex publication is off by default and requires separate review, preparation and apply steps. See the [Reprise README](../README.md) and [playback API guide](reprise-api.md).
+> **Reprise fork notice:** This page preserves the upstream Media Preview Generator guide. Its server setup and legacy marker workflow are not Reprise's review-first workflow. Reprise detector output is a proposal: inspect and approve it before separately preparing and applying a publication; Plex writes are off by default. Detection evidence is exploratory, not a general accuracy or preservation guarantee. See the [README](../README.md#detection-evidence-and-limits) and [playback API guide](reprise-api.md).
 
-Media Preview Generator detects where each file's intro and end credits are and sends those points to Plex, Emby and Jellyfin, so viewers get a skip button. It detects each file once and sends the same answer to every server that has the file. On Jellyfin and Emby it works through its own plugin. It runs in the same Docker container that makes your preview thumbnails, and it stays off until you turn it on for a server.
+In the inherited Media Preview Generator workflow, detection can send each file's intro and end-credit positions to Plex, Emby and Jellyfin, so viewers get a skip button. It detects each file once and sends the same answer to every server that has the file. Jellyfin and Emby use its plugins. This runs in the same Docker container as preview thumbnails and stays off until enabled per server. These instructions do not describe Reprise detection, which produces proposals for review.
 
 ## What viewers get, and what each server needs
 
-- **Plex.** Skip Intro and Skip Credits buttons. The server needs Plex Pass, and so do viewers, or a Plex Home whose admin has it: without it, Plex hides skip buttons altogether. Plex has no way for another app to add markers, so the app writes them into Plex's own database and asks you to confirm once per server first. That only works on the Plex machine, so either run the app there or run a [Plex database node](remote-nodes.md) next to Plex.
+- **Plex (in the inherited workflow).** Skip Intro and Skip Credits buttons. The server needs Plex Pass, and so do viewers, or a Plex Home whose admin has it: without it, Plex hides skip buttons altogether. Plex has no way for another app to add markers, so the upstream workflow writes them into Plex's own database after a separate one-time server confirmation. That only works on the Plex machine, so either run the app there or run a [Plex database node](remote-nodes.md) next to Plex. Reprise proposals do not write markers automatically.
 - **Jellyfin 10.11 or 12.0.** Jellyfin has no intro detection of its own: it shows skip segments that a plugin provides ([Jellyfin docs](https://jellyfin.org/docs/general/server/metadata/media-segments/)). This app's [Media Preview Bridge plugin](guides.md#jellyfin-the-media-preview-bridge-plugin), the same one trickplay uses, is that plugin. Viewers get Skip Intro and Skip Credits, plus Skip Recap and Skip Preview.
 - **Emby 4.9 or 4.10.** Skip Intro, and Skip Credits through Emby's Up Next prompt. It works through this app's [Media Preview Bridge for Emby plugin](guides.md#emby-the-media-preview-bridge-for-emby-plugin). Skip Intro also needs Emby Premiere, which is Emby's rule; the credits prompt works without it. Emby has no credits end, so skipping credits goes to the end of the file, past any scene after the credits.
 
-Plex and Emby can have markers of their own. With **Use ours**, the default, the app's markers replace them. **Keep Plex's** or **Keep Emby's** leaves them alone. For what each server offers by itself, see the [comparison](comparison.md).
+In that inherited workflow, Plex and Emby can have markers of their own. With **Use ours**, the default, its markers replace them. **Keep Plex's** or **Keep Emby's** leaves them alone. For what each server offers by itself, see the [comparison](comparison.md).
 
 ## Set up and check the first result
 
-1. [Install Media Preview Generator](getting-started.md) and connect your server. In **Servers**, edit the server, then open **Processing → Intro & Credits** and turn on **Send intro & credits markers to this server**. Complete that server's database-write confirmation or plugin setup before starting work. If Plex runs on another machine, first set up a [Plex database node](remote-nodes.md) there.
-2. Choose the libraries in the same server's **Libraries** tab. The **Intro & Credits** and **Previews** selections are independent. Use **Setup Health** to check the server's requirements.
-3. Review detection sources under **Settings → Intro & Credits**, then start an Intro & Credits job for the libraries you chose. The [full guide](guides.md#intro--credits) covers source choices and publishing rules.
-4. Open **Tools → Inspector** and inspect a known episode or movie. Compare the detected positions with the video and each server's published result. Adjust or lock a marker when needed; an uncertain result may intentionally have no skip button.
+1. [Install Media Preview Generator](getting-started.md) and connect your server. Use the server-specific marker setup here only if you intentionally use that separate inherited workflow; it does not enable or approve Reprise proposals. For Reprise, follow the library-first [review workflow](../README.md#review-your-library) and inspect evidence and the original video before approval.
+2. Choose libraries in the same server's **Libraries** tab only for inherited Media Preview Generator features you intend to use. The **Intro & Credits** and **Previews** selections are independent. Use **Setup Health** to check server requirements.
+3. The upstream Intro & Credits source and job instructions below describe Media Preview Generator, not Reprise's current detector profile. In Reprise, analysis creates proposals for review; it does not automatically approve or publish them.
+4. For inherited Media Preview Generator jobs, open **Tools → Inspector** and inspect a known episode or movie. Compare detected positions with the video and published result; adjust or lock markers there only when using that separate workflow.
 
 ## How it detects intros and credits
 
@@ -32,7 +32,7 @@ It looks in four places:
 - **The theme song** a season's episodes share (TV only).
 - **The credit roll itself**, read from the text on screen near the end of the file.
 
-If it can't confirm an intro or credits from the file itself, it writes nothing, because a missing skip button is better than one that skips into the story. You can still add or adjust one in the Inspector.
+That describes the inherited Media Preview Generator workflow, not Reprise's current detector. Reprise analysis proposes ranges for review and does not automatically approve or publish markers. Its exploratory results are not validated for general accuracy; see the [evidence and limitations](../README.md#detection-evidence-and-limits).
 
 ## When it runs
 

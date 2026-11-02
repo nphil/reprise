@@ -577,16 +577,10 @@ class TestAPlexDatabaseNodeSwappedAtItsAddress:
         for app, _folder in machines.values():
             app.extensions[node_app.EXTENSION].close()
 
-    def test_the_other_machine_writes_nothing_and_the_app_holds_the_node_until_it_is_confirmed(self, swapped):
-        from media_preview_generator.markers.publishers.plex_remote import (
-            AgentUnreachableError,
-            plex_database,
-            write_request_from_json,
-        )
+    def test_the_other_machine_refuses_reads_and_the_app_holds_the_node_until_it_is_confirmed(self, swapped):
+        from media_preview_generator.markers.publishers.plex_remote import AgentUnreachableError, plex_database
         from media_preview_generator.markers.settings import load_server
         from media_preview_generator.nodes.registry import get_registry
-
-        from .test_plex_db_role import INTRO, _served, _write_body
 
         answering, machines = swapped
         settings = load_server(
@@ -597,17 +591,12 @@ class TestAPlexDatabaseNodeSwappedAtItsAddress:
         session = requests.Session()
         session.trust_env = False
         db = plex_database(settings, path_provider=lambda: "", label="Home", session=session)
-        write = write_request_from_json(_write_body(rating_key=7, wanted=[INTRO])["write"])
-
         assert get_registry().plex_db_hold("n1") is None  # a check heard the saved id
-        db.write_item(write, deadline=time.monotonic() + 10)
-        assert _served(machines["a"][1]) == [("intro", 11_000, 37_000)]
+        assert db.read_item(7, deadline=time.monotonic() + 10).exists
 
         answering["app"] = machines["b"][0]  # the same key, another machine
         with pytest.raises(AgentUnreachableError, match="isn't Plex box, the Plex database node saved there"):
-            db.write_item(write, deadline=time.monotonic() + 10)
-
-        assert _served(machines["b"][1]) == []
+            db.read_item(7, deadline=time.monotonic() + 10)
         assert get_registry().plex_db_hold("n1") is not None  # its work waits while it is checked again, at once
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline and "reports a new id" not in get_registry().plex_db_refusal("n1"):

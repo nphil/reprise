@@ -29,7 +29,6 @@ def _forget_cached_pings():
 SYNTH_SEASON = "/media/synth-chapters/Synth Chapters (2021)/Season 01"
 # S01E02: one version on both lab Embys (Emby 4.10 groups S01E01 with its "- Extended" copy of another length).
 SYNTH_E02 = f"{SYNTH_SEASON}/Synth Chapters (2021) - S01E02.webm"
-SYNTH_E02_SIZE = 6_441_241  # bytes of that file (synth_chapters.sh output)
 SYNTH_E01 = f"{SYNTH_SEASON}/Synth Chapters (2021) - S01E01.webm"
 SYNTH_E01_EXTENDED = f"{SYNTH_SEASON}/Synth Chapters (2021) - S01E01 - Extended.webm"
 
@@ -67,63 +66,9 @@ class TestEmbyBridgeMarkersContract:
         assert item_id
         before = emby_lab.get_emby_marker_state(item_id)
         assert before is not None and before["intro_start_ticks"] is None  # the lab Emby holds none of ours
-        size = SYNTH_E02_SIZE
-        resp = emby_lab.put_emby_markers(
-            item_id,
-            intro_start_ticks=100_000_000,
-            intro_end_ticks=400_000_000,
-            credits_start_ticks=1_000_000_000,
-            file_size=size,
-            replace_own=True,
-        )
-        body = resp.json()
-        assert resp.status_code == 200 and body["Stored"] == 3 and body["Stale"] is False
-        assert (body["IntroStartTicks"], body["IntroEndTicks"], body["CreditsStartTicks"], body["FileSize"]) == (
-            100_000_000,
-            400_000_000,
-            1_000_000_000,
-            size,
-        )
-        state = emby_lab.get_emby_marker_state(item_id)
-        assert state == {
-            **emby_module.NOTHING_STORED,
-            "intro_start_ticks": 100_000_000,
-            "intro_end_ticks": 400_000_000,
-            "credits_start_ticks": 1_000_000_000,
-            "file_size": size,
-        }
-        rows = emby_lab.get_chapter_markers(item_id)
-        kinds = {(r["marker_type"], r["start_ms"], r["name"]) for r in rows}
-        assert {
-            ("IntroStart", 10_000, "Intro"),
-            ("IntroEnd", 40_000, "Intro End"),
-            ("CreditsStart", 100_000, "Credits"),
-        } <= kinds
-        assert any(r["marker_type"] == "Chapter" for r in rows)  # the file's own chapters stay
-        deleted = emby_lab.delete_emby_markers(item_id)
-        assert deleted.status_code == 200 and deleted.json()["Stored"] == 0
-        after = emby_lab.get_emby_marker_state(item_id)
-        # Emby leaves null fields out of the answer: nothing stored reads as None everywhere.
-        assert after == emby_module.NOTHING_STORED
-        assert not [r for r in emby_lab.get_chapter_markers(item_id) if r["marker_type"] != "Chapter"]
 
     def test_unknown_item_is_not_found(self, emby_lab):
         assert emby_lab.get_emby_marker_state("999999999998") is None
-        resp = emby_lab.put_emby_markers(
-            "999999999998",
-            intro_start_ticks=1,
-            intro_end_ticks=2,
-            credits_start_ticks=None,
-            file_size=None,
-            replace_own=False,
-        )
-        assert resp.status_code == 200 and resp.json() == {
-            "Id": "999999999998",
-            "Found": False,
-            "Error": "item not found",
-            "Stale": False,
-            "Stored": 0,
-        }
 
 
 class TestEmbyPremiereRegistrationContract:

@@ -107,25 +107,13 @@ from .models import utcnow as _utcnow
 from .outcomes import (
     EXTRAS_NOT_CHECKED,
     FILE_BUSY,
-    NOT_IN_LIBRARY,
     OUTCOME_KEYS,
-    PLEX_DB_BUSY,
-    PLEX_PASS_UNKNOWN,
-    READ_BACK_FAILED,
-    REPLACED_OWN,
     RETRY_REASON_CODES,
-    STATE_BY_STATUS,
     VERIFY_LATER,
     FileOutcome,
     ServerStatus,
     file_outcome,
-    is_kept_own,
-    kept_note,
     kept_own_reason,
-    replaced_own_note,
-    replaced_stale_note,
-    with_kept_note,
-    with_sentence,
 )
 from .ownership import marker_matches, owning_servers
 from .probe import ProbeError, ffprobe_path_for, probe_media
@@ -134,10 +122,7 @@ from .publishers.base import (
     RETRY_SOON,
     Capability,
     CapabilityReport,
-    DatabaseBusyError,
-    ItemNotFoundError,
     MarkerPublisher,
-    PublishError,
     Shown,
     cancellable_waits,
     same_times,
@@ -146,9 +131,7 @@ from .publishers.base import (
 from .publishers.factory import publisher_for, supported_types_for
 from .publishers.plex_db import (
     STALE_READ_WAIT_S,
-    WAIT_CANCELLED,
     WAIT_SLICE_S,
-    WORKER_BUSY_TIMEOUT_S,
     ItemRecord,
 )
 from .season_cache import SeasonCache
@@ -2466,14 +2449,9 @@ def _publish_to(
     notes: RunNotes | None = None,
 ) -> dict:
     """Detection stores proposals; only a separate Reprise review may publish."""
-    return _row(owner.config, "", ServerStatus.SKIPPED,
-                "Review this proposal in Reprise before publishing", rec.canonical_path)
-
-
-
-
-
-
+    return _row(
+        owner.config, "", ServerStatus.SKIPPED, "Review this proposal in Reprise before publishing", rec.canonical_path
+    )
 
 
 def _summary(
@@ -3028,6 +3006,8 @@ def _attempt(
     read_failure = _read_failure(notes)
     if identity_changed(rec):
         raise _FileChangedError(path)
+    # A completed analysis has a readable duration even without publication.
+    clear_failure((Feature.INTRO, Feature.CREDITS), path)
     replaced = ctx._replaced_at_start.get(path, existing is not None and not unchanged)
     rows = []
     # A worker holds a GPU or CPU worker previews need: when this job retries a write Plex's busy database refused, it
@@ -3052,8 +3032,8 @@ def _attempt(
             )
         if replaced and row["status"] in (ServerStatus.WRITTEN.value, ServerStatus.UP_TO_DATE.value):
             row[VERIFY_LATER] = True
-        if read_failure and row["status"] == ServerStatus.NONE.value:
-            # Nothing to send because a read of the file itself failed: that is the row's result, not "no markers".
+        if read_failure and not markers:
+            # A failed detector with no decision is a failure, not a skipped publication.
             row["status"], row["message"] = ServerStatus.FAILED.value, read_failure
         rows.append(row)
         # A bug describing what a server got mustn't stop the next owner's write: each row is already stored above.

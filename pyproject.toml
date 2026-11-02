@@ -97,7 +97,7 @@ test = [
     "pyyaml>=6.0",
 ]
 dev = [
-    "media-preview-generator[test]",
+    "reprise[test]",
     "ruff>=0.6.0",
     "mypy==2.4.0",
     "pre-commit>=3.6.0",

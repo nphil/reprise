@@ -1,6 +1,6 @@
 services:
   reprise:
-    image: ${IMAGE:?Set IMAGE to a published immutable Reprise image tag or digest}
+    image: ${IMAGE:-ghcr.io/nphil/reprise@sha256:91571a47ff1108e4526ec3d2c449877c0aef69815f8d345d39ee3089b9939bd1}
     container_name: reprise
     restart: unless-stopped
     ports:

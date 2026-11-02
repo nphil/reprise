@@ -27,5 +27,3 @@ def test_rendered_pngs_have_their_declared_size(path: Path, size: int) -> None:
     with Image.open(path) as image:
         assert image.size == (size, size)
         assert image.mode == "RGBA"
-
-

@@ -174,7 +174,7 @@ class TestSeasonAudio:
         assert abs(cand.start_ms - start) <= 500 and abs(cand.end_ms - end) <= 500
         assert cand.origin == "2/2" and cand.confidence == 1.0
         # Season audio decides an intro alone.
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         assert all(store.get_fingerprint(store.get_file(p).id, "intro") is not None for p in (e1, e2, e3))
 
     def test_the_rest_of_the_season_matches_on_the_checking_thread(self, store, show):
@@ -188,35 +188,35 @@ class TestSeasonAudio:
         (cand,) = _evidence(store, e2, Source.SEASON_AUDIO)
         assert cand.origin == "2/2"
 
-    def test_a_lone_audio_match_publishes_the_intro(self, store, show):
+    def test_a_lone_audio_match_stores_the_intro(self, store, show):
         # "If it doesn't exist online then use the GPU/CPU check": no online source answers here.
         e1, _, _ = show(1, 3)
         pub = ready_publisher()
         with Audio():
             out, _ = _run(_season_ctx(store, e1), e1, {"plex-1": pub}, stage="process")
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         rec = store.get_file(e1)
         decision = store.get_decisions(rec.id)[MarkerType.INTRO]
         assert (decision.status, decision.reason) == (DecisionStatus.DECIDED, "single source (season_audio)")
         (cand,) = _evidence(store, e1, Source.SEASON_AUDIO)
         marker = Marker(MarkerType.INTRO, cand.start_ms, cand.end_ms, ("season_audio",))
         assert store.get_markers(rec.id)[MarkerType.INTRO] == marker
-        assert pub.write.call_args.args[1] == [marker]
+        pub.write.assert_not_called()
 
-    def test_an_agreeing_online_source_publishes_the_audio_intro(self, store, show):
+    def test_an_agreeing_online_source_stores_the_audio_intro(self, store, show):
         e1, _, _ = show(1, 3)
         start, end = planted_ms(e1)
         pub = ready_publisher()
         ctx = _season_ctx(store, e1, SEASON_RAW, clients=_introdb_answer(start - 2_000, end + 3_000))
         with Audio():
             out, _ = _run(ctx, e1, {"plex-1": pub}, stage="process")
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         (cand,) = _evidence(store, e1, Source.SEASON_AUDIO)
         marker = store.get_markers(store.get_file(e1).id)[MarkerType.INTRO]
         # Season audio reads this file, so it sets the agreed end though IntroDB ranks first in the user's order
         # (IntroDB's times are another release's); its later start shortens the skip.
         assert marker == Marker(MarkerType.INTRO, cand.start_ms, cand.end_ms, ("introdb", "season_audio"))
-        assert pub.write.call_args.args[1] == [marker]
+        pub.write.assert_not_called()
 
     def test_a_current_answer_is_not_matched_again(self, store, show):
         e1, _, _ = show(1, 3)
@@ -830,7 +830,7 @@ class TestMixedSpeeds:
         start, end = own_ms(TO_FILM)
         assert abs(cand.start_ms - start) <= 500 and abs(cand.end_ms - end) <= 500
         assert cand.origin == "3/3"
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         assert store.get_markers(store.get_file(e4).id)[MarkerType.INTRO] == Marker(
             MarkerType.INTRO, cand.start_ms, cand.end_ms, ("season_audio",)
         )
@@ -870,7 +870,7 @@ class TestMixedSpeeds:
         start, end = planted_ms(e4)
         assert abs(cand.start_ms - start) <= 500 and abs(cand.end_ms - end) <= 500  # its own seconds, not stretched
         assert cand.origin == "3/3"
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
 
     def test_the_25_fps_episodes_count_a_re_encode_at_its_own_speed_as_support(self, store, show):
         e1, e2, e3, e4 = show(1, 4)
@@ -1332,7 +1332,7 @@ class TestMixedSpeeds:
         assert abs(hint.start_ms - start) <= 500 and abs(hint.end_ms - end) <= 500
         assert hint.origin == "4/4"
 
-    def test_a_25_fps_episode_publishes_its_own_times_when_introdb_has_the_film_rate_ones(self, store, show):
+    def test_a_25_fps_episode_stores_its_own_times_when_introdb_has_the_film_rate_ones(self, store, show):
         # Bones S07E01: the theme plays 310-338 s in the 25 fps file; IntroDB, timed on a 23.976 release, says 324-354.
         e1, e2, e3, e4 = show(1, 4)
         rates = {e1: FILM, e2: FILM, e3: FILM, e4: 25.0}
@@ -1341,7 +1341,7 @@ class TestMixedSpeeds:
         ctx = _season_ctx(store, e4, SEASON_RAW, clients=_introdb_answer(film_start, film_end))
         with Audio(points=speed_points({e4}), rates=rates, retimed=retimed_points) as audio:
             out, _ = _run(ctx, e4, {"plex-1": pub}, stage="process", probe_effect=audio.probe)
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         rec = store.get_file(e4)
         decision = store.get_decisions(rec.id)[MarkerType.INTRO]
         assert (decision.status, decision.reason) == (DecisionStatus.DECIDED, "sources agree: introdb, season_audio")
@@ -1350,7 +1350,7 @@ class TestMixedSpeeds:
         # IntroDB's scaled start may be the later one; the end is season audio's, which reads this file.
         assert marker == Marker(MarkerType.INTRO, max(cand.start_ms, round(film_start * TO_FILM)),
                                 cand.end_ms, ("introdb", "season_audio"))  # fmt: skip
-        assert pub.write.call_args.args[1] == [marker]
+        pub.write.assert_not_called()
 
 
 def _cache_previous_season(store, paths):
@@ -1376,7 +1376,7 @@ class TestWeeklyReleases:
         assert hint.origin == "4/4"
         start, end = planted_ms(s2e1)
         assert abs(hint.start_ms - start) <= 500 and abs(hint.end_ms - end) <= 500
-        assert out.outcome_key == FileOutcome.NO_MARKERS.value  # a hint needs a second source even at Medium
+        assert out.outcome_key == FileOutcome.SKIPPED.value  # a hint needs a second source even at Medium
         assert _intro_decision(store, s2e1) == (
             DecisionStatus.NO_EVIDENCE,
             "only the previous season's audio found the intro; matching audio needs another source to agree",
@@ -1420,14 +1420,14 @@ class TestWeeklyReleases:
         (hint,) = _evidence(store, s2e1, Source.SEASON_AUDIO_PREVIOUS)
         assert (hint.origin, hint.confidence) == ("1/1", 1.0)
 
-    def test_a_hint_confirmed_by_an_online_source_publishes(self, store, show):
+    def test_a_hint_confirmed_by_an_online_source_decides(self, store, show):
         _cache_previous_season(store, show(1, 4))
         (s2e1,) = show(2, 1)
         start, end = planted_ms(s2e1)
         ctx = _season_ctx(store, s2e1, SEASON_RAW, clients=_introdb_answer(start, end - 1_000))
         with Audio():
             out, _ = _run(ctx, s2e1, {"plex-1": ready_publisher()}, stage="process")
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         marker = store.get_markers(store.get_file(s2e1).id)[MarkerType.INTRO]
         assert marker.decided_by == ("introdb", "season_audio_previous")
 
@@ -1459,7 +1459,7 @@ class TestWeeklyReleases:
         (cand,) = _evidence(store, s2e1, Source.SEASON_AUDIO)
         assert cand.origin == "1/1" and _evidence(store, s2e1, Source.SEASON_AUDIO_PREVIOUS) == []
         # The hint alone kept it in review; this season's audio decides it alone.
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         marker = store.get_markers(store.get_file(s2e1).id)[MarkerType.INTRO]
         assert marker == Marker(MarkerType.INTRO, cand.start_ms, cand.end_ms, ("season_audio",))
         assert season.season_audio_due(store.get_file(s2e1), ctx) is False
@@ -1472,7 +1472,7 @@ class TestFailures:
         with Audio(fail={e1}):
             out, _ = _run(ctx, e1, {"plex-1": ready_publisher()}, stage="process")
         rec = store.get_file(e1)
-        # A read of the file itself that failed is the file's result, not "no markers" (it is read again next run).
+        # The failed detector leaves no saved answer and is retried on a later run.
         assert out.outcome_key == FileOutcome.FAILED.value
         assert out.message.startswith("Couldn't read the intro's audio: ffmpeg exited 1; ")
         assert [r["status"] for r in out.publisher_rows] == ["failed"]
@@ -1906,8 +1906,8 @@ class TestFailures:
         ctx.chromaprint = fingerprint.ChromaprintState.ABSENT  # what build_context records for this container
         with Audio():
             out, _ = _run(ctx, target, {"plex-1": ready_publisher()})
-        # The write took our intro off Plex, so the file counts as written; the undecided intro's reason is in its message.
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        # The stored detector evidence survives, but no longer decides this proposal.
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         assert f"intro: none ({IDB_ALONE})" in out.message
         assert _intro_decision(store, target) == (DecisionStatus.NO_EVIDENCE, IDB_ALONE, None)
         assert _evidence(store, target, answer)  # kept for when chromaprint is back
@@ -2270,8 +2270,10 @@ class _Chapters:
         self._patch.stop()
 
 
-def _check(ctx, path, chapters, publisher=None):
-    out, _ = _run(ctx, path, {"plex-1": publisher or ready_publisher()}, probe_effect=chapters.probe)
+def _check(ctx, path, chapters):
+    publisher = ready_publisher()
+    out, _ = _run(ctx, path, {"plex-1": publisher}, probe_effect=chapters.probe)
+    publisher.write.assert_not_called()
     return out
 
 
@@ -2288,19 +2290,18 @@ class TestSeasonIntroChapters:
     # Reservation Dogs S01 (Disney+): two "Intro" chapters are story, the others 3-11 s.
     RESERVATION_DOGS = {1: 3_000, 2: 6_931, 3: 7_000, 4: 11_000, 5: 125_834, 6: 86_545, 7: None}
 
-    def test_the_story_chapters_decide_nothing_and_the_others_publish(self, store, show):
+    def test_the_story_chapters_decide_nothing_and_the_others_decide(self, store, show):
         paths = show(1, 7)
         ctx = _ctx(store, _registry(paths[0], ServerType.PLEX), settings_raw=SEASON_RAW)
         with _Chapters(self.RESERVATION_DOGS) as chapters:
             outs = {i + 1: _check(ctx, p, chapters) for i, p in enumerate(paths)}
-        # Every episode here resolves to the same Plex item, so E05's publish takes E04's intro off it: that write
-        # counts the file as written. E06 then has nothing of ours there and nothing to send.
-        assert [outs[e].outcome_key for e in (5, 6)] == [FileOutcome.PUBLISHED.value, FileOutcome.NO_MARKERS.value]
+        # Each episode has its own stored decision; none is sent to Plex.
+        assert [outs[e].outcome_key for e in (5, 6)] == [FileOutcome.SKIPPED.value, FileOutcome.SKIPPED.value]
         for e in (5, 6):
             assert f"intro: none ({LONG_INTRO_CHAPTER_REASON})" in outs[e].message
             assert _intro_decision(store, paths[e - 1]) == (DecisionStatus.NO_EVIDENCE, LONG_INTRO_CHAPTER_REASON, None)
         for e in (1, 2, 3, 4):
-            assert outs[e].outcome_key == FileOutcome.PUBLISHED.value
+            assert outs[e].outcome_key == FileOutcome.SKIPPED.value
             assert _intro_decision(store, paths[e - 1])[:2] == (DecisionStatus.DECIDED, "chapters")
 
     def test_the_first_episode_checked_already_sees_the_whole_folder(self, store, show):
@@ -2312,7 +2313,7 @@ class TestSeasonIntroChapters:
             assert sorted(chapters.probed) == sorted(paths)
             chapters.probed.clear()
             _check(ctx, paths[1], chapters)
-        assert out.outcome_key == FileOutcome.NO_MARKERS.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         assert _intro_decision(store, paths[0]) == (DecisionStatus.NO_EVIDENCE, LONG_INTRO_CHAPTER_REASON, None)
         assert chapters.probed == []  # the season step stored its siblings' chapters: nothing is read twice
 
@@ -2328,13 +2329,13 @@ class TestSeasonIntroChapters:
             Marker(MarkerType.INTRO, 30_000, 156_000, ("chapters",)),
         )
 
-    def test_a_flagged_episode_with_an_agreeing_online_source_publishes(self, store, show):
+    def test_a_flagged_episode_with_an_agreeing_online_source_decides(self, store, show):
         paths = show(1, 6)
         clients = _introdb_answer(140_000, 153_000)  # the season's usual short intro, at the end of the long chapter
         ctx = _ctx(store, _registry(paths[0], ServerType.PLEX), settings_raw=SEASON_RAW, clients=clients)
         with _Chapters(self.RESERVATION_DOGS) as chapters:
             out = _check(ctx, paths[4], chapters)
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         assert _intro_decision(store, paths[4]) == (
             DecisionStatus.DECIDED,
             "chapters",
@@ -2482,11 +2483,9 @@ class TestConcurrentChanges:
 
         ctx = _ctx(store, _registry(e1, ServerType.PLEX), settings_raw=SEASON_RAW)
         results = {}
-        pubs = {"plex-1": ready_publisher()}
         with (
             patch.object(pipeline, "probe_media", side_effect=probe),
             patch.object(season, "probe_media", side_effect=probe),
-            patch.object(pipeline, "publisher_for", side_effect=lambda server, cfg, **kw: pubs.get(cfg.id)),
             patch.object(season, "_disk_identity", side_effect=identity),
         ):
             a = threading.Thread(name="A", target=lambda: results.update(a=pipeline.check_item(_item(e1), ctx=ctx)))
@@ -2775,12 +2774,13 @@ class TestAnswersThatBarelyMove:
     each move was a new decision (142 such sends across 59 files).
     """
 
-    def _published(self, store, show):
+    def _stored_answer(self, store, show):
         e1, _, _ = show(1, 3)
         pub = ready_publisher()
         with Audio():
             out, _ = _run(_season_ctx(store, e1), e1, {"plex-1": pub}, stage="process")
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
+        pub.write.assert_not_called()
         (first,) = _evidence(store, e1, Source.SEASON_AUDIO)
         assert first.origin == "2/2"
         return e1, first
@@ -2805,7 +2805,7 @@ class TestAnswersThatBarelyMove:
     def test_an_answer_that_moved_under_half_a_second_keeps_its_times_and_sends_nothing(
         self, store, show, start_ms, end_ms
     ):
-        e1, first = self._published(store, show)
+        e1, first = self._stored_answer(store, show)
         rec = store.get_file(e1)
         decided_at = store.get_decisions(rec.id)[MarkerType.INTRO].decided_at
 
@@ -2821,27 +2821,27 @@ class TestAnswersThatBarelyMove:
         )
         assert store.get_decisions(rec.id)[MarkerType.INTRO].decided_at == decided_at
         pub.write.assert_not_called()
-        assert out.outcome_key == FileOutcome.UP_TO_DATE.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
 
     @pytest.mark.parametrize(
         ("start_ms", "end_ms"),
         [(500, 0), (0, 500), (-600, -600), (2_000, 2_000)],
         ids=["start", "end", "earlier", "2s"],
     )
-    def test_an_answer_that_moved_half_a_second_or_more_is_published(self, store, show, start_ms, end_ms):
-        e1, first = self._published(store, show)
+    def test_an_answer_that_moved_half_a_second_or_more_is_stored(self, store, show, start_ms, end_ms):
+        e1, first = self._stored_answer(store, show)
         out, pub = self._season_grows(store, show, e1, start_ms=start_ms, end_ms=end_ms)
 
         (moved,) = _evidence(store, e1, Source.SEASON_AUDIO)
         assert (moved.start_ms, moved.end_ms) == (first.start_ms + start_ms, first.end_ms + end_ms)
         marker = Marker(MarkerType.INTRO, moved.start_ms, moved.end_ms, ("season_audio",))
         assert store.get_markers(store.get_file(e1).id)[MarkerType.INTRO] == marker
-        assert pub.write.call_args.args[1] == [marker]
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        pub.write.assert_not_called()
+        assert out.outcome_key == FileOutcome.SKIPPED.value
 
     @pytest.mark.parametrize("start_ms", [5, 900], ids=["under", "over"])
     def test_a_locked_intro_stays_as_the_user_set_it_whatever_season_audio_does(self, store, show, start_ms):
-        e1, first = self._published(store, show)
+        e1, first = self._stored_answer(store, show)
         rec = store.get_file(e1)
         mine = Marker(MarkerType.INTRO, first.start_ms + 1_000, first.end_ms + 1_000, ("user",), locked=True)
         store.lock_marker(rec.id, mine)
@@ -2849,12 +2849,11 @@ class TestAnswersThatBarelyMove:
         _, pub = self._season_grows(store, show, e1, start_ms=start_ms, end_ms=start_ms)
 
         assert store.get_markers(rec.id)[MarkerType.INTRO] == mine
-        # Whatever the run sends is the user's own intro; season audio never moves it.
-        assert all(call.args[1] == [mine] for call in pub.write.call_args_list)
+        pub.write.assert_not_called()
 
     def test_an_answer_of_an_older_version_takes_the_new_times_however_little_they_moved(self, store, show):
         # A version bump is how a precision fix reaches users: its answers are stored as found, even 100 ms apart.
-        e1, first = self._published(store, show)
+        e1, first = self._stored_answer(store, show)
         rec = store.get_file(e1)
         store.restamp_evidence_version(rec.id, Source.SEASON_AUDIO, "", season.SEASON_AUDIO_ANSWER_VERSION - 1)
 
@@ -2862,10 +2861,11 @@ class TestAnswersThatBarelyMove:
 
         (moved,) = _evidence(store, e1, Source.SEASON_AUDIO)
         assert (moved.start_ms, moved.end_ms) == (first.start_ms + 100, first.end_ms + 100)
-        assert pub.write.call_args.args[1] == [
-            Marker(MarkerType.INTRO, moved.start_ms, moved.end_ms, ("season_audio",))
-        ]
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert store.get_markers(rec.id)[MarkerType.INTRO] == Marker(
+            MarkerType.INTRO, moved.start_ms, moved.end_ms, ("season_audio",)
+        )
+        pub.write.assert_not_called()
+        assert out.outcome_key == FileOutcome.SKIPPED.value
 
     @pytest.mark.parametrize(
         ("stored_source", "kept"),
@@ -2892,17 +2892,18 @@ class TestAnswersThatBarelyMove:
         stored_times = Candidate(MarkerType.INTRO, 37_000, 66_000, Source.SEASON_AUDIO, confidence=1.0, origin="2/2")
         assert answer == (stored_times if kept else found)
 
-    def test_a_user_edit_under_half_a_second_is_still_published(self, store, show):
-        # The tolerance is on season audio's own answer, not on what is published: a small edit of the user's is sent.
-        e1, first = self._published(store, show)
+    def test_a_small_user_edit_stays_locked(self, store, show):
+        # The tolerance applies to detector evidence, not the user's locked marker.
+        e1, first = self._stored_answer(store, show)
         rec = store.get_file(e1)
         mine = Marker(MarkerType.INTRO, first.start_ms + 200, first.end_ms - 200, ("user",), locked=True)
         store.save_user_markers(rec.id, [mine], settings_fingerprint="old")
         pub = ready_publisher()
         with Audio():
             out, _ = _run(_season_ctx(store, e1), e1, {"plex-1": pub}, stage="process")
-        assert pub.write.call_args.args[1] == [mine]
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert store.get_markers(rec.id)[MarkerType.INTRO] == mine
+        pub.write.assert_not_called()
+        assert out.outcome_key == FileOutcome.SKIPPED.value
 
 
 class TestWhatTheRulesAskOfSeasonAudio:

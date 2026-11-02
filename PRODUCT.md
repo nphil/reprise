@@ -34,7 +34,11 @@ The name is Reprise; the working line is “Skip the repeat. Keep the story.” 
 
 ## Evidence on Hand
 
-The accepted product scope is recorded in this brief. Existing upstream results and tools are implementation evidence, not proof that the combined detector is safe or accurate on a particular library. Do not invent statistics, media or measured performance.
+Evidence remains exploratory and protocol-specific; it does not establish accuracy or preservation safety for a library. Pinned RCD on 18 unlabeled real windows proposed 18 openings in 25 ranges and 15 tails for 15/18 windows (799.17 s and 418.04 s); grouping took 783.58 s across 6 groups on 2 CPUs/2 GiB at nice 19 (peak 222,568,448 bytes). Separate MPG runs found season-audio openings in 5/18 and tails in 0/18, while credits-text returned real-tail candidates for 18/18 in 3,222.407 s at 1 CPU/2 GiB, nice 19. These unlabeled counts are not correctness measures.
+
+An older Reprise exact-match run over four independently encoded labeled synthetic cases found 0/72.8 seconds of repeats, returned unknown for 145/145 checks, and failed its vacuous protected-overlap check. Two separate labeled MPG-credits synthetic cases totaling 32/47 seconds returned no candidate. These protocols must not be combined or described as accuracy; scores are ranking hints, not calibrated probabilities.
+
+Codec-tolerant native-signal verification is under implementation; final empirical gates remain pending. The intended profile compares decoded video and every selected audio channel with piecewise alignment, explicit gaps and inward bounds. It leaves unknown evidence inert and does not approve or publish results. Unmarked color fields are accepted as-is only under matching native declarations: it does not invent BT.709, convert color, or claim rendered/semantic equivalence. A qualified signal match remains a proposal, not proof every brief or quiet story change is absent. Subtitles and player overlays are outside coverage; unsupported formats and stream mappings remain inert.
 
 ## Product Principles
 

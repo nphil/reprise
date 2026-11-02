@@ -1,10 +1,4 @@
-"""Markers from a pinned trigger follow the pin, as its previews do (``jobs.worker.resolve_per_item_pin``).
-
-A webhook pinned to one server (``/api/webhooks/server/<id>``, ``?server_id=``), an Emby or Jellyfin webhook through
-``/api/webhooks/incoming`` and a scheduled "Recently added" scan publish previews to one server only; the Intro &
-Credits job that follows them carries that server as ``server_id`` and publishes there only. Unpinned jobs publish to
-every server with Intro & Credits on, as before.
-"""
+"""Pinned follow-up jobs retain their server scope while generating proposals."""
 
 from __future__ import annotations
 
@@ -21,7 +15,6 @@ from media_preview_generator.servers.base import ServerType
 from tests.markers import pipeline_helpers, test_job_runner, test_triggers
 from tests.markers.fakes import ready_publisher
 from tests.markers.pipeline_helpers import CHAPTERS_BOTH, _ctx, _probe, _registry, _run
-from tests.markers.test_job_runner import NOT_IN_LIBRARY_ROW, _row
 from tests.markers.test_job_runner import _item as _job_item
 from tests.markers.test_triggers import _server
 
@@ -31,7 +24,7 @@ media = pipeline_helpers.media
 settings = test_triggers.settings
 
 
-class TestPipelinePublishesWhereTheJobIsPinned:
+class TestPipelineScopesProposalsToTheJobPin:
     """The matrix: each vendor pinned, no pin, and a pin to a server with Intro & Credits off."""
 
     SERVERS = (ServerType.PLEX, ServerType.JELLYFIN, ServerType.EMBY)
@@ -45,7 +38,7 @@ class TestPipelinePublishesWhereTheJobIsPinned:
 
     @pytest.mark.parametrize("stage", ["check", "worker"])
     @pytest.mark.parametrize(
-        ("pin", "published"),
+        ("pin", "owners"),
         [
             ("plex-1", ["plex-1"]),
             ("emby-1", ["emby-1"]),
@@ -54,21 +47,23 @@ class TestPipelinePublishesWhereTheJobIsPinned:
         ],
         ids=["plex-pin", "emby-pin", "jellyfin-pin", "no-pin"],
     )
-    def test_only_the_pinned_server_gets_a_row_and_a_write(self, store, media, pin, published, stage):
+    def test_pin_limits_proposal_owners_without_publishing(self, store, media, pin, owners, stage):
+        from media_preview_generator.markers.models import Source
+
         ctx = _ctx(store, _registry(media, *self.SERVERS))
         ctx.config = SimpleNamespace(server_id_filter=pin)
         publishers = self._publishers()
-
         out, _ = _run(ctx, media, publishers, probe=_probe(CHAPTERS_BOTH), stage=stage)
 
-        assert [r["server_id"] for r in out.publisher_rows] == published
-        assert {r["status"] for r in out.publisher_rows} == {ServerStatus.WRITTEN.value}
-        for sid, pub in publishers.items():
-            assert pub.write.called is (sid in published), sid
+        assert [r["server_id"] for r in out.publisher_rows] == owners
+        assert {r["status"] for r in out.publisher_rows} == {ServerStatus.SKIPPED.value}
+        for pub in publishers.values():
+            pub.write.assert_not_called()
         rec = store.get_file(media)
-        assert {sid for sid in publishers if store.get_publish_state(rec.id, sid) is not None} == set(published)
+        assert {c.source for c in store.get_evidence(rec.id)} >= {Source.CHAPTERS}
+        assert all(store.get_publish_state(rec.id, sid) is None for sid in publishers)
 
-    def test_a_pin_to_a_server_with_markers_off_publishes_nowhere(self, store, media):
+    def test_a_pin_to_a_server_with_markers_off_has_no_owners(self, store, media):
         reg = _registry(media, *self.SERVERS)
         reg.configs_by_id["emby-1"].markers["enabled"] = False
         ctx = _ctx(store, reg)
@@ -84,8 +79,8 @@ class TestPipelinePublishesWhereTheJobIsPinned:
         probe.assert_not_called()
 
     @pytest.mark.parametrize("config", [None, MagicMock(), SimpleNamespace(server_id_filter="")])
-    def test_no_usable_pin_publishes_to_every_owner(self, store, media, config):
-        # publish_now passes no Config, and most tests pass a MagicMock: neither is a pin.
+    def test_no_usable_pin_includes_every_owner(self, store, media, config):
+        # Missing, mock, and empty configurations do not pin the job.
         ctx = _ctx(store, _registry(media, *self.SERVERS))
         ctx.config = config
         out, _ = _run(ctx, media, self._publishers(), probe=_probe(CHAPTERS_BOTH))
@@ -295,39 +290,3 @@ class TestJobRunnerKeepsThePin:
         with patch.object(job_runner, "build_items", return_value=([_job_item()], [], {})):
             job_runner.run_intro_credits_job("j1")
         assert env.config.server_id_filter is None
-
-    @pytest.fixture
-    def later(self, env, monkeypatch):
-        saved = {"log_level": "INFO", "webhook_retry_count": 3, "webhook_retry_delay": 30}
-        env.sm.get.side_effect = lambda key, default=None: saved.get(key, default)
-        env.job.library_name = "S01E01"
-        create = MagicMock(side_effect=lambda **kw: MagicMock(id="later-1", config={}))
-        monkeypatch.setattr(triggers, "create_intro_credits_job", create)
-        set_cb = MagicMock()
-        monkeypatch.setattr(job_runner, "set_file_result_callback", set_cb)
-        rows = []
-
-        def during_wait(timeout=None):
-            for row in rows:
-                set_cb.call_args_list[0].args[0]("/m/a.mkv", row["status"], "", "Lookup", servers=[row])
-            return True
-
-        env.tracker.wait.side_effect = during_wait
-        return SimpleNamespace(create=create, rows=rows)
-
-    @pytest.mark.parametrize("pin", ["emby-1", None])
-    @pytest.mark.parametrize(
-        ("row", "name"),
-        [(NOT_IN_LIBRARY_ROW, "Retry: "), (_row("markers_written", "2 marker(s)", verify_later=True), "Verify: ")],
-        ids=["retry", "verify"],
-    )
-    def test_its_retry_and_verify_jobs_publish_where_it_does(self, env, later, pin, row, name):
-        env.job.config = {"libraries": [], "file_paths": ["/data/tv/a.mkv"], "source": "emby"}
-        if pin:
-            env.job.config["server_id"] = pin
-        later.rows.append(row)
-        with patch.object(job_runner, "build_items", return_value=([_job_item("/m/a.mkv")], [], {})):
-            job_runner.run_intro_credits_job("j1")
-        (call,) = later.create.call_args_list
-        assert call.kwargs["library_name"].startswith(name)
-        assert call.kwargs.get("server_id") == pin

@@ -1,4 +1,5 @@
 """Authentication for Reprise's independently scoped playback clients."""
+
 from functools import wraps
 
 from flask import g, jsonify, request
@@ -17,6 +18,7 @@ def bearer_secret():
 
 def require_client(store, scope):
     """Never consult session or the legacy external-auth bypass."""
+
     def decorate(view):
         @wraps(view)
         def wrapped(*args, **kwargs):
@@ -28,5 +30,7 @@ def require_client(store, scope):
                 return jsonify(error="Insufficient scope"), 403
             g.reprise_principal = principal
             return view(*args, **kwargs)
+
         return wrapped
+
     return decorate

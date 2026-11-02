@@ -9,6 +9,7 @@ import re
 import shlex
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -166,7 +167,8 @@ def test_the_main_image_overrides_every_label_its_base_image_sets():
     )
     assert sorted(set(_BASE_IMAGE_LABELS) - labels.keys()) == []
     assert not [value for value in labels.values() if "linuxserver" in value.lower()]
-    assert labels["org.opencontainers.image.source"] == "https://github.com/stevezau/media_preview_generator"
+    project = ET.parse(ROOT / "unraid-templates/reprise.xml").getroot().findtext("Project")
+    assert project and labels["org.opencontainers.image.source"] == project
     assert labels["org.opencontainers.image.revision"] == "${GIT_SHA}"
 
 

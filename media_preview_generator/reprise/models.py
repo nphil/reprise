@@ -1,5 +1,7 @@
 """Value types shared by detection, review and clients."""
+
 from dataclasses import dataclass
+
 
 @dataclass(frozen=True)
 class PlaybackIdentity:
@@ -12,6 +14,7 @@ class PlaybackIdentity:
     duration_ms: int
     audio_stream_id: str
 
+
 @dataclass(frozen=True)
 class MediaVersion:
     id: str
@@ -23,8 +26,9 @@ class MediaVersion:
     stream_signature: str
     device: int | None = None
     inode: int | None = None
-    digest_assurance: str = 'stat-only'
+    digest_assurance: str = "stat-only"
     digest: str | None = None
+
 
 @dataclass(frozen=True)
 class Evidence:
@@ -39,6 +43,7 @@ class Evidence:
     reference_start_ms: int | None
     reference_end_ms: int | None
     metrics: dict
+
 
 @dataclass(frozen=True)
 class DecisionRange:
@@ -56,6 +61,7 @@ class DecisionRange:
     audio_stream_ids: tuple[str, ...]
     terminal: bool = False
 
+
 @dataclass(frozen=True)
 class AnalysisResult:
     media_version_id: str
@@ -69,6 +75,7 @@ class AnalysisResult:
     evidence: tuple[Evidence, ...]
     reasons: tuple[str, ...]
 
+
 @dataclass(frozen=True)
 class CandidateWindow:
     kind: str
@@ -76,12 +83,14 @@ class CandidateWindow:
     end_ms: int
     source: str
 
+
 @dataclass(frozen=True)
 class AnalysisDraft:
     evidence: tuple[Evidence, ...]
     ranges: tuple[DecisionRange, ...]
     status: str
     reasons: tuple[str, ...]
+
 
 @dataclass(frozen=True)
 class ClientPrincipal:

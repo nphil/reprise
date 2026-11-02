@@ -427,28 +427,31 @@ def _probe(chapters=(), duration=DUR):
 
 
 def _replace(tmp_path, store, *, new_duration=DUR, old_chapters=OPENING, new_chapters=(), settings=NOTHING):
-    """The prod case: the old file decided and published, then deleted and replaced by a new file on the same item."""
+    """Replace a file with a historical published association for the same item."""
     old = _episode(tmp_path, OLD_NAME)
     ctx = _ctx(store, _registry(old, ServerType.PLEX), settings_raw=settings)
-    first, _ = _run(ctx, old, {"plex-1": ready_publisher()}, probe=_probe(old_chapters), stage="process")
+    publisher = ready_publisher()
+    first, _ = _run(ctx, old, {"plex-1": publisher}, probe=_probe(old_chapters), stage="process")
+    publisher.write.assert_not_called()
+    old_rec = store.get_file(old)
+    store.set_publish_state(old_rec.id, "plex-1", item_id="item-plex-1", markers=[], status="written")
     os.remove(old)
     new = _episode(tmp_path, NEW_NAME)
     ctx = _ctx(store, _registry(new, ServerType.PLEX), settings_raw=settings)
-    out, _ = _run(ctx, new, {"plex-1": ready_publisher()}, probe=_probe(new_chapters, new_duration), stage="process")
+    out, _ = _run(ctx, new, {"plex-1": publisher}, probe=_probe(new_chapters, new_duration), stage="process")
+    publisher.write.assert_not_called()
     return first, out, store.get_file(new)
 
 
 class TestPipeline:
     def test_tomb_raider_king_s01e12_keeps_its_opening_after_the_replacement(self, tmp_path, store):
-        # The old file's Intro chapter decided 0-92 s; the new WEBRip, identical in length, has no chapters and no
-        # source answered for it. Before: the intro was removed from Plex. Now it is kept, marked as carried over.
+        # The old file's intro is carried into the identical-length replacement's proposal.
         first, out, rec = _replace(tmp_path, store)
-        assert first.outcome_key == FileOutcome.PUBLISHED.value
+        assert first.outcome_key == FileOutcome.SKIPPED.value
         intro = store.get_decisions(rec.id)[T.INTRO]
         assert (intro.status, intro.reason) == (DecisionStatus.DECIDED, co.CARRIED_OVER_REASON)
         assert store.get_markers(rec.id)[T.INTRO] == Marker(T.INTRO, *INTRO, (co.CARRIED_OVER,))
-        # The item still shows the intro we sent for the old file: nothing to remove, nothing to write.
-        assert out.outcome_key == FileOutcome.UP_TO_DATE.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         assert store.get_decisions(rec.id)[T.CREDITS].status is DecisionStatus.NO_EVIDENCE  # the old file had none
 
     def test_rupauls_drag_race_uk_s08e04_keeps_its_intro_across_a_408_ms_change(self, tmp_path, store):
@@ -458,6 +461,7 @@ class TestPipeline:
         old = _episode(tmp_path, OLD_NAME)
         ctx = _ctx(store, _registry(old, ServerType.PLEX), settings_raw=NOTHING)
         _run(ctx, old, {"plex-1": ready_publisher()}, probe=_probe(chapters, 4_086_040), stage="process")
+        store.set_publish_state(store.get_file(old).id, "plex-1", item_id="item-plex-1", markers=[], status="written")
         os.remove(old)
         new = _episode(tmp_path, NEW_NAME)
         ctx = _ctx(store, _registry(new, ServerType.PLEX), settings_raw=NOTHING)
@@ -510,6 +514,7 @@ class TestPipeline:
         old = _episode(tmp_path, OLD_NAME)
         ctx = _ctx(store, _registry(old, ServerType.PLEX), settings_raw=NOTHING)
         _run(ctx, old, {"plex-1": ready_publisher()}, probe=_probe(OPENING), stage="process")
+        store.set_publish_state(store.get_file(old).id, "plex-1", item_id="item-plex-1", markers=[], status="written")
         new = _episode(tmp_path, NEW_NAME)  # the old one stays: two versions of one item
         _run(_ctx(store, _registry(new, ServerType.PLEX), settings_raw=NOTHING), new, {"plex-1": ready_publisher()},
              probe=_probe(), stage="process")  # fmt: skip
@@ -690,11 +695,10 @@ class TestContentDetectorsReadingTheNewFile:
 
 
 class TestCantTell:
-    """A check that can't answer now (a disk that doesn't answer in time, a server that can't name the item) never takes
-    a carried marker off the servers."""
+    """An unavailable disk or server does not erase an existing carried proposal."""
 
     @pytest.mark.parametrize("failure", ["disk", "server"])
-    def test_a_carried_intro_stays_published_when_the_replaced_file_cant_be_checked(self, tmp_path, store, failure):
+    def test_a_carried_intro_stays_when_the_replaced_file_cant_be_checked(self, tmp_path, store, failure):
         _first, _out, rec = _replace(tmp_path, store)
         plex = ready_publisher()
         new = rec.canonical_path
@@ -705,7 +709,7 @@ class TestCantTell:
             _run(_ctx(store, reg, settings_raw=NOTHING, force=True), new, {"plex-1": plex}, probe=_probe(),
                  stage="process")  # fmt: skip
         assert store.get_markers(rec.id)[T.INTRO] == Marker(T.INTRO, *INTRO, (co.CARRIED_OVER,))
-        assert all(call.args[1] for call in plex.write.call_args_list)  # never written empty
+        plex.write.assert_not_called()
 
     def test_the_replaced_files_disk_answers_in_three_ways(self, tmp_path, store):
         path = _episode(tmp_path, OLD_NAME)

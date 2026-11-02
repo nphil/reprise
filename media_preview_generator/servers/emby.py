@@ -259,6 +259,7 @@ class EmbyServer(EmbyApiClient):
             requests.RequestException: Transport failure.
         """
         from ..reprise.review import reject_legacy_publication
+
         reject_legacy_publication()
         body = {
             "IntroStartTicks": intro_start_ticks,
@@ -282,6 +283,7 @@ class EmbyServer(EmbyApiClient):
             requests.RequestException: Transport failure.
         """
         from ..reprise.review import reject_legacy_publication
+
         reject_legacy_publication()
         return self._request("DELETE", self._markers_path(item_id))
 

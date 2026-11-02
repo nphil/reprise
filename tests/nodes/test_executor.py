@@ -1508,7 +1508,8 @@ class TestAppStop:
     """A stopping app frees its tasks on nodes, so none runs on beside the ones its revived job starts."""
 
     def test_only_tasks_still_running_are_freed_and_a_node_that_does_not_answer_holds_up_no_other(self, media):
-        release = threading.Event()
+        release, blocked, returned, awake_freed = (threading.Event() for _ in range(4))
+        freed = []
 
         class Node(ScriptedClient):
             def __init__(self, hangs: bool) -> None:
@@ -1519,8 +1520,11 @@ class TestAppStop:
             def delete_task(self, task_id: str, *, read_timeout: float | None = None) -> None:
                 self.timeouts.append(read_timeout)
                 if self.hangs:
-                    release.wait(5)
+                    blocked.set()
+                    release.wait(10)
                 super().delete_task(task_id, read_timeout=read_timeout)
+                if not self.hangs:
+                    awake_freed.set()
 
         asleep, awake, done = Node(hangs=True), Node(hangs=False), ScriptedClient([finished(protocol.STATUS_DONE)])
         set_registry(FakeRegistry({"asleep": asleep, "awake": awake, "done": done}))
@@ -1528,19 +1532,29 @@ class TestAppStop:
         workers = [threading.Thread(target=_run_on, args=(name, media), daemon=True) for name in ("asleep", "awake")]
         for worker in workers:
             worker.start()
+        canceller = None
         try:
             assert _wait_until(lambda: asleep.named("poll") and awake.named("poll"))
 
-            began = time.monotonic()
-            freed = executor.cancel_running_tasks(budget_s=0.3)
-            took = time.monotonic() - began
+            def cancel():
+                try:
+                    freed.append(executor.cancel_running_tasks(budget_s=0.3))
+                finally:
+                    returned.set()
 
-            assert freed == 2 and took < 1.0
+            canceller = threading.Thread(target=cancel, daemon=True)
+            canceller.start()
+            assert blocked.wait(5), "the unresponsive node was not contacted"
+            assert awake_freed.wait(5), "the responsive node was held up by the blocked node"
+            assert returned.wait(5), "cancellation waited for the unresponsive node"
+            assert freed == [2]
             assert awake.deleted == ["t1"] and awake.timeouts == [0.3]
             assert asleep.timeouts == [0.3] and asleep.deleted == []
             assert done.deleted == ["t1"]  # its own delete when it finished; nothing more
         finally:
             release.set()
+            if canceller is not None:
+                canceller.join(5)
             for worker in workers:
                 worker.join(5)
         assert executor.cancel_running_tasks() == 0

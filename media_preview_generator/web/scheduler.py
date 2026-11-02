@@ -145,8 +145,8 @@ def normalize_schedule_config(config: dict | None) -> dict:
     """A schedule config in the current shape: ``job_kinds`` (which jobs) and ``job_type`` (which files).
 
     Legacy configs carried one kind in ``job_type``: ``intro_credits`` becomes ``job_kinds=["intro_credits"]`` over the
-    whole library; ``recently_added`` gets every kind (its follow-ups already ran for all of them); anything else is
-    previews. The ``reconcile`` key (Check servers schedules, now automatic) is dropped.
+    whole library; ``recently_added`` keeps its historical preview, intro/credits and loudness follow-ups. Reprise
+    remains opt-in. The ``reconcile`` key (Check servers schedules, now automatic) is dropped.
 
     Args:
         config: A schedule's config, current or legacy; None = empty.
@@ -157,7 +157,7 @@ def normalize_schedule_config(config: dict | None) -> dict:
     Raises:
         ValueError: ``job_kinds`` is empty, not a list, or names an unknown kind.
     """
-    from ..job_kinds import JOB_KIND_INTRO_CREDITS, JOB_KIND_PREVIEWS, JOB_KINDS
+    from ..job_kinds import JOB_KIND_INTRO_CREDITS, JOB_KIND_LOUDNESS, JOB_KIND_PREVIEWS, JOB_KINDS
 
     result = dict(config or {})
     result.pop("reconcile", None)
@@ -173,7 +173,7 @@ def normalize_schedule_config(config: dict | None) -> dict:
     elif job_type == "intro_credits":
         result["job_kinds"] = [JOB_KIND_INTRO_CREDITS]
     elif job_type == "recently_added":
-        result["job_kinds"] = list(JOB_KINDS)
+        result["job_kinds"] = [JOB_KIND_PREVIEWS, JOB_KIND_INTRO_CREDITS, JOB_KIND_LOUDNESS]
     else:
         result["job_kinds"] = [JOB_KIND_PREVIEWS]
     result["job_type"] = "recently_added" if job_type == "recently_added" else "full_library"
@@ -231,17 +231,18 @@ def execute_schedule_stop(schedule_id: str) -> None:
 
     job_manager = get_job_manager()
     paused_count = 0
-    for job in job_manager.get_all_jobs():
-        if job.parent_schedule_id != schedule_id:
-            continue
-        if job.status not in (JobStatus.PENDING, JobStatus.RUNNING):
-            continue
-        if job_manager.request_pause(job.id, by_schedule=True):
-            job_manager.add_log(
-                job.id,
-                f"INFO - Paused by schedule {name!r} stop time ({stop_time})",
-            )
-            paused_count += 1
+    with _SCHEDULE_STOP_LOCK:
+        for job in job_manager.get_all_jobs():
+            if job.parent_schedule_id != schedule_id:
+                continue
+            if job.status not in (JobStatus.PENDING, JobStatus.RUNNING):
+                continue
+            if job_manager.request_pause(job.id, by_schedule=True):
+                job_manager.add_log(
+                    job.id,
+                    f"INFO - Paused by schedule {name!r} stop time ({stop_time})",
+                )
+                paused_count += 1
 
     if paused_count:
         logger.info(
@@ -261,6 +262,7 @@ def execute_schedule_stop(schedule_id: str) -> None:
 # Serialises a Find markers tick's "unfinished job?" check with its job's creation (Run now beside a start tick).
 _FIND_MARKERS_TICK_LOCK = threading.Lock()
 _FULL_LIBRARY_TICK_LOCK = threading.Lock()
+_SCHEDULE_STOP_LOCK = threading.Lock()
 
 
 def _resumed_kinds(config: dict | None) -> set[str]:
@@ -782,15 +784,10 @@ def execute_scheduled_job(
 
     ``config["job_kinds"]`` says which jobs to run and ``config["job_type"]`` which files:
 
-    * ``"recently_added"`` — one Recently Added scan over the schedule's
-      libraries (or all libraries when none specified), using
-      ``config["lookback_hours"]`` (default 1). It generates previews only
-      when Previews is ticked, then queues the ticked follow-up kinds for the
-      new files.
-    * ``"full_library"`` (or missing) — one job per ticked kind, all queued on
-      this tick: previews via ``manager.run_job_callback``, Intro & Credits
-      and loudness via their own job creators. One kind failing doesn't stop
-      the others.
+    * ``"recently_added"`` — scans the selected libraries, then queues the selected follow-up kinds for the new files.
+      Previews are generated only when selected. Multi-server picks are scanned separately per server.
+    * ``"full_library"`` (or missing) — queues each selected kind. Reprise creates one discovery-and-analysis job
+      per selected Plex library; a failure to start one kind does not prevent the others.
 
     Legacy configs are normalised first (``normalize_schedule_config``).
 
@@ -821,7 +818,7 @@ def execute_scheduled_job(
     else:
         library_ids = []
 
-    from ..job_kinds import JOB_KIND_INTRO_CREDITS, JOB_KIND_LOUDNESS, JOB_KIND_PREVIEWS
+    from ..job_kinds import JOB_KIND_INTRO_CREDITS, JOB_KIND_LOUDNESS, JOB_KIND_PREVIEWS, JOB_KIND_REPRISE
     from ..scan_filters import pick_filter_config
 
     if is_retired_check_servers_config(config):
@@ -960,16 +957,27 @@ def execute_scheduled_job(
             from .routes.job_runner import _start_recently_added_job_async
 
             display_label = library_name or "all libraries"
-            _start_recently_added_job_async(
-                schedule_id=schedule_id,
-                server_id=server_id,
-                library_ids=library_ids or None,
-                lookback_hours=lookback,
-                library_name=f"Recently added: {display_label}",
-                priority=priority,
-                follow_up_kinds=[kind for kind in job_kinds if kind != JOB_KIND_PREVIEWS],
-                make_previews=JOB_KIND_PREVIEWS in job_kinds,
-            )
+            if not pairs and library_ids and not server_id:
+                server_id = _pin_server_for_libraries(schedule_id, "Recently added", library_ids, server_id)
+                if not server_id:
+                    return
+            scopes = [(server_id, library_ids or None)]
+            if pairs:
+                by_server: dict[str, list[str]] = {}
+                for pair in pairs:
+                    by_server.setdefault(pair["server_id"], []).append(pair["library_id"])
+                scopes = list(by_server.items())
+            for scope_server, scope_ids in scopes:
+                _start_recently_added_job_async(
+                    schedule_id=schedule_id,
+                    server_id=scope_server,
+                    library_ids=scope_ids,
+                    lookback_hours=lookback,
+                    library_name=f"Recently added: {display_label}",
+                    priority=priority,
+                    follow_up_kinds=[kind for kind in job_kinds if kind != JOB_KIND_PREVIEWS],
+                    make_previews=JOB_KIND_PREVIEWS in job_kinds,
+                )
             manager._update_last_run(schedule_id)
         except Exception:
             logger.exception(
@@ -1015,6 +1023,8 @@ def execute_scheduled_job(
                     pairs=pairs,
                     sort_by=cfg.get("sort_by"),
                 )
+            elif kind == JOB_KIND_REPRISE:
+                queued |= _start_scheduled_reprise_job(schedule_id, library_ids, priority, server_id, pairs)
         except Exception:
             logger.exception(
                 "Scheduled {} job for {} could not start. It will retry on its next scheduled tick.",
@@ -1023,6 +1033,51 @@ def execute_scheduled_job(
             )
     if queued:
         manager._update_last_run(schedule_id)
+
+
+def _start_scheduled_reprise_job(schedule_id, library_ids, priority, server_id, pairs):
+    """Queue discovery and analysis for each selected, enabled Plex library."""
+    from ..job_kinds import JOB_KIND_REPRISE
+
+    with _FIND_MARKERS_TICK_LOCK:
+        if _unfinished_schedule_job(schedule_id, JOB_KIND_REPRISE) is not None:
+            logger.info("Schedule {}: Reprise work from an earlier run is unfinished", schedule_id)
+            return False
+        return _enqueue_scheduled_reprise_libraries(schedule_id, library_ids, priority, server_id, pairs)
+
+
+def _enqueue_scheduled_reprise_libraries(schedule_id, library_ids, priority, server_id, pairs):
+    from ..reprise.service import get_service
+
+    service = get_service()
+    if not pairs and library_ids and not server_id:
+        server_id = _pin_server_for_libraries(schedule_id, "Reprise", library_ids, server_id)
+        if not server_id:
+            return False
+    picks = {(p["server_id"], str(p["library_id"])) for p in pairs}
+    queued = False
+    for cfg in service.registry.configs():
+        if not cfg.enabled or getattr(cfg.type, "value", cfg.type) != "plex":
+            continue
+        if not pairs and server_id and cfg.id != server_id:
+            continue
+        for library in cfg.libraries:
+            if not library.enabled:
+                continue
+            if picks and (cfg.id, str(library.id)) not in picks:
+                continue
+            if not pairs and library_ids and str(library.id) not in library_ids:
+                continue
+            try:
+                service.enqueue_library_analysis(
+                    cfg.id, str(library.id), parent_schedule_id=schedule_id, priority=priority
+                )
+                queued = True
+            except Exception:
+                logger.exception("Schedule {}: Reprise could not start for {} on {}", schedule_id, library.id, cfg.id)
+    if not queued:
+        logger.warning("Schedule {}: no enabled Plex libraries matched Reprise", schedule_id)
+    return queued
 
 
 def _start_scheduled_previews_job(

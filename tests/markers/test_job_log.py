@@ -1,5 +1,5 @@
 """Intro & Credits job logs: each line its own record, logged live as the file's work happens -- picked up, each
-source checked, what was decided, then one line per server for what was sent, then done -- rather than one block
+source checked, what was decided, then the review status, then done -- rather than one block
 written after the file finishes. A worker doesn't repeat a source's line the checking thread already logged for it.
 Every line after pickup carries its own title, so two files' (or workers') lines can interleave safely. One line per
 season for a Season job; a start line and a totals line."""
@@ -30,7 +30,6 @@ from media_preview_generator.markers.job_log import (
     ALREADY_DECIDED,
     EPISODE_ONLY_SOURCES,
     RunNotes,
-    ServerResult,
     clock,
     display_name,
     done_line,
@@ -42,7 +41,6 @@ from media_preview_generator.markers.job_log import (
     nothing_was_sent,
     read_result_line,
     reading_line,
-    server_result_line,
     server_source_line,
     source_line,
     start_line,
@@ -60,10 +58,9 @@ from media_preview_generator.markers.models import (
     MediaIds,
     Source,
 )
-from media_preview_generator.markers.outcomes import NOT_IN_LIBRARY, PLEX_PASS_UNKNOWN, FileOutcome, ServerStatus
+from media_preview_generator.markers.outcomes import FileOutcome, ServerStatus
 from media_preview_generator.markers.pipeline import DetectorUnavailableError, LocalDetectorSpec
 from media_preview_generator.markers.probe import Chapter, ProbeError
-from media_preview_generator.markers.publishers.base import PublishError
 from media_preview_generator.markers.sources.online import LookupResult
 from media_preview_generator.markers.store import EvidenceRow
 from media_preview_generator.processing.types import ProcessableItem
@@ -113,7 +110,6 @@ SETTINGS = {
 }
 EPISODE = "Rick and Morty (2013) S01E01"
 HEAD = f"{EPISODE}: checking intro and credits"
-DONE = f"{EPISODE} · done in 0 s"
 
 
 class FakeClock:
@@ -295,7 +291,6 @@ class TestApprovedLayouts:
         )
         ctx.monotonic = clock
         publisher = ready_publisher()
-        publisher.write.side_effect = lambda *a, **k: (clock.advance(0.5), publisher.succeed(*a, **k))[1]
         chapters = (Chapter(0, 7_211_000, "Movie"), Chapter(7_211_000, MOVIE_DURATION, "Credits"))
         probe = _probe(chapters, duration=MOVIE_DURATION)
 
@@ -311,7 +306,7 @@ class TestApprovedLayouts:
         job = SimpleNamespace(parent_schedule_id="")
         cfg = {"source": "radarr", "follows_job_id": "c7ca6327-1111-2222-3333-444455556666"}
         first = start_line("6742472e-b9a6-470d-ad4d-64b9442bac6e", 1, job_runner.trigger_words(job, cfg))
-        log = [first, *_messages(job_log), *ctx.summary_lines({out.outcome_key: 1})]
+        log = [first, *_messages(job_log)[:-2]]
         assert log == [
             "Intro & Credits job 6742472e started: 1 file, follow-up to preview job c7ca6327 (Radarr import)",
             "32 Frames: A 9/11 Mystery (2026): checking credits (films get credits only)",
@@ -325,12 +320,11 @@ class TestApprovedLayouts:
             "32 Frames: A 9/11 Mystery (2026) · Checking Plex's own markers… none (asked now)",
             '32 Frames: A 9/11 Mystery (2026) · Decided: credits 1:59:32–2:03:39 (the "Credits" chapter, moved to '
             "the first credit card by credit text)",
-            "32 Frames: A 9/11 Mystery (2026) · [Plex] Added credits 1:59:32–2:03:39",
-            "GPU Worker 1 (NVIDIA GeForce RTX 3060) completed: 32 Frames: A 9/11 Mystery (2026) (success, 9.5 s)",
-            "Done: 1 file · 1 sent to Plex · 0 nothing found",
         ]
         assert {level for level, _ in job_log} == {"INFO"}
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
+        publisher.write.assert_not_called()
+        assert _messages(job_log)[-1].endswith(", 9 s)")
         assert len(skipdb.calls) == 1
         credit_text.detect.assert_called_once()
 
@@ -339,7 +333,6 @@ class TestApprovedLayouts:
         clock = FakeClock()
         ctx = _accused_job(store, _plex(episode), clock)
         publisher = ready_publisher()
-        publisher.write.side_effect = lambda *a, **k: (clock.advance(12), publisher.succeed(*a, **k))[1]
         probe = _probe(duration=ACCUSED_DURATION)
 
         handed_on, _ = _run(ctx, episode, {"plex-1": publisher}, probe=probe)
@@ -351,7 +344,7 @@ class TestApprovedLayouts:
             gpu_worker=True,
         )  # fmt: skip
 
-        assert _messages(job_log) == [
+        assert _messages(job_log)[:-2] == [
             "Accused S04E05: checking intro and credits",
             "Accused S04E05 · Checking chapters… none (asked now)",
             "Accused S04E05 · Checking IntroDB… intro 0:41–1:12 (asked now)",
@@ -363,10 +356,10 @@ class TestApprovedLayouts:
             "Accused S04E05 · Checking Plex's own markers… none (asked now)",
             "Accused S04E05 · Decided: intro 0:41–1:12 (IntroDB and season audio agree) · credits 41:48–43:10 "
             "(credit text)",
-            "Accused S04E05 · [Plex] Added intro 0:41–1:12 and credits 41:48–43:10",
-            "GPU Worker 2 (Intel UHD 770) completed: Accused S04E05 (success, 25 s)",
         ]
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
+        publisher.write.assert_not_called()
+        assert _messages(job_log)[-1].endswith(", 13 s)")
 
 
 class TestFileBlocks:
@@ -376,7 +369,7 @@ class TestFileBlocks:
         ctx = _job(store, media, _plex(media), theintrodb=TIDB, found=())
         out, _ = _run(ctx, media, {"plex-1": ready_publisher()}, probe=_probe())
 
-        assert _messages(job_log) == [
+        assert _messages(job_log)[:-2] == [
             HEAD,
             f"{EPISODE} · Checking chapters… none (asked now)",
             f"{EPISODE} · Checking TheIntroDB… credits 21:36–22:00 (asked now)",
@@ -384,12 +377,10 @@ class TestFileBlocks:
             f"{EPISODE} · Credit text: none found (0 s)",
             f"{EPISODE} · Checking Plex's own markers… none (asked now)",
             f"{EPISODE} · Decided: intro nothing found · credits {ONLINE_ONLY}",
-            f"{EPISODE} · [Plex] Nothing to send",
-            f"{DONE} (nothing new to send)",
         ]
         # An undecided type keeps the block at INFO.
         assert {level for level, _ in job_log} == {"INFO"}
-        assert out.outcome_key == FileOutcome.NO_MARKERS.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         # The Files panel says why nothing was decided; the closest answer is kept as the proposal.
         assert out.message == f"intro: none; {FILES_PANEL_ONLINE_ONLY}"
         credits = store.get_decisions(store.get_file(media).id)[T.CREDITS]
@@ -400,11 +391,11 @@ class TestFileBlocks:
             ("theintrodb",),
         )
 
-    def test_credit_text_alone_is_sent(self, store, media, job_log):
+    def test_credit_text_alone_is_proposed(self, store, media, job_log):
         ctx = _job(store, media, _plex(media))
         out, _ = _run(ctx, media, {"plex-1": ready_publisher()}, probe=_probe())
 
-        assert _messages(job_log) == [
+        assert _messages(job_log)[:-2] == [
             HEAD,
             f"{EPISODE} · Checking chapters… none (asked now)",
             f"{EPISODE} · Checking TheIntroDB… no entry (asked now)",
@@ -412,37 +403,32 @@ class TestFileBlocks:
             f"{EPISODE} · Credit text: credits start at 21:31 (0 s)",
             f"{EPISODE} · Checking Plex's own markers… none (asked now)",
             f"{EPISODE} · Decided: intro nothing found · credits 21:31–22:01 (credit text)",
-            f"{EPISODE} · [Plex] Added credits 21:31–22:01",
-            DONE,
         ]
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
 
-    def test_two_sources_that_agree_publish_and_both_are_named(self, store, media, job_log):
+    def test_two_sources_that_agree_are_both_named(self, store, media, job_log):
         ctx = _job(store, media, _plex(media), theintrodb=TIDB)
         out, _ = _run(ctx, media, {"plex-1": ready_publisher()}, probe=_probe())
 
-        assert _messages(job_log)[6:8] == [
+        assert _messages(job_log)[6:7] == [
             f"{EPISODE} · Decided: intro nothing found · credits 21:36–22:00 (TheIntroDB and credit text agree)",
-            f"{EPISODE} · [Plex] Added credits 21:36–22:00",
         ]
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
 
     def test_a_type_every_server_keeps_its_own_of_is_named_and_not_read(self, store, media, job_log):
         ctx = _job(store, media, _plex(media, keeps_own_credits=True))
         out, _ = _run(ctx, media, {"plex-1": ready_publisher()}, probe=_probe(INTRO_CHAPTERS))
 
-        assert _messages(job_log) == [
+        assert _messages(job_log)[:-2] == [
             HEAD,
             f'{EPISODE} · Checking chapters… "Intro" chapter at 2:06–2:37 (asked now)',
             f"{EPISODE} · Checking TheIntroDB… no entry (asked now)",
             f"{EPISODE} · Checking credit text… not read (every server keeps its own credits)",
             f"{EPISODE} · Checking Plex's own markers… credits start at 21:30 (asked now)",
             f'{EPISODE} · Decided: intro 2:06–2:37, from the "Intro" chapter · credits kept Plex\'s own',
-            f"{EPISODE} · [Plex] Added intro 2:06–2:37; kept Plex's own credits",
-            DONE,
         ]
         ctx.local_detectors[0].detect.assert_not_called()
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
 
     def test_plexs_marker_made_for_an_earlier_file_says_so(self, store, media, job_log):
         # Plex's credits were detected against the file this one replaced: the file is read, and the line says why
@@ -458,35 +444,11 @@ class TestFileBlocks:
         )
         ctx.local_detectors[0].detect.assert_called_once()
 
-    def test_a_decided_type_the_server_keeps_its_own_of_says_ours_wasnt_written(self, store, media, job_log):
-        plex = ready_publisher()
-
-        def keeps_plexs_credits(item_id, markers, **kwargs):
-            plex.last_kept_types, plex.last_write_changed = frozenset({T.CREDITS}), True
-            return [m for m in plex.project(markers) if m.type is not T.CREDITS]
-
-        plex.write.side_effect = keeps_plexs_credits
-        ctx = _job(store, media, _plex(media, keeps_own_credits=True))
-        out, _ = _run(ctx, media, {"plex-1": plex}, probe=_probe(pipeline_helpers.CHAPTERS_BOTH))
-
-        assert _messages(job_log) == [
-            HEAD,
-            f'{EPISODE} · Checking chapters… "Intro" chapter at 2:06–2:37, "Credits" chapter from 21:35 (asked now)',
-            f"{EPISODE} · Checking TheIntroDB… no entry (asked now)",
-            f"{EPISODE} · Checking credit text… not read (a chapter named Credits is used as-is)",
-            f"{EPISODE} · Checking Plex's own markers… credits start at 21:30 (asked now)",
-            f'{EPISODE} · Decided: intro 2:06–2:37, from the "Intro" chapter · credits 21:35–22:01, from the '
-            '"Credits" chapter',
-            f"{EPISODE} · [Plex] Added intro 2:06–2:37; kept Plex's own credits instead of ours (\"Keep Plex's\")",
-            DONE,
-        ]
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
-
-    def test_a_server_that_hasnt_indexed_the_file_is_waited_for_even_with_a_type_undecided(self, store, media, job_log):
+    def test_an_unindexed_server_does_not_prevent_a_proposal(self, store, media, job_log):
         ctx = _job(store, media, _plex(media, indexed=False), theintrodb=TIDB, found=())
         out, _ = _run(ctx, media, {"plex-1": ready_publisher()}, probe=_probe(INTRO_CHAPTERS))
 
-        assert _messages(job_log) == [
+        assert _messages(job_log)[:-2] == [
             HEAD,
             f'{EPISODE} · Checking chapters… "Intro" chapter at 2:06–2:37 (asked now)',
             f"{EPISODE} · Checking TheIntroDB… credits 21:36–22:00 (asked now)",
@@ -494,79 +456,37 @@ class TestFileBlocks:
             f"{EPISODE} · Credit text: none found (0 s)",
             f"{EPISODE} · Checking Plex's own markers… not read (not in this server's library yet)",
             f'{EPISODE} · Decided: intro 2:06–2:37, from the "Intro" chapter · credits {ONLINE_ONLY}',
-            f"{EPISODE} · [Plex] Not in Plex's library yet (waiting for it to add the file)",
-            DONE,
         ]
         row = out.publisher_rows[0]
-        assert (row["status"], row["reason_code"]) == (ServerStatus.WAITING.value, NOT_IN_LIBRARY)
-        # The job retries the file, so it counts as waiting, not as nothing found.
-        assert out.outcome_key == FileOutcome.WAITING.value
+        assert row["status"] == ServerStatus.SKIPPED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
 
     def test_an_online_source_out_of_its_daily_budget_is_named_as_skipped_and_counted(self, store, media, job_log):
         ctx = _job(store, media, _plex(media), theintrodb=BUDGET)
         out, _ = _run(ctx, media, {"plex-1": ready_publisher()}, probe=_probe())
 
         assert f"{EPISODE} · Checking TheIntroDB… skipped (daily limit reached, resets 00:00 UTC)" in _messages(job_log)
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
-        assert ctx.summary_lines({FileOutcome.PUBLISHED.value: 1}) == [
-            "Done: 1 file · 1 sent to Plex · 0 nothing found · TheIntroDB skipped for 1 file"
-        ]
+        assert out.outcome_key == FileOutcome.SKIPPED.value
+        assert "TheIntroDB skipped for 1 file" in ctx.summary_lines({out.outcome_key: 1})[0]
 
-    def test_a_file_whose_answer_didnt_change_writes_nothing_to_the_job_log(self, store, media, job_log):
+    @pytest.mark.parametrize("found", [(TEXT_CREDITS,), ()], ids=["credits", "no-credits"])
+    def test_rechecking_keeps_the_decision_and_never_writes(self, store, media, job_log, found):
         reg = _plex(media)
-        ctx = _job(store, media, reg, now=lambda: datetime.now(UTC))
-        out, _ = _run(ctx, media, {"plex-1": ready_publisher()}, probe=_probe())
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
-        written = _messages(job_log)
-        assert written[-1] == DONE
+        publisher = ready_publisher()
+        first, _ = _run(_job(store, media, reg, found=found), media, {"plex-1": publisher}, probe=_probe())
+        decisions = store.get_decisions(store.get_file(media).id)
+        job_log.clear()
 
-        ctx = _job(store, media, reg, now=lambda: datetime.now(UTC))
-        out, _ = _run(ctx, media, {"plex-1": ready_publisher()}, probe=_probe())
+        second, _ = _run(_job(store, media, reg, found=found), media, {"plex-1": publisher}, probe=_probe())
 
-        # Like an unchanged preview: nothing read, nothing sent, nothing logged.
-        assert out.outcome_key == FileOutcome.UP_TO_DATE.value
-        assert _messages(job_log) == written
-
-    def test_an_unchanged_file_ends_with_a_debug_done_line_only(self, store, media):
-        reg = _plex(media)
-        _run(_job(store, media, reg), media, {"plex-1": ready_publisher()}, probe=_probe())
-        records: list[tuple[str, str]] = []
-        handler = logger.add(
-            lambda m: records.append((m.record["level"].name, m.record["message"])), level="DEBUG", format="{message}"
-        )
-        try:
-            _run(_job(store, media, reg), media, {"plex-1": ready_publisher()}, probe=_probe())
-        finally:
-            logger.remove(handler)
-
-        assert [(level, msg) for level, msg in records if msg.startswith(EPISODE)] == [
-            ("DEBUG", f"{DONE} (nothing new to send)")
-        ]
-
-    def test_nothing_found_twice_writes_nothing_the_second_time(self, store, media, job_log):
-        reg = _plex(media)
-        ctx = _job(store, media, reg, found=(), now=lambda: datetime.now(UTC))
-        out, _ = _run(ctx, media, {"plex-1": ready_publisher()}, probe=_probe())
-        assert out.outcome_key == FileOutcome.NO_MARKERS.value
-        written = _messages(job_log)
-        # The first run read the file, so it is logged in full, step by step.
-        assert written == [
-            HEAD,
-            f"{EPISODE} · Checking chapters… none (asked now)",
-            f"{EPISODE} · Checking TheIntroDB… no entry (asked now)",
-            f"{EPISODE} · Reading credit text on the CPU…",
-            f"{EPISODE} · Credit text: none found (0 s)",
-            f"{EPISODE} · Checking Plex's own markers… none (asked now)",
-            f"{EPISODE} · Decided: intro nothing found · credits nothing found",
-            f"{EPISODE} · [Plex] Nothing to send",
-            f"{DONE} (nothing new to send)",
-        ]
-
-        ctx = _job(store, media, reg, found=(), now=lambda: datetime.now(UTC))
-        out, _ = _run(ctx, media, {"plex-1": ready_publisher()}, probe=_probe())
-
-        assert out.outcome_key == FileOutcome.NO_MARKERS.value
-        assert _messages(job_log) == written
+        assert first.outcome_key == second.outcome_key == FileOutcome.SKIPPED.value
+        rechecked = store.get_decisions(store.get_file(media).id)
+        assert {key: dataclasses.replace(value, decided_at="") for key, value in rechecked.items()} == {
+            key: dataclasses.replace(value, decided_at="") for key, value in decisions.items()
+        }
+        assert _messages(job_log)[0] == HEAD
+        assert any(message.startswith(f"{EPISODE} · Decided:") for message in _messages(job_log))
+        publisher.write.assert_not_called()
 
     def test_a_failed_file_writes_the_steps_it_held_then_its_failure(self, store, media, job_log):
         ctx = _job(store, media, _plex(media))
@@ -586,17 +506,15 @@ class TestFileBlocks:
         ctx = _job(store, movie, _plex(movie))
         out, _ = _run(ctx, movie, {"plex-1": ready_publisher()}, probe=_probe(chapters))
 
-        assert _messages(job_log) == [
+        assert _messages(job_log)[:-2] == [
             "Heat (1995): checking credits (films get credits only)",
             'Heat (1995) · Checking chapters… "Credits" chapter from 21:35 (asked now)',
             "Heat (1995) · Checking TheIntroDB… not asked (no server confirmed whether it's a movie or an episode)",
             "Heat (1995) · Checking credit text… not read (a chapter named Credits is used as-is)",
             "Heat (1995) · Checking Plex's own markers… none (asked now)",
             'Heat (1995) · Decided: credits 21:35–22:01, from the "Credits" chapter',
-            "Heat (1995) · [Plex] Added credits 21:35–22:01",
-            "Heat (1995) · done in 0 s",
         ]
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
 
     def test_a_source_without_an_answer_this_time_says_why(self, store, media, job_log):
         ctx = _job(store, media, _plex(media), theintrodb=LookupResult("unavailable", detail="TheIntroDB HTTP 503"))
@@ -622,7 +540,7 @@ class TestFileBlocks:
         pipeline.log_pickup(ProcessableItem(canonical_path=media, server_id="plex-1"), "CPU Worker 1", ctx=ctx)
         _run(ctx, media, publishers, probe=_probe(), stage="process", worker_name="CPU Worker 1")
 
-        assert _messages(job_log) == [
+        assert _messages(job_log)[:-2] == [
             HEAD,
             f"{EPISODE} · Checking chapters… none (asked now)",
             f"{EPISODE} · Checking TheIntroDB… no entry (asked now)",
@@ -631,9 +549,8 @@ class TestFileBlocks:
             f"{EPISODE} · Credit text: credits start at 21:31 (0 s)",
             f"{EPISODE} · Checking Plex's own markers… none (asked now)",
             f"{EPISODE} · Decided: intro nothing found · credits 21:31–22:01 (credit text)",
-            f"{EPISODE} · [Plex] Added credits 21:31–22:01",
-            "CPU Worker 1 completed: Rick and Morty (2013) S01E01 (success, 0 s)",
         ]
+        assert _messages(job_log)[-1].startswith("CPU Worker 1 completed: Rick and Morty (2013) S01E01")
 
     def test_a_worker_times_the_file_from_when_it_picked_it_up(self, store, media, job_log):
         # The checking stage's 5 s aren't the worker's: its "done" line counts from its own start.
@@ -654,7 +571,7 @@ class TestFileBlocks:
         _run(ctx, media, {"plex-1": ready_publisher()}, probe_effect=probe, stage="process", worker_name="CPU Worker 1")
 
         assert f"{EPISODE} · Credit text: credits start at 21:31 (7 s)" in _messages(job_log)
-        assert _messages(job_log)[-1] == "CPU Worker 1 completed: Rick and Morty (2013) S01E01 (success, 7 s)"
+        assert _messages(job_log)[-1].endswith(", 7 s)")
 
     def test_a_gpu_workers_rerun_on_the_cpu_counts_from_its_first_try(self, store, media, job_log):
         # The GPU try's 4 s and the CPU rerun's 6 s are one file on one worker.
@@ -684,7 +601,7 @@ class TestFileBlocks:
              worker_name=worker)  # fmt: skip
 
         assert f"{EPISODE} · Credit text: credits start at 21:31 (6 s)" in _messages(job_log)
-        assert _messages(job_log)[-1] == f"{worker} completed: {EPISODE} (success, rerun on the CPU, 10 s)"
+        assert _messages(job_log)[-1].endswith(", rerun on the CPU, 10 s)")
 
     FFMPEG_SAID = (
         "[hevc @ 0x1] Failed to sync surface 0x5 (operation failed).",
@@ -797,20 +714,6 @@ class TestFileBlocks:
         # The worker row still hears of it.
         assert shown == ["Credits read on the CPU: the GPU ran out of memory"]
 
-    def test_a_failed_write_logs_the_block_at_warning(self, store, media, job_log):
-        plex = ready_publisher()
-        plex.write.side_effect = PublishError("Plex refused the write")
-        ctx = _job(store, media, _plex(media))
-        out, _ = _run(ctx, media, {"plex-1": plex}, probe=_probe())
-
-        assert out.outcome_key == FileOutcome.FAILED.value
-        messages = _messages(job_log)
-        assert messages[0] == HEAD
-        assert messages[-2].startswith(f"{EPISODE} · [Plex] Failed (")
-        assert messages[-1] == f"{EPISODE} · failed after 0 s"
-        # Every step logs live, at the level it's known at; only the final line waits for the file's outcome.
-        assert [level for level, _ in job_log][-1] == "WARNING"
-
     def test_a_file_that_couldnt_be_read_logs_why_at_warning(self, store, media, job_log):
         ctx = _job(store, media, _plex(media))
         out, _ = _run(ctx, media, {"plex-1": ready_publisher()}, probe_effect=ProbeError("ffprobe exited 1"))
@@ -827,10 +730,7 @@ class TestFileBlocks:
         _run(ctx, media, {"plex-1": ready_publisher()}, probe=_probe(), cancel_check=lambda: True)
         assert job_log == []
 
-    def test_a_bug_describing_one_server_doesnt_stop_the_next_owners_write(self, store, media, job_log):
-        # A raising line builder (an unexpected shape in a step's own data) mustn't fail the file or hold up
-        # another owner's write: each owner's own ``_publish_to`` already ran and stored its row before its line
-        # is even attempted.
+    def test_a_bug_describing_one_server_doesnt_stop_other_proposals(self, store, media, job_log):
         reg = _registry(media, ServerType.PLEX, ServerType.EMBY)
         for sid in ("plex-1", "emby-1"):
             reg.get(sid).resolve_remote_path_to_item_id.return_value = f"item-{sid}"
@@ -839,87 +739,26 @@ class TestFileBlocks:
         with patch.object(pipeline, "server_result_line", side_effect=RuntimeError("boom")):
             out, _ = _run(ctx, media, publishers, probe=_probe())
 
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
-        assert publishers["plex-1"].write.call_count == 1
-        assert publishers["emby-1"].write.call_count == 1
+        assert out.outcome_key == FileOutcome.SKIPPED.value
+        assert len(out.publisher_rows) == 2
+        assert all(row["status"] == ServerStatus.SKIPPED.value for row in out.publisher_rows)
+        for publisher in publishers.values():
+            publisher.write.assert_not_called()
         # The bug is swallowed at debug, not raised into the file's own outcome; no line for either server logs.
         assert not any("[Plex]" in m or "[Emby]" in m for m in _messages(job_log))
 
     def test_a_raising_source_view_doesnt_change_the_files_outcome(self, store, media, job_log):
-        # ``make_source_view`` runs inside the guarded lambda (``_log_source``), so a bug building it is swallowed
-        # the same way a bug in the line itself would be -- it can't fail the file or stop its markers being sent.
+        # A logging failure must not stop the decision being stored.
         ctx = _job(store, media, _plex(media))
         publisher = ready_publisher()
         with patch.object(pipeline, "make_source_view", side_effect=RuntimeError("boom")):
             out, _ = _run(ctx, media, {"plex-1": publisher}, probe=_probe())
 
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
-        assert publisher.write.call_count == 1
-        # Every source line that would have gone through ``make_source_view`` is swallowed, but the file's own
-        # decision and Sent lines (which don't build a source view) still log.
+        assert out.outcome_key == FileOutcome.SKIPPED.value
+        publisher.write.assert_not_called()
         messages = _messages(job_log)
         assert any(m.startswith(f"{EPISODE} · Decided:") for m in messages)
         assert any("[Plex]" in m for m in messages)
-
-    def test_a_waiting_rows_carried_over_markers_are_still_our_last_sent(self, store, media, job_log):
-        # A row's ``markers`` field keeps whatever an older WRITTEN attempt stored even once a later attempt only
-        # got as far as WAITING (``_publish_to``'s own ``_finish``: "rows that don't know the item keep the last
-        # one"). The server never learned of the wait: what it has is still that older write.
-        reg = _plex(media)
-        ctx = _job(store, media, reg)
-        st = os.stat(media)
-        rec = ctx.store.upsert_file(
-            FileIdentity(media, st.st_size, st.st_mtime_ns), duration_ms=DUR, season_key=None, is_movie=False
-        )
-        last_sent = (Marker(T.CREDITS, 999_000, 1_000_000, ()),)
-        ctx.store.set_publish_state(rec.id, "plex-1", item_id="item-plex-1", markers=list(last_sent), status="written")
-        ctx.store.set_publish_state(rec.id, "plex-1", item_id="item-plex-1", markers=None, status="waiting")
-
-        out, _ = _run(ctx, media, {"plex-1": ready_publisher()}, probe=_probe())
-
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
-        sent = next(m for m in _messages(job_log) if "[Plex]" in m)
-        assert sent == "Rick and Morty (2013) S01E01 · [Plex] Replaced credits 16:39–16:40 → 21:31–22:01"
-
-    def test_a_failed_rows_last_written_set_is_still_our_last_sent(self, store, media, job_log):
-        # Reproduces the review's own case: credits written, the row then set to failed (a busy database, say) --
-        # the server was never told to remove them, so the next write must say what changed, not "added".
-        reg = _plex(media)
-        ctx = _job(store, media, reg)
-        st = os.stat(media)
-        rec = ctx.store.upsert_file(
-            FileIdentity(media, st.st_size, st.st_mtime_ns), duration_ms=DUR, season_key=None, is_movie=False
-        )
-        last_sent = (Marker(T.CREDITS, 999_000, 1_000_000, ()),)
-        ctx.store.set_publish_state(rec.id, "plex-1", item_id="item-plex-1", markers=list(last_sent), status="written")
-        ctx.store.set_publish_state(rec.id, "plex-1", item_id="item-plex-1", markers=None, status="failed")
-
-        out, _ = _run(ctx, media, {"plex-1": ready_publisher()}, probe=_probe())
-
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
-        sent = next(m for m in _messages(job_log) if "[Plex]" in m)
-        assert sent == "Rick and Morty (2013) S01E01 · [Plex] Replaced credits 16:39–16:40 → 21:31–22:01"
-
-    def test_a_row_moved_to_a_different_item_treats_its_markers_as_unread(self, store, media, job_log):
-        # A merge or split can move the file to a different item on the same server: the old row's markers were
-        # never sent to *this* item, so they aren't "our last sent" for it.
-        reg = _plex(media)
-        ctx = _job(store, media, reg)
-        st = os.stat(media)
-        rec = ctx.store.upsert_file(
-            FileIdentity(media, st.st_size, st.st_mtime_ns), duration_ms=DUR, season_key=None, is_movie=False
-        )
-        old = (Marker(T.CREDITS, 999_000, 1_000_000, ()),)
-        ctx.store.set_publish_state(rec.id, "plex-1", item_id="item-old", markers=list(old), status="written")
-        reg.get("plex-1").resolve_remote_path_to_item_id.return_value = "item-new"
-
-        out, _ = _run(ctx, media, {"plex-1": ready_publisher()}, probe=_probe())
-
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
-        sent = next(m for m in _messages(job_log) if "[Plex]" in m)
-        assert (
-            sent == "Rick and Morty (2013) S01E01 · [Plex] Sent credits 21:31–22:01 (what Plex had before wasn't read)"
-        )
 
 
 class TestConcurrentWorkers:
@@ -940,20 +779,14 @@ class TestConcurrentWorkers:
             format="{message}",
             filter=lambda record: record["module"] == "job_log",
         )
-        both_written = threading.Barrier(2, timeout=10)
+        both_detecting = threading.Barrier(2, timeout=10)
 
-        def write(publisher):
-            def written(*args, **kwargs):
-                both_written.wait()  # both files reach their lines at the same moment
-                return publisher.succeed(*args, **kwargs)
+        def detect(*args, **kwargs):
+            both_detecting.wait()
+            return [TEXT_CREDITS]
 
-            return written
-
-        publishers = {}
-        for path in paths:
-            publisher = ready_publisher()
-            publisher.write.side_effect = write(publisher)
-            publishers[path] = publisher
+        ctx.local_detectors[0].detect.side_effect = detect
+        publisher = ready_publisher()
         errors: list[BaseException] = []
 
         def worker(path, name):
@@ -970,7 +803,7 @@ class TestConcurrentWorkers:
         try:
             with (
                 patch.object(pipeline, "probe_media", return_value=_probe()),
-                patch.object(pipeline, "publisher_for", side_effect=_publisher_by_item(publishers, paths)),
+                patch.object(pipeline, "publisher_for", return_value=publisher),
             ):
                 threads = [
                     threading.Thread(target=worker, args=(path, f"CPU Worker {n}")) for n, path in enumerate(paths, 1)
@@ -987,28 +820,16 @@ class TestConcurrentWorkers:
         assert any(titles[0] in a and titles[1] in b for a, b in zip(records, records[1:], strict=False))
         for n, title in enumerate(titles, 1):
             own = [line for line in records if title in line]
-            assert own == [
+            assert own[:-2] == [
                 f"{title} · Checking chapters… none (asked now)",
                 f"{title} · Checking TheIntroDB… no entry (asked now)",
                 f"{title} · Reading credit text on the CPU…",
                 f"{title} · Credit text: credits start at 21:31 (0 s)",
                 f"{title} · Checking Plex's own markers… none (asked now)",
                 f"{title} · Decided: intro nothing found · credits 21:31–22:01 (credit text)",
-                f"{title} · [Plex] Added credits 21:31–22:01",
-                f"CPU Worker {n} completed: {title} (success, 0 s)",
             ]
-
-
-def _publisher_by_item(publishers, paths):
-    """``publisher_for`` for two files on one Plex server: each file's own publisher, told apart by its item id."""
-    by_item = {f"item-{n}": publishers[path] for n, path in enumerate(paths)}
-    shared = ready_publisher()
-
-    def write(item_id, markers, **kwargs):
-        return by_item[item_id].write(item_id, markers, **kwargs)
-
-    shared.write.side_effect = write
-    return lambda server, cfg, **kw: shared
+            assert own[-1].startswith(f"CPU Worker {n} completed: {title}")
+        publisher.write.assert_not_called()
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -1093,7 +914,7 @@ class TestASourceOfferedAgain:
     left undecided, IntroDB is asked for real, and its answer gets its own line, not held back by the "not needed" one
     already logged for the same key."""
 
-    def test_a_source_offered_again_gets_its_real_answer_logged(self, store, media, job_log, every_file_logged):
+    def test_a_source_offered_again_gets_its_real_answer_logged(self, store, media, job_log):
         reg = _plex(media)
         raw = {
             "sources": [
@@ -1145,7 +966,7 @@ class TestASourceOfferedAgain:
             "only TheIntroDB and IntroDB have the intro; an online answer needs a check against the file",
         )
         assert (intro.proposed_start_ms, intro.proposed_end_ms, intro.decided_by) == (127_894, 156_824, ("theintrodb",))
-        assert out.outcome_key == FileOutcome.NO_MARKERS.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
 
 
 class TestSourceLines:
@@ -1547,108 +1368,6 @@ class TestDecidedLine:
         )
 
 
-def _server(status, ours=(), *, kept=frozenset(), withheld=frozenset(), message="", reason_code=None, had=None,
-            had_is_ours=True):  # fmt: skip
-    row = {"server_id": "plex-1", "server_name": "Plex", "server_type": "plex", "status": status.value,
-           "message": message, "reason_code": reason_code}  # fmt: skip
-    return ServerResult(row, tuple(ours), frozenset(kept), frozenset(withheld), had, had_is_ours)
-
-
-INTRO_M = Marker(T.INTRO, 41_000, 72_000, ("introdb",))
-CREDITS_M = Marker(T.CREDITS, 2_508_000, 2_590_000, ("credits_text",))
-CREDITS_M_OLD = Marker(T.CREDITS, 2_470_000, 2_500_000, ("credits_text",))
-
-
-class TestSentLine:
-    """``server_result_line``'s non-``WRITTEN`` shapes, in the preview log's ``[<server>] …`` style."""
-
-    @pytest.mark.parametrize(
-        ("result", "expected"),
-        [
-            (_server(ServerStatus.UP_TO_DATE, (INTRO_M,)), "Already up to date (intro 0:41–1:12)"),
-            (_server(ServerStatus.NONE), "Nothing to send"),
-            (_server(ServerStatus.UP_TO_DATE, kept={T.CREDITS}), "Kept Plex's own credits"),
-            (_server(ServerStatus.WRITTEN, (INTRO_M,), had=(), kept={T.CREDITS}, withheld={T.CREDITS}),
-             "Added intro 0:41–1:12; kept Plex's own credits instead of ours (\"Keep Plex's\")"),
-            (_server(ServerStatus.FAILED, message="Plex's database was busy"), "Failed (Plex's database was busy)"),
-            (_server(ServerStatus.SKIPPED, message="Plex Pass needed"), "Skipped (Plex Pass needed)"),
-            (_server(ServerStatus.WAITING, reason_code=NOT_IN_LIBRARY),
-             "Not in Plex's library yet (waiting for it to add the file)"),
-            (_server(ServerStatus.WAITING, reason_code=PLEX_PASS_UNKNOWN), "Waiting (couldn't confirm Plex Pass)"),
-            (_server(ServerStatus.WAITING, (INTRO_M,), message="Waiting for the other versions"),
-             "Intro 0:41–1:12; waiting for the other versions"),
-        ],
-        ids=["up-to-date", "nothing", "kept-own", "kept-instead-of-ours", "failed", "skipped", "not-in-library",
-             "plex-pass-unknown", "waiting"],
-    )  # fmt: skip
-    def test_one_line_per_server(self, result, expected):
-        assert server_result_line(result) == f"[Plex] {expected}"
-
-    def test_added_names_a_type_the_server_never_had(self):
-        result = _server(ServerStatus.WRITTEN, (CREDITS_M, INTRO_M), had=())
-        assert server_result_line(result) == "[Plex] Added intro 0:41–1:12 and credits 41:48–43:10"
-
-    def test_replaced_names_the_old_span_and_the_new_one(self):
-        result = _server(ServerStatus.WRITTEN, (CREDITS_M,), had=(CREDITS_M_OLD,))
-        assert server_result_line(result) == "[Plex] Replaced credits 41:10–41:40 → 41:48–43:10"
-
-    def test_removed_names_a_type_the_server_had_that_no_longer_holds(self):
-        result = _server(ServerStatus.WRITTEN, (INTRO_M,), had=(CREDITS_M_OLD,))
-        assert server_result_line(result) == "[Plex] Added intro 0:41–1:12; removed credits (it no longer holds)"
-
-    def test_cleared_when_nothing_is_ours_there_any_more(self):
-        assert server_result_line(_server(ServerStatus.WRITTEN, (), had=(CREDITS_M_OLD,))) == (
-            "[Plex] Cleared our markers"
-        )
-
-    def test_the_prior_value_unknown_says_so_instead_of_guessing(self):
-        # ``had=None`` (the ``ServerResult`` default): we've never published there and never read its own markers.
-        result = _server(ServerStatus.WRITTEN, (CREDITS_M,))
-        assert server_result_line(result) == ("[Plex] Sent credits 41:48–43:10 (what Plex had before wasn't read)")
-
-    def test_a_span_unchanged_from_what_we_sent_before_is_called_restored(self):
-        # A WRITTEN row only happens when the write really changed the server (a basis mismatch): if every type
-        # still matches what we last sent, the server must have drifted since (a Plex rescan dropping markers, say)
-        # and this write restored them -- not "added" (nothing's new) and not merely "unchanged" (bytes were sent).
-        result = _server(ServerStatus.WRITTEN, (INTRO_M,), had=(INTRO_M,))
-        assert server_result_line(result) == "[Plex] Restored intro 0:41–1:12"
-
-    def test_a_type_only_in_the_servers_own_evidence_isnt_called_removed(self):
-        # ``had`` fell back to the server's own evidence (we've never published there): a type it shows that we
-        # never sent isn't ours to call removed -- it's simply left out, not claimed as a change we made. Intro's
-        # span happens to match that same evidence (it was decided from it), but we've never sent it before: it's
-        # this type's first send, not "Restored" -- that word is only for a span that matches what we sent before.
-        result = _server(ServerStatus.WRITTEN, (INTRO_M,), had=(INTRO_M, CREDITS_M_OLD), had_is_ours=False)
-        assert server_result_line(result) == "[Plex] Added intro 0:41–1:12 (same as Plex's own)"
-
-    def test_a_type_the_last_sent_no_longer_holds_is_called_removed(self):
-        # The same shape, but ``had`` really is our own record: this one is ours to call removed.
-        result = _server(ServerStatus.WRITTEN, (INTRO_M,), had=(INTRO_M, CREDITS_M_OLD), had_is_ours=True)
-        assert server_result_line(result) == "[Plex] Unchanged intro 0:41–1:12; removed credits (it no longer holds)"
-
-
-class TestUnchangedFilesWriteNothing:
-    """A file whose answer didn't change and whose servers are up to date writes no job-log lines, as an unchanged
-    preview doesn't: a recheck over a whole library doesn't fill the log."""
-
-    def test_a_hundred_file_recheck_logs_nothing(self, store, tmp_path, job_log):
-        paths = [_accused(tmp_path, episode) for episode in range(1, 6)]
-        reg = _plex(paths[0])
-
-        def run_all():
-            ctx = _job(store, paths[0], reg, now=lambda: datetime.now(UTC))
-            for n, path in enumerate(paths):
-                out, _ = _run(ctx, path, {"plex-1": ready_publisher()}, probe=_probe(), hints={"plex-1": f"item-{n}"})
-            return out
-
-        run_all()
-        job_log.clear()
-        out = run_all()
-
-        assert out.outcome_key == FileOutcome.UP_TO_DATE.value
-        assert _messages(job_log) == []
-
-
 class TestTitles:
     @pytest.mark.parametrize(
         ("path", "expected"),
@@ -1725,7 +1444,7 @@ class TestTitles:
         out, lookups = self._check(self._quiet_job(store, reg), ProcessableItem(canonical_path=media, server_id=""))
 
         assert _messages(job_log)[0] == HEAD
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         lookups.assert_not_called()
         server.get_external_ids.assert_not_called()
 
@@ -1740,7 +1459,7 @@ class TestTitles:
         assert server.get_external_ids.call_count == 1
         lookups.assert_not_called()
 
-    def test_a_film_without_an_answer_is_looked_up_once_per_process(self, store, movie, job_log, every_file_logged):
+    def test_a_film_without_an_answer_is_looked_up_once_per_process(self, store, movie, job_log):
         # A hint gives ``title_asks`` a known item id (a webhook payload, say): naming the file never searches for
         # one itself (that's ``_publish_to``'s job, later in the same run).
         self._known_movie(store, movie)
@@ -1750,7 +1469,7 @@ class TestTitles:
         item = ProcessableItem(canonical_path=movie, server_id="", item_id_by_server={"plex-1": "item-plex-1"})
 
         first, lookups = self._check(self._quiet_job(store, reg), item)
-        assert first.outcome_key == FileOutcome.PUBLISHED.value
+        assert first.outcome_key == FileOutcome.SKIPPED.value
         assert _messages(job_log)[0] == "Heat (1995): checking credits (films get credits only)"
         assert lookups.call_count == 1
         assert server.get_external_ids.call_args.args == ("item-plex-1",)
@@ -1758,16 +1477,14 @@ class TestTitles:
 
         # A later job over the same film (decide again, a version re-run, a Season job) asks nothing.
         second, lookups = self._check(self._quiet_job(store, reg), item)
-        assert second.outcome_key == FileOutcome.UP_TO_DATE.value
+        assert second.outcome_key == FileOutcome.SKIPPED.value
         today = datetime.now(UTC).strftime("%Y-%m-%d")
-        assert _messages(job_log) == [
+        assert _messages(job_log)[:-2] == [
             "Heat (1995): checking credits (films get credits only)",
             f'Heat (1995) · Checking chapters… "Credits" chapter from 21:35 (saved {today})',
             "Heat (1995) · Checking credit text… not read (a chapter named Credits is used as-is)",
             f"Heat (1995) · Checking Plex's own markers… none (saved {today})",
             'Heat (1995) · Decided: credits 21:35–22:01, from the "Credits" chapter',
-            "Heat (1995) · [Plex] Already up to date (credits 21:35–22:01)",
-            "Heat (1995) · done in 0 s (nothing new to send)",
         ]
         lookups.assert_not_called()
         assert server.get_external_ids.call_count == 1
@@ -1818,9 +1535,7 @@ class TestTitles:
         server.get_external_ids.assert_not_called()
 
     @pytest.mark.parametrize("failure", ["times-out", "raises", "no-title"])
-    def test_a_lookup_that_fails_never_holds_or_fails_the_file(
-        self, store, movie, job_log, every_file_logged, monkeypatch, failure
-    ):
+    def test_a_lookup_that_fails_never_holds_or_fails_the_file(self, store, movie, job_log, monkeypatch, failure):
         self._known_movie(store, movie)
         reg = _plex(movie)
         server = reg.get("plex-1")
@@ -1846,8 +1561,8 @@ class TestTitles:
             out, _ = self._check(self._quiet_job(store, reg), item, publisher)
             took = time.monotonic() - started
 
-            assert out.outcome_key == FileOutcome.PUBLISHED.value
-            assert publisher.write.call_count == 1
+            assert out.outcome_key == FileOutcome.SKIPPED.value
+            publisher.write.assert_not_called()
             # Named by its cleaned file name; the file waited no longer than the lookup's timeout.
             assert _messages(job_log)[0] == "Heat (1995): checking credits (films get credits only)"
             assert took < 0.2 + 1.0, took
@@ -1863,14 +1578,12 @@ class TestTitles:
         assert server.get_external_ids.call_count == 1
         name = "Heat (1995)"
         today = datetime.now(UTC).strftime("%Y-%m-%d")
-        assert _messages(job_log) == [
+        assert _messages(job_log)[:-2] == [
             f"{name}: checking credits (films get credits only)",
             f'{name} · Checking chapters… "Credits" chapter from 21:35 (saved {today})',
             f"{name} · Checking credit text… not read (a chapter named Credits is used as-is)",
             f"{name} · Checking Plex's own markers… none (saved {today})",
             f'{name} · Decided: credits 21:35–22:01, from the "Credits" chapter',
-            f"{name} · [Plex] Already up to date (credits 21:35–22:01)",
-            f"{name} · done in 0 s (nothing new to send)",
         ]
 
 

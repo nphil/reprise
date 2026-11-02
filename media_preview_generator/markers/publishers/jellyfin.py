@@ -179,6 +179,7 @@ class JellyfinMarkerPublisher(MarkerPublisher):
                 of the whole server (unreachable, plugin missing); problems of this item or library leave it None.
         """
         from ...reprise.review import reject_legacy_publication
+
         reject_legacy_publication()
         self.last_write_changed = False
         wanted = self.project(markers)

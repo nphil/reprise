@@ -139,11 +139,11 @@ Yes, on Plex, Emby and Jellyfin, once you turn it on for each server. What each 
 
 ### How does it find intros and credits?
 
-From the file's chapters, online skip databases, the theme song a season's episodes share, or the credit roll itself. It does this once per file and sends the result to every server that has the file. If it can't confirm an intro or credits from the file itself, it writes nothing — you can still add or adjust one in the Inspector.
+In the inherited Media Preview Generator workflow, it checks the file's chapters, online skip databases, a season's shared theme song, or the credit roll itself; results can be sent to each server holding the file. If it cannot confirm a marker, it leaves that type empty. Reprise's current detector instead produces proposals for review and does not automatically approve or publish them; see [the Reprise workflow and evidence limits](../README.md#detection-evidence-and-limits).
 
 ### Will it overwrite Plex's or Emby's own markers?
 
-Only with **Use ours**, which is the default. Choose **Keep Plex's** or **Keep Emby's** in the server's Intro & Credits settings and it leaves them alone.
+In the inherited Media Preview Generator workflow, **Use ours** replaces the server's own markers; **Keep Plex's** or **Keep Emby's** leaves them alone. Reprise publication is a separate, review-first process; see the [README](../README.md#publication-safety).
 
 ---
 

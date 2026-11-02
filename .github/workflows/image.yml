@@ -17,14 +17,45 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and publish commit image
+      # Keep the first build's provenance in the registry, but do not give it
+      # the installable commit tag until an independent cold build is compared.
+      - name: First cold build (push by digest)
+        id: first
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: true
-          tags: ghcr.io/nphil/reprise:sha-${{ github.sha }}
+          no-cache: true
+          outputs: type=image,name=ghcr.io/nphil/reprise,push-by-digest=true,name-canonical=true,push=true
           build-args: |
             GIT_BRANCH=${{ github.ref_name }}
             GIT_SHA=${{ github.sha }}
             SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0.dev${{ github.run_number }}+g${{ github.sha }}
             DOCKER_IMAGE_NAME=ghcr.io/nphil/reprise
+      - name: Second cold build (local comparison only)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          no-cache: true
+          load: true
+          tags: reprise:cold-comparison
+          build-args: |
+            GIT_BRANCH=${{ github.ref_name }}
+            GIT_SHA=${{ github.sha }}
+            SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0.dev${{ github.run_number }}+g${{ github.sha }}
+            DOCKER_IMAGE_NAME=ghcr.io/nphil/reprise
+      - name: Compare runtime configuration and uncompressed layers
+        env:
+          FIRST_IMAGE: ghcr.io/nphil/reprise@${{ steps.first.outputs.digest }}
+        run: |
+          set -euo pipefail
+          docker pull "$FIRST_IMAGE"
+          for image in "$FIRST_IMAGE" reprise:cold-comparison; do
+            docker image inspect "$image" | jq -S '.[0] | {Architecture, Os, Variant, Config, RootFS}' > "${RUNNER_TEMP}/$(if [ "$image" = "$FIRST_IMAGE" ]; then echo first; else echo second; fi).json"
+          done
+          diff -u "${RUNNER_TEMP}/first.json" "${RUNNER_TEMP}/second.json"
+          echo "Runtime configuration and uncompressed layer digests match. OCI provenance is not compared."
+      - name: Publish verified commit image
+        env:
+          FIRST_IMAGE: ghcr.io/nphil/reprise@${{ steps.first.outputs.digest }}
+          COMMIT_IMAGE: ghcr.io/nphil/reprise:sha-${{ github.sha }}
+        run: docker buildx imagetools create --tag "$COMMIT_IMAGE" "$FIRST_IMAGE"

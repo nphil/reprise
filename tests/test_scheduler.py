@@ -1843,6 +1843,7 @@ class TestNormalizeScheduleConfig:
              "recently_added"),
             ({"job_type": "something-else"}, ["previews"], "full_library"),
             ({"job_kinds": ["loudness", "previews"]}, ["previews", "loudness"], "full_library"),
+            ({"job_kinds": ["reprise", "previews", "reprise"]}, ["previews", "reprise"], "full_library"),
             ({"job_kinds": ["intro_credits", "intro_credits"], "job_type": "recently_added"}, ["intro_credits"],
              "recently_added"),
         ],
@@ -1899,6 +1900,8 @@ class TestNormalizeScheduleConfig:
         )
         assert schedule["config"]["job_kinds"] == ["previews", "intro_credits", "loudness"]
 
+        updated = scheduler_manager.update_schedule(schedule["id"], config={"job_kinds": ["reprise"]})
+        assert updated["config"] == {"job_kinds": ["reprise"], "job_type": "full_library"}
         updated = scheduler_manager.update_schedule(schedule["id"], config={"job_kinds": ["loudness"]})
         assert updated["config"] == {"job_kinds": ["loudness"], "job_type": "full_library"}
 

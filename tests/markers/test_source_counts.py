@@ -10,7 +10,6 @@ import pytest
 from media_preview_generator.markers.decide import DecisionStatus, TypeDecision
 from media_preview_generator.markers.models import Candidate, FileIdentity, Marker, MarkerType, Source
 from media_preview_generator.markers.outcomes import FileOutcome
-from media_preview_generator.markers.publishers.base import PublishError
 from media_preview_generator.markers.source_counts import (
     DecidedByTally,
     decided_groups,
@@ -163,7 +162,7 @@ class TestWhichFilesCount:
 
         out, _ = _run(ctx, media, {"plex-1": ready_publisher()}, probe=_probe(CHAPTERS_BOTH))
 
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         assert ctx.decided_by.snapshot() == {"intro": {"chapters": 1}, "credits": {"chapters": 1}}
 
     def test_two_agreeing_sources_count_under_both(self, store, media):
@@ -173,17 +172,17 @@ class TestWhichFilesCount:
 
         out, _ = _run(ctx, media, {"plex-1": ready_publisher()})
 
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         assert ctx.decided_by.snapshot() == {"intro": {"theintrodb+skipdb": 1}}
 
     def test_an_undecided_type_isnt_counted_but_the_decided_one_is(self, store, media):
-        # TheIntroDB alone can't publish an intro; the credits chapter decides credits.
+        # TheIntroDB alone cannot decide an intro; the credits chapter decides credits.
         clients = _clients(theintrodb=LookupResult("ok", (TIDB_INTRO,)))
         ctx = _ctx(store, _registry(media, ServerType.PLEX), clients=clients)
 
         out, _ = _run(ctx, media, {"plex-1": ready_publisher()}, probe=_probe((CHAPTERS_BOTH[0], CHAPTERS_BOTH[3])))
 
-        assert out.outcome_key == FileOutcome.PUBLISHED.value  # the credits were written
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         assert ctx.decided_by.snapshot() == {"credits": {"chapters": 1}}
 
     def test_a_file_with_every_type_undecided_counts_nothing(self, store, media):
@@ -192,21 +191,19 @@ class TestWhichFilesCount:
 
         out, _ = _run(ctx, media, {"plex-1": ready_publisher()})
 
-        assert out.outcome_key == FileOutcome.NO_MARKERS.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         assert ctx.decided_by.snapshot() == {}
 
-    def test_a_failed_file_counts_nothing_though_its_markers_were_decided(self, store, media):
-        plex = ready_publisher()
-        plex.write.side_effect = PublishError("boom")
+    def test_a_failed_probe_counts_nothing(self, store, media):
         ctx = _ctx(store, _registry(media, ServerType.PLEX))
-
-        out, _ = _run(ctx, media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
-
+        plex = ready_publisher()
+        out, _ = _run(ctx, media, {"plex-1": plex}, probe=_probe(duration=0))
         assert out.outcome_key == FileOutcome.FAILED.value
         assert ctx.decided_by.snapshot() == {}
+        plex.write.assert_not_called()
 
     def test_a_file_every_server_skipped_still_counts_what_its_sources_decided(self, store, media):
-        # No publisher for Emby here: the server is skipped, but the detection it would have sent was made.
+        # A proposal-only run still counts what detection decided.
         ctx = _ctx(store, _registry(media, ServerType.EMBY))
 
         out, _ = _run(ctx, media, {}, probe=_probe(CHAPTERS_BOTH))
@@ -235,7 +232,7 @@ class TestWhichFilesCount:
         assert ctx.decided_by.snapshot() == {}
 
     def test_an_unchanged_file_run_again_counts_again_in_its_new_job(self, store, media):
-        # Up to date is still a decision this job made (the second run's context is a new job's).
+        # Rechecking a stored decision counts it in the new job too.
         registry = _registry(media, ServerType.PLEX)
         plex = ready_publisher()
         _run(_ctx(store, registry), media, {"plex-1": plex}, probe=_probe(CHAPTERS_BOTH))
@@ -243,7 +240,8 @@ class TestWhichFilesCount:
 
         out, _ = _run(ctx, media, {"plex-1": plex})
 
-        assert out.outcome_key == FileOutcome.UP_TO_DATE.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
+        plex.write.assert_not_called()
         assert ctx.decided_by.snapshot() == {"intro": {"chapters": 1}, "credits": {"chapters": 1}}
 
 

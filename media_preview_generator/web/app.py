@@ -19,7 +19,7 @@ from flask_wtf.csrf import CSRFProtect
 from loguru import logger
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from ..job_kinds import JOB_KIND_INTRO_CREDITS, JOB_KIND_LOUDNESS, JOB_KIND_PREVIEWS
+from ..job_kinds import JOB_KIND_INTRO_CREDITS, JOB_KIND_LOUDNESS, JOB_KIND_PREVIEWS, JOB_KIND_REPRISE
 from ..nodes.protocol import APP_INSTANCE_HEADER
 from ..shutdown import on_shutdown
 from .auth import log_token_on_startup
@@ -486,6 +486,10 @@ def _fail_unrevived_own_runner_jobs() -> None:
             type(exc).__name__,
             exc,
         )
+    try:
+        get_job_manager().fail_unrevived_interrupted_jobs(JOB_KIND_REPRISE)
+    except Exception as exc:
+        logger.warning("Couldn't settle interrupted Reprise jobs ({}: {})", type(exc).__name__, exc)
 
 
 def _fail_unrevived_preview_jobs() -> None:
@@ -860,16 +864,20 @@ def create_app(config_dir: str | None = None) -> Flask:
     app.register_blueprint(webhooks_bp)
 
     from ..markers.store import get_marker_store
+    from ..reprise.publishing import ReprisePublisher
     from ..reprise.service import RepriseService, SettingsRegistry, set_service
     from ..reprise.store import RepriseStore
-    from ..reprise.publishing import ReprisePublisher
     from .routes.api_reprise import create_reprise_blueprint
 
     reprise_store = RepriseStore(get_marker_store(config_dir))
     reprise_registry = SettingsRegistry(sm)
     reprise_service = RepriseService(reprise_store, reprise_registry, get_job_manager())
-    reprise_service.publisher = ReprisePublisher(reprise_store, reprise_registry, reprise_service,
-        writes_enabled=sm.get("reprise_plex_writes_enabled", False) is True)
+    reprise_service.publisher = ReprisePublisher(
+        reprise_store,
+        reprise_registry,
+        reprise_service,
+        writes_enabled=sm.get("reprise_plex_writes_enabled", False) is True,
+    )
     set_service(reprise_service)
     app.extensions["reprise"] = reprise_service
     app.register_blueprint(create_reprise_blueprint(reprise_service))

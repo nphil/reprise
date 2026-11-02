@@ -17,8 +17,6 @@ from media_preview_generator.jobs.dispatcher import reset_dispatcher
 from media_preview_generator.markers import job_runner, pipeline, triggers
 from media_preview_generator.markers.pipeline import PipelineContext
 from media_preview_generator.markers.probe import Chapter, MediaProbe
-from media_preview_generator.markers.publishers import plex_db
-from media_preview_generator.markers.publishers.base import ItemNotFoundError, PublishError
 from media_preview_generator.markers.settings import load_global, validate_global
 from media_preview_generator.markers.source_counts import DecidedByTally
 from media_preview_generator.markers.store import MarkerStore
@@ -69,7 +67,7 @@ def _outcome(jm, job_id):
 
 
 class TestRetryThroughThePipeline:
-    """Files a server hasn't indexed yet: the real pipeline marks them, the job queues a retry, the retry publishes."""
+    """Real jobs persist proposals and retry files that are not yet on disk."""
 
     @pytest.fixture
     def setup(self, engine, tmp_path, monkeypatch):
@@ -143,88 +141,26 @@ class TestRetryThroughThePipeline:
         monkeypatch.setattr(job_runner, "_utcnow", lambda: due + timedelta(seconds=1))
         job_runner.run_intro_credits_job(retry.id)
 
-    @staticmethod
-    def _assert_chain_head_waits_for(jm, head_id, retry, attempt, count=3):
-        """The job's own row is the preview retries' chain head: pending, "Retry attempt/count", counting down."""
-        head = jm.get_job(head_id)
-        assert head.status is JobStatus.PENDING and head.completed_at is None
-        assert (head.config["is_retry_chain"], head.config["retry_attempt"], head.config["max_retries"]) == (
-            True,
-            attempt,
-            count,
-        )
-        assert head.config["last_outcome"] == "scheduled"
-        assert head.progress.retry_eta == retry.config["retry_not_before"]
-        assert head.progress.retry_wait_total == retry.config["retry_delay"]
-        # The retry is a hidden job of that chain, like a preview retry: the queue shows one row.
-        assert (retry.config["is_retry"], retry.config["parent_job_id"], retry.config["max_retries"]) == (
-            True,
-            head_id,
-            count,
-        )
-        assert retry.config.get("follows_job_id") is None
-        assert not is_user_visible_job(retry)
-        assert [j.id for j in jm.get_all_jobs() if is_user_visible_job(j)] == [head_id]
+    @pytest.mark.parametrize("source", ["sonarr", "jellyfin", "manual", "inspector"])
+    def test_unindexed_file_produces_a_proposal_without_retry_or_write(self, engine, setup, source):
+        from media_preview_generator.markers.models import Source
 
-    @pytest.mark.parametrize("cause", ["no_item_id", "item_not_found"])
-    @pytest.mark.parametrize(
-        ("source", "follows"), [("sonarr", "preview-1"), ("jellyfin", None), ("manual", None), ("inspector", None)]
-    )
-    def test_file_the_server_adds_later_is_published_by_the_retry_in_the_jobs_own_row(
-        self, engine, setup, monkeypatch, cause, source, follows
-    ):
-        # A webhook follow-up, and a job with no preview job before it (markers on with previews off, manual,
-        # Inspector), all retry in their own row on the preview retries' schedule.
         registry, publishers = setup.make([("jf-1", ServerType.JELLYFIN)])
-        server, publisher = registry.get("jf-1"), publishers["jf-1"]
-        if cause == "no_item_id":
-            server.resolve_remote_path_to_item_id.return_value = None  # Sonarr imported before Jellyfin scanned
-        else:
-            publisher.write.side_effect = ItemNotFoundError("Jellyfin has no item item-jf-1 yet")
+        registry.get("jf-1").resolve_remote_path_to_item_id.return_value = None
         first_patch, second_patch = self._run_pipeline(publishers)
         with first_patch, second_patch:
-            first = triggers.create_intro_credits_job(
-                library_name="Intro & Credits · Pilot",
-                priority=2,
-                source=source,
-                file_paths=[setup.path],
-                follows_job_id=follows,  # the preview job is gone, so the follow-up doesn't wait for it
+            job = triggers.create_intro_credits_job(
+                library_name="Intro & Credits · Pilot", priority=2, source=source, file_paths=[setup.path]
             ).id
-            job_runner.run_intro_credits_job(first)
+            job_runner.run_intro_credits_job(job)
 
-            assert _outcome(engine.jm, first) == {"markers_waiting": 1}
-            retries = self._retries(engine.jm)
-            assert len(retries) == 1
-            retry = retries[0]
-            assert retry.kind == JOB_KIND_INTRO_CREDITS and retry.status is JobStatus.PENDING
-            assert retry.config["file_paths"] == [setup.path]
-            assert (retry.config["retry_attempt"], retry.config["retry_delay"]) == (1, 60)
-            assert retry.priority == engine.jm.get_job(first).priority
-            self._assert_chain_head_waits_for(engine.jm, first, retry, attempt=1)
-
-            # Jellyfin has scanned the file now.
-            server.resolve_remote_path_to_item_id.return_value = "item-jf-1"
-            publisher.write.side_effect = publisher.succeed
-            self._run_retry(monkeypatch, retry)
-
-        assert engine.jm.get_job(retry.id).status is JobStatus.COMPLETED
-        assert _outcome(engine.jm, retry.id) == {"markers_published": 1}
-        assert publisher.write.call_args.args[0] == "item-jf-1"
-        assert [j.id for j in self._retries(engine.jm)] == [retry.id]
-        # The chain ends as a preview chain does: its row completed, with the file's latest result in its Files panel.
-        head = engine.jm.get_job(first)
-        assert (head.status, head.error, head.progress.retry_eta) == (JobStatus.COMPLETED, None, None)
-        assert head.config["last_outcome"] == "completed"
-        assert [(r["file"], r["outcome"]) for r in engine.jm.get_file_results(first)] == [
-            (setup.path, "markers_published")
-        ]
-        assert engine.jm.get_file_results(retry.id) == []
-        # Its counts are the file's latest result, not its first run's "Waiting", and they're stored with the job.
-        decided = {"intro": {"chapters": 1}, "credits": {"chapters": 1}}
-        assert _outcome(engine.jm, first) == {"markers_published": 1}
-        assert head.progress.marker_sources == decided
-        stored = JobManager(config_dir=engine.jm.config_dir).get_job(first)
-        assert (stored.progress.outcome, stored.progress.marker_sources) == ({"markers_published": 1}, decided)
+        assert engine.jm.get_job(job).status is JobStatus.COMPLETED
+        assert _outcome(engine.jm, job) == {"markers_skipped": 1}
+        assert self._retries(engine.jm) == []
+        publishers["jf-1"].write.assert_not_called()
+        rec = setup.store.get_file(setup.path)
+        assert {c.source for c in setup.store.get_evidence(rec.id)} >= {Source.CHAPTERS}
+        assert setup.store.get_publish_state(rec.id, "jf-1") is None
 
     def test_the_job_reads_its_files_seasons_ahead_and_stops_when_it_ends(self, engine, setup, monkeypatch):
         registry, publishers = setup.make([("plex-1", ServerType.PLEX)])
@@ -264,6 +200,15 @@ class TestRetryThroughThePipeline:
             ).id
             job_runner.run_intro_credits_job(first)
             (retry,) = self._retries(engine.jm)
+            head = engine.jm.get_job(first)
+            assert head.status is JobStatus.PENDING and head.completed_at is None
+            assert (retry.config["file_paths"], retry.config["retry_attempt"], retry.config["retry_delay"]) == (
+                [setup.path],
+                1,
+                60,
+            )
+            assert retry.config["parent_job_id"] == first and not is_user_visible_job(retry)
+            assert head.progress.retry_eta == retry.config["retry_not_before"]
             assert _outcome(engine.jm, first) == {"skipped_file_not_found": 1}
             assert not engine.jm.get_job(first).progress.marker_sources
             os.rename(copying, setup.path)
@@ -271,150 +216,17 @@ class TestRetryThroughThePipeline:
 
         head = engine.jm.get_job(first)
         assert head.status is JobStatus.COMPLETED
-        assert _outcome(engine.jm, first) == {"markers_published": 1}
+        assert _outcome(engine.jm, first) == {"markers_skipped": 1}
+        publishers["jf-1"].write.assert_not_called()
         assert head.progress.marker_sources == {"intro": {"chapters": 1}, "credits": {"chapters": 1}}
-
-    def test_a_retry_revived_after_a_restart_with_its_file_done_ends_the_chain(self, engine, setup, monkeypatch):
-        # The retry published the file on the head's Files panel, then the app restarted before the retry finished.
-        registry, publishers = setup.make([("jf-1", ServerType.JELLYFIN)])
-        registry.get("jf-1").resolve_remote_path_to_item_id.return_value = None
-        first_patch, second_patch = self._run_pipeline(publishers)
-        with first_patch, second_patch:
-            first = triggers.create_intro_credits_job(
-                library_name="x", priority=2, source="sonarr", file_paths=[setup.path]
-            ).id
-            job_runner.run_intro_credits_job(first)
-            (retry,) = self._retries(engine.jm)
-            engine.jm.record_file_result(
-                first,
-                setup.path,
-                "markers_published",
-                "",
-                "",
-                servers=[{"server_id": "jf-1", "status": "markers_written"}],
-            )
-            self._run_retry(monkeypatch, retry)
-
-        publishers["jf-1"].write.assert_not_called()  # read from the head's rows: not written twice
-        head = engine.jm.get_job(first)
-        assert (head.status, head.config["last_outcome"]) == (JobStatus.COMPLETED, "completed")
-        assert _outcome(engine.jm, first) == {"markers_published": 1}
-
-    def test_files_that_settled_keep_their_results_while_the_waiting_one_retries(self, engine, setup, monkeypatch):
-        registry, publishers = setup.make([("jf-1", ServerType.JELLYFIN)])
-        second = os.path.join(os.path.dirname(setup.path), "Rick and Morty (2013) - S01E02 - Lawnmower Dog.mkv")
-        with open(second, "wb") as f:
-            f.write(b"x" * 100)
-        server = registry.get("jf-1")
-        server.resolve_remote_path_to_item_id.side_effect = lambda path, **kw: "item-jf-2" if path == second else None
-        first_patch, second_patch = self._run_pipeline(publishers)
-        with first_patch, second_patch:
-            first = triggers.create_intro_credits_job(
-                library_name="x", priority=2, source="sonarr", file_paths=[setup.path, second]
-            ).id
-            job_runner.run_intro_credits_job(first)
-            (retry,) = self._retries(engine.jm)
-
-            assert retry.config["file_paths"] == [setup.path]
-            self._assert_chain_head_waits_for(engine.jm, first, retry, attempt=1)
-            assert _outcome(engine.jm, first) == {"markers_published": 1, "markers_waiting": 1}
-            server.resolve_remote_path_to_item_id.side_effect = lambda path, **kw: (
-                "item-jf-2" if path == second else "item-jf-1"
-            )
-            self._run_retry(monkeypatch, retry)
-
-        rows = {r["file"]: r["outcome"] for r in engine.jm.get_file_results(first)}
-        assert rows == {second: "markers_published", setup.path: "markers_published"}
-        assert [c.args[0] for c in publishers["jf-1"].write.call_args_list] == ["item-jf-2", "item-jf-1"]
-        assert engine.jm.get_job(first).status is JobStatus.COMPLETED
-        assert _outcome(engine.jm, first) == {"markers_published": 2}
-
-    @pytest.mark.parametrize("count", [1, 2])
-    def test_a_file_the_server_never_adds_fails_the_row_when_retries_run_out_as_a_preview_chain_does(
-        self, engine, setup, monkeypatch, count
-    ):
-        engine.settings["webhook_retry_count"] = count
-        registry, publishers = setup.make([("jf-1", ServerType.JELLYFIN)])
-        registry.get("jf-1").resolve_remote_path_to_item_id.return_value = None
-        first_patch, second_patch = self._run_pipeline(publishers)
-        with first_patch, second_patch:
-            first = triggers.create_intro_credits_job(
-                library_name="x", priority=2, source="sonarr", file_paths=[setup.path]
-            ).id
-            job_runner.run_intro_credits_job(first)
-            for attempt in range(1, count + 1):
-                retry = next(r for r in self._retries(engine.jm) if r.config["retry_attempt"] == attempt)
-                self._assert_chain_head_waits_for(engine.jm, first, retry, attempt=attempt, count=count)
-                self._run_retry(monkeypatch, retry)
-                assert engine.jm.get_job(retry.id).status is JobStatus.COMPLETED
-
-        assert len(self._retries(engine.jm)) == count
-        head = engine.jm.get_job(first)
-        # upsert_retry_chain_job's "exhausted": the preview chain's final status (failed, with the reason).
-        assert (head.status, head.config["last_outcome"], head.progress.retry_eta) == (
-            JobStatus.FAILED,
-            "exhausted",
-            None,
-        )
-        assert head.error == (
-            f"1 file(s) still not in a server's library after {count} retr{'y' if count == 1 else 'ies'}. "
-            "Check the Files panel for the affected paths."
-        )
-        assert [j.id for j in engine.jm.get_all_jobs() if is_user_visible_job(j)] == [first]
-
-    @pytest.mark.parametrize("frees_up", [True, False], ids=["free-by-the-retry", "busy-past-every-retry"])
-    def test_a_write_plex_s_busy_database_refused_is_retried_minutes_later_then_fails_as_before(
-        self, engine, setup, monkeypatch, frees_up
-    ):
-        # Production: another program held Plex's write lock past the job's wait; the file failed and waited a day
-        # for Check servers. Now the job retries it on the preview retries' backoff, and only then fails.
-        engine.settings["webhook_retry_count"] = 2
-        _registry, publishers = setup.make([("plex-1", ServerType.PLEX)])
-        publisher = publishers["plex-1"]
-        busy = plex_db.plex_busy_error(121)
-        publisher.write.side_effect = busy
-        first_patch, second_patch = self._run_pipeline(publishers)
-        with first_patch, second_patch:
-            first = triggers.create_intro_credits_job(
-                library_name="Intro & Credits · Pilot", priority=2, source="sonarr", file_paths=[setup.path]
-            ).id
-            job_runner.run_intro_credits_job(first)
-            assert _outcome(engine.jm, first) == {"failed": 1}
-            [row] = engine.jm.get_file_results(first)
-            assert row["servers"][0]["message"] == (  # its retry is queued, so the row says when
-                "Plex's database was busy (held by another program) for 121 s; this job tries again in a few minutes"
-            )
-            retry = next(r for r in self._retries(engine.jm) if r.config["retry_attempt"] == 1)
-            assert retry.config["retry_delay"] == 60  # a minute, not Check servers' day
-            self._assert_chain_head_waits_for(engine.jm, first, retry, attempt=1, count=2)
-            if frees_up:
-                publisher.write.side_effect = publisher.succeed
-            self._run_retry(monkeypatch, retry)
-            if not frees_up:
-                second = next(r for r in self._retries(engine.jm) if r.config["retry_attempt"] == 2)
-                assert second.config["retry_delay"] == 120
-                self._run_retry(monkeypatch, second)
-
-        head = engine.jm.get_job(first)
-        [row] = engine.jm.get_file_results(first)
-        [server] = row["servers"]
-        if frees_up:
-            assert head.status is JobStatus.COMPLETED and head.config["last_outcome"] == "completed"
-            assert _outcome(engine.jm, first) == {"markers_published": 1}
-            assert server["status"] == "markers_written"
-            assert publisher.write.call_count == 2
-        else:
-            assert (head.status, head.config["last_outcome"]) == (JobStatus.FAILED, "exhausted")
-            assert head.error == (
-                "1 file(s) still not written to Plex's busy database after 2 retries. "
-                "Check the Files panel for the affected paths."
-            )
-            assert _outcome(engine.jm, first) == {"failed": 1}
-            # The last retry queues none: the row keeps the accurate "next run" wording.
-            assert server["status"] == "failed" and server["message"] == str(busy)
-            assert str(busy).endswith("; trying again on the next run")
-            assert publisher.write.call_count == 3
-            assert len(self._retries(engine.jm)) == 2
+        assert engine.jm.get_job(retry.id).status is JobStatus.COMPLETED
+        assert head.config["last_outcome"] == "completed" and head.progress.retry_eta is None
+        assert [(r["file"], r["outcome"]) for r in engine.jm.get_file_results(first)] == [
+            (setup.path, "markers_skipped")
+        ]
+        assert engine.jm.get_file_results(retry.id) == []
+        stored = JobManager(config_dir=engine.jm.config_dir).get_job(first)
+        assert stored.progress.marker_sources == head.progress.marker_sources
 
     def test_an_old_top_level_retry_job_still_runs(self, engine, setup, monkeypatch):
         # A "Retry: …" job from before retries ran in their job's row (retry_attempt, no chain) runs as it did.
@@ -443,29 +255,9 @@ class TestRetryThroughThePipeline:
             job_runner.run_intro_credits_job(old.id)
         job = engine.jm.get_job(old.id)
         assert (job.status, job.error) == (JobStatus.COMPLETED, None)
-        assert _outcome(engine.jm, old.id) == {"markers_published": 1}
-        assert publishers["jf-1"].write.call_args.args[0] == "item-jf-1"
+        assert _outcome(engine.jm, old.id) == {"markers_skipped": 1}
+        publishers["jf-1"].write.assert_not_called()
         assert engine.jm.get_all_jobs() == [job]
-
-    def test_retry_for_one_server_does_not_write_the_server_that_already_has_the_markers(
-        self, engine, setup, monkeypatch
-    ):
-        registry, publishers = setup.make([("plex-1", ServerType.PLEX), ("jf-1", ServerType.JELLYFIN)])
-        registry.get("jf-1").resolve_remote_path_to_item_id.return_value = None
-        first_patch, second_patch = self._run_pipeline(publishers)
-        with first_patch, second_patch:
-            first = triggers.create_intro_credits_job(
-                library_name="x", priority=2, source="sonarr", file_paths=[setup.path]
-            ).id
-            job_runner.run_intro_credits_job(first)
-            assert _outcome(engine.jm, first) == {"markers_waiting": 1}  # Plex written, Jellyfin waiting
-            retries = self._retries(engine.jm)
-            assert len(retries) == 1
-            registry.get("jf-1").resolve_remote_path_to_item_id.return_value = "item-jf-1"
-            self._run_retry(monkeypatch, retries[0])
-        assert publishers["plex-1"].write.call_count == 1
-        assert publishers["jf-1"].write.call_count == 1
-        assert [c.args[0] for c in publishers["jf-1"].write.call_args_list] == ["item-jf-1"]
 
     def test_the_finished_job_carries_which_sources_decided_its_markers(self, engine, setup, tmp_path):
         _, publishers = setup.make([("plex-1", ServerType.PLEX)])
@@ -482,22 +274,6 @@ class TestRetryThroughThePipeline:
         reloaded = JobManager(config_dir=str(tmp_path / "config"))
         assert reloaded.get_job(job_id).progress.marker_sources == expected
 
-    def test_a_failed_server_on_the_file_still_retries_the_server_that_hasnt_indexed_it(self, engine, setup):
-        registry, publishers = setup.make([("plex-1", ServerType.PLEX), ("jf-1", ServerType.JELLYFIN)])
-        registry.get("jf-1").resolve_remote_path_to_item_id.return_value = None
-        publishers["plex-1"].write.side_effect = PublishError("database is locked")
-        first_patch, second_patch = self._run_pipeline(publishers)
-        with first_patch, second_patch:
-            first = triggers.create_intro_credits_job(
-                library_name="x", priority=2, source="sonarr", file_paths=[setup.path]
-            ).id
-            job_runner.run_intro_credits_job(first)
-        assert _outcome(engine.jm, first) == {"failed": 1}
-        [row] = engine.jm.get_file_results(first)
-        assert {s["id"]: s["status"] for s in row["servers"]} == {"plex-1": "failed", "jf-1": "markers_waiting"}
-        retries = self._retries(engine.jm)
-        assert [r.config["file_paths"] for r in retries] == [[setup.path]]
-
     def _with_extras(self, episode):
         """Every extra shape next to the episode; the server lists only the episode as an item, like a real one."""
         season = os.path.dirname(episode)
@@ -511,7 +287,7 @@ class TestRetryThroughThePipeline:
 
     def _assert_only_the_episode_was_checked(self, engine, job_id, episode, extras, publisher, server):
         assert engine.jm.get_job(job_id).status is JobStatus.COMPLETED
-        assert _outcome(engine.jm, job_id) == {"markers_published": 1, "markers_skipped": len(extras)}
+        assert _outcome(engine.jm, job_id) == {"markers_skipped": len(extras) + 1}
         rows = {r["file"]: r for r in engine.jm.get_file_results(job_id)}
         assert set(rows) == {episode, *extras}
         for path in extras:
@@ -520,9 +296,8 @@ class TestRetryThroughThePipeline:
                 "Extras aren't checked for markers",
             )
             assert not rows[path].get("servers")
-        assert rows[episode]["outcome"] == "markers_published"
-        assert [c.kwargs["canonical_path"] for c in publisher.write.call_args_list] == [episode]
-        assert [c.args[0] for c in server.resolve_remote_path_to_item_id.call_args_list] == [episode]
+        assert rows[episode]["outcome"] == "markers_skipped"
+        publisher.write.assert_not_called()
         assert [j.id for j in engine.jm.get_all_jobs()] == [job_id]  # no retry, no verify
 
     @pytest.mark.parametrize("source", ["manual", "radarr"])
@@ -566,155 +341,6 @@ class TestRetryThroughThePipeline:
             job_runner.run_intro_credits_job(job)
         assert [cfg.id for cfg in enumerate_items.call_args.args[0]] == ["jf-1"]
         self._assert_only_the_episode_was_checked(engine, job, setup.path, extras, publishers["jf-1"], server)
-
-
-class TestCheckServersThroughThePipeline(TestRetryThroughThePipeline):
-    """Check servers on the real runner and pipeline: only a server that dropped our markers is written again."""
-
-    # The retry tests aren't run again under this class.
-    test_file_the_server_adds_later_is_published_by_the_retry_in_the_jobs_own_row = None
-    test_files_that_settled_keep_their_results_while_the_waiting_one_retries = None
-    test_a_file_the_server_never_adds_fails_the_row_when_retries_run_out_as_a_preview_chain_does = None
-    test_an_old_top_level_retry_job_still_runs = None
-    test_a_retry_revived_after_a_restart_with_its_file_done_ends_the_chain = None
-    test_a_file_the_first_run_couldnt_find_counts_in_decided_by_once_the_retry_decides_it = None
-    test_retry_for_one_server_does_not_write_the_server_that_already_has_the_markers = None
-    test_a_failed_server_on_the_file_still_retries_the_server_that_hasnt_indexed_it = None
-    test_a_folder_job_skips_its_extras_and_queues_no_retry_for_them = None
-    test_a_library_job_skips_the_extras_the_listing_returns = None
-
-    def _check_servers(self, engine, setup, monkeypatch, publishers):
-        from media_preview_generator.markers import reconcile
-        from media_preview_generator.markers.publishers.base import MarkerPublisher
-
-        for pub in publishers.values():
-            pub.shows_many.side_effect = lambda items, cancel_check=None, pub=pub: MarkerPublisher.shows_many(
-                pub, items, cancel_check=cancel_check
-            )
-        monkeypatch.setattr(reconcile, "publisher_for", lambda server, cfg, **kw: publishers[cfg.id])
-        monkeypatch.setattr(reconcile, "get_job_manager", lambda: engine.jm)
-        monkeypatch.setattr("media_preview_generator.markers.store.get_marker_store", lambda: setup.store)
-        monkeypatch.setattr(triggers, "markers_enabled_anywhere", lambda: True)
-        queued = reconcile.run_markers_reconcile()
-        assert queued.created
-        job_runner.run_intro_credits_job(queued.job_id)
-        return engine.jm.get_job(queued.job_id)
-
-    def test_a_server_that_dropped_our_markers_gets_them_again_and_nothing_else_is_written(
-        self, engine, setup, monkeypatch
-    ):
-        from media_preview_generator.markers.publishers.base import Shown
-
-        registry, publishers = setup.make([("plex-1", ServerType.PLEX), ("jf-1", ServerType.JELLYFIN)])
-        first_patch, second_patch = self._run_pipeline(publishers)
-        with first_patch, second_patch:
-            first = triggers.create_intro_credits_job(library_name="TV", priority=2, source="manual",
-                                                      file_paths=[setup.path]).id  # fmt: skip
-            job_runner.run_intro_credits_job(first)
-            assert _outcome(engine.jm, first) == {"markers_published": 1}
-
-            jellyfin = publishers["jf-1"]
-            jellyfin.shows.return_value = Shown.MISSING  # a Jellyfin rescan dropped the segments
-
-            def rewrite(item_id, markers, **kwargs):
-                jellyfin.last_write_changed = True  # the plugin serves them again
-                return jellyfin.project(markers)
-
-            jellyfin.write.side_effect = rewrite
-            job = self._check_servers(engine, setup, monkeypatch, publishers)
-
-        assert job.library_name == "Intro & Credits · Check servers" and job.priority == 3
-        assert job.status is JobStatus.COMPLETED and job.error is None  # a warning would be kept in error
-        assert _outcome(engine.jm, job.id) == {"markers_published": 1}
-        [row] = engine.jm.get_file_results(job.id)
-        assert row["file"] == setup.path
-        assert {s["id"]: s["status"] for s in row["servers"]} == {
-            "plex-1": "markers_up_to_date",
-            "jf-1": "markers_written",
-        }
-        assert publishers["plex-1"].write.call_count == 1
-        assert publishers["jf-1"].write.call_count == 2
-        assert publishers["jf-1"].write.call_args.args[0] == "item-jf-1"
-        assert {j.id for j in engine.jm.get_all_jobs()} == {job.id, first}  # no retry, no verify
-
-    @pytest.mark.parametrize("case", ["server-confirms-it-is-gone", "lookup-failed", "cancelled-after-confirming"])
-    def test_an_item_the_server_dropped_leaves_check_servers_only_once_the_server_confirms_it(
-        self, engine, setup, monkeypatch, case
-    ):
-        from media_preview_generator.markers.publishers.base import Shown
-
-        registry, publishers = setup.make([("plex-1", ServerType.PLEX), ("jf-1", ServerType.JELLYFIN)])
-        first_patch, second_patch = self._run_pipeline(publishers)
-        with first_patch, second_patch:
-            first = triggers.create_intro_credits_job(library_name="TV", priority=2, source="manual",
-                                                      file_paths=[setup.path]).id  # fmt: skip
-            job_runner.run_intro_credits_job(first)
-            # Jellyfin no longer lists the file; its old item reads back empty.
-            publishers["jf-1"].shows.return_value = Shown.MISSING
-            registry.get("jf-1").resolve_remote_path_to_item_id.return_value = None
-            if case == "lookup-failed":
-                publishers["jf-1"].item_missing.side_effect = TimeoutError("read timed out")
-            elif case == "cancelled-after-confirming":
-
-                def confirmed_then_cancelled(item_id):
-                    (running,) = [j for j in engine.jm.get_running_jobs() if j.config.get("reconcile")]
-                    engine.jm.request_cancellation(running.id)
-                    return True
-
-                publishers["jf-1"].item_missing.side_effect = confirmed_then_cancelled
-            else:
-                publishers["jf-1"].item_missing.return_value = True
-            job = self._check_servers(engine, setup, monkeypatch, publishers)
-            [row] = engine.jm.get_file_results(job.id)
-            assert {s["id"]: (s["status"], s.get("reason_code")) for s in row["servers"]} == {
-                "plex-1": ("markers_up_to_date", None),
-                "jf-1": ("markers_waiting", "not_in_library"),
-            }
-            publishers["jf-1"].item_missing.assert_called_once_with("item-jf-1")
-            # The confirmed file's retry keeps the run's row pending in its retry chain.
-            assert (
-                job.status
-                is {
-                    "server-confirms-it-is-gone": JobStatus.PENDING,
-                    "lookup-failed": JobStatus.COMPLETED,
-                    "cancelled-after-confirming": JobStatus.CANCELLED,
-                }[case]
-            )
-            status = setup.store.get_item_publish_state("jf-1", "item-jf-1").status
-            # Marked gone only once its retry was queued: a cancelled run leaves it to be confirmed again.
-            assert status == ("gone" if case == "server-confirms-it-is-gone" else "written")
-            others = [j for j in engine.jm.get_all_jobs() if j.id not in {first, job.id}]
-            if case == "server-confirms-it-is-gone":
-                # The file gets the retry any job queues (Jellyfin may not have added its new item yet); the retry
-                # lists the file, not Check servers' drift.
-                (retry,) = others
-                assert (retry.config["retry_attempt"], retry.config["file_paths"]) == (1, [setup.path])
-                assert (retry.config["source"], retry.config.get("reconcile")) == ("reconcile", None)
-                assert retry.config["parent_job_id"] == job.id
-                # Only its retry is left, so it doesn't hold the next Check servers run back.
-            else:
-                assert others == []
-            publishers["jf-1"].item_missing.side_effect = None
-            publishers["jf-1"].item_missing.return_value = False
-            again = self._check_servers(engine, setup, monkeypatch, publishers)
-        assert again.status is JobStatus.COMPLETED and again.error is None
-        listed_again = [] if case == "server-confirms-it-is-gone" else [setup.path]
-        assert [r["file"] for r in engine.jm.get_file_results(again.id)] == listed_again
-        assert publishers["jf-1"].write.call_count == 1
-
-    def test_nothing_drifted_completes_at_once(self, engine, setup, monkeypatch):
-        registry, publishers = setup.make([("jf-1", ServerType.JELLYFIN)])
-        first_patch, second_patch = self._run_pipeline(publishers)
-        with first_patch, second_patch:
-            first = triggers.create_intro_credits_job(library_name="TV", priority=2, source="manual",
-                                                      file_paths=[setup.path]).id  # fmt: skip
-            job_runner.run_intro_credits_job(first)
-            job = self._check_servers(engine, setup, monkeypatch, publishers)
-        assert job.status is JobStatus.COMPLETED and job.error is None
-        assert engine.jm.get_file_results(job.id) == []
-        logs = engine.jm.get_logs(job.id)
-        assert any("INFO - Every server checked still shows what this app published" in line for line in logs), logs
-        assert publishers["jf-1"].write.call_count == 1
 
 
 class TestGoneFromDiskThroughThePipeline:
@@ -789,7 +415,7 @@ class TestGoneFromDiskThroughThePipeline:
         ) in messages, logs
         assert not any("Source file" in line for line in logs), logs
 
-    def test_a_webhook_file_missing_that_appears_later_is_published_by_the_retry(self, engine, setup, monkeypatch):
+    def test_a_webhook_file_missing_that_appears_later_is_processed_by_the_retry(self, engine, setup, monkeypatch):
         _, publishers = setup.make([("plex-1", ServerType.PLEX)])
         copying = setup.path + ".partial"  # not a video: no replacement, so the file may still be copying in
         os.rename(setup.path, copying)
@@ -804,8 +430,9 @@ class TestGoneFromDiskThroughThePipeline:
 
         head = engine.jm.get_job(first)
         assert (head.status, head.error, head.config["last_outcome"]) == (JobStatus.COMPLETED, None, "completed")
-        assert _outcome(engine.jm, first) == {"markers_published": 1}
-        assert publishers["plex-1"].write.call_count == 1
+        assert _outcome(engine.jm, first) == {"markers_skipped": 1}
+        publishers["plex-1"].write.assert_not_called()
+        assert setup.store.get_evidence(setup.store.get_file(setup.path).id)
 
     def test_a_webhook_file_a_newer_file_replaces_while_it_waits_ends_the_chain_green(self, engine, setup, monkeypatch):
         _, publishers = setup.make([("plex-1", ServerType.PLEX)])
@@ -841,7 +468,7 @@ class TestGoneFromDiskThroughThePipeline:
         assert _outcome(engine.jm, first) == {"skipped_file_not_found": 1}
         publishers["plex-1"].write.assert_not_called()
 
-    def test_a_scan_file_missing_gets_no_retry_and_the_next_scan_publishes_it_once_it_is_back(
+    def test_a_scan_file_missing_gets_no_retry_and_the_next_scan_processes_it_once_it_is_back(
         self, engine, setup, monkeypatch
     ):
         _, publishers = setup.make([("plex-1", ServerType.PLEX)])
@@ -861,10 +488,11 @@ class TestGoneFromDiskThroughThePipeline:
             os.rename(away, setup.path)
             second = self._job(engine, monkeypatch, setup.path, "schedule")
 
-        assert _outcome(engine.jm, second) == {"markers_published": 1}
+        assert _outcome(engine.jm, second) == {"markers_skipped": 1}
         assert engine.jm.get_job(second).status is JobStatus.COMPLETED
         assert self._retries(engine.jm) == []
-        assert publishers["plex-1"].write.call_count == 1
+        publishers["plex-1"].write.assert_not_called()
+        assert setup.store.get_evidence(setup.store.get_file(setup.path).id)
 
 
 @pytest.mark.real_job_async
@@ -1009,6 +637,7 @@ class TestCreditTextOnTheWorkers:
             job = triggers.create_intro_credits_job(library_name="TV", priority=2, source="manual",
                                                     file_paths=[setup.path])  # fmt: skip
             job_runner.run_intro_credits_job(job.id)
+        setup.publisher.write.assert_not_called()
         return engine.jm.get_job(job.id)
 
     @staticmethod
@@ -1028,7 +657,7 @@ class TestCreditTextOnTheWorkers:
         kwargs = setup.pool.detect_boxes.call_args.kwargs
         assert (kwargs["gpu"], kwargs["gpu_device_path"], kwargs["gpu_worker"]) == ("NVIDIA", "cuda:0", True)
         assert callable(kwargs["on_cpu"]) and callable(kwargs["cancel_check"])
-        assert job.status is JobStatus.COMPLETED and _outcome(engine.jm, job.id) == {"markers_none": 1}
+        assert job.status is JobStatus.COMPLETED and _outcome(engine.jm, job.id) == {"markers_skipped": 1}
         assert self._worker().fallback_active is False
         assert self._released(engine)
 
@@ -1047,64 +676,10 @@ class TestCreditTextOnTheWorkers:
         rec = setup.store.get_file(setup.path)
         assert setup.store.evidence_version(rec.id, Source.CREDITS_TEXT) == detector.CREDITS_TEXT_VERSION
         # Counted once, as the CPU rerun ended.
-        assert job.status is JobStatus.COMPLETED and _outcome(engine.jm, job.id) == {"markers_none": 1}
+        assert job.status is JobStatus.COMPLETED and _outcome(engine.jm, job.id) == {"markers_skipped": 1}
         [row] = engine.jm.get_file_results(job.id)
         assert row["worker"] == "GPU Worker 1 (Test GPU)"
         assert self._released(engine)
-
-    @pytest.mark.parametrize("rerun", [False, True], ids=["on-the-gpu", "cpu-rerun"])
-    def test_the_job_log_gives_every_line_its_own_record_in_order(self, engine, setup, rerun):
-        import re
-
-        from media_preview_generator.markers.credits import frames
-
-        if rerun:
-            setup.effects["gpu"] = frames.GpuDecodeError("the GPU decoded no frames from S01E01.mkv")
-        job = self._run(engine, setup)
-        logs = engine.jm.get_logs(job.id)
-        # Every entry is one record: its own time and level, then its message. A line after the file's first starts
-        # with its title and " · ", so it can be told apart from another file's or worker's line interleaved with it.
-        stamped = [
-            re.fullmatch(r"\[\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\] (INFO|WARNING|ERROR) - (.*)", line) for line in logs
-        ]
-        assert all(stamped), logs
-        messages = [match.group(2) for match in stamped]
-        episode = "Rick and Morty (2013) S01E01"
-        worker = "GPU Worker 1 (Test GPU)"
-        # One start line replaces the runner's, the job manager's and the dispatcher's.
-        assert messages[0] == f"Intro & Credits job {job.id[:8]} started: 1 file, manual run"
-        assert not [m for m in messages if m.startswith(("Started job", "Dispatcher: submitted"))]
-        reading = [f"{episode} · Reading credit text on the GPU (Test GPU)…"]
-        if rerun:
-            reading.append(
-                f"{worker} couldn't process {setup.path} on the GPU and is retrying on CPU. "
-                "Reason: the GPU decoded no frames from S01E01.mkv"
-            )
-            reading.append(f"{episode} · Reading credit text on the CPU…")
-        start = messages.index(f"{episode}: checking credits")
-        assert messages[start : start + 3 + len(reading)] == [
-            f"{episode}: checking credits",
-            f"{episode} · Checking chapters… none (asked now)",
-            f"{worker} picked up: {episode}, checking credits",
-            *reading,
-        ]
-        assert re.fullmatch(rf"{re.escape(episode)} · Credit text: none found \([\d.]+ s\)", messages[-6]), messages
-        assert messages[-5:-3] == [
-            f"{episode} · Decided: credits nothing found",
-            f"{episode} · [PLEX-1] Nothing to send",
-        ]
-        assert re.fullmatch(
-            rf"{re.escape(worker)} completed: {re.escape(episode)} \(success"
-            + (", rerun on the CPU" if rerun else "")
-            + r", [\d.]+ s\)",
-            messages[-3],
-        )
-        # The totals come after the file's lines, however the job log's queue was drained; the job manager's own
-        # completion line stays last.
-        assert messages[-2:] == [
-            "Done: 1 file · 0 sent to PLEX-1 · 1 nothing found",
-            f"Job {job.id} completed successfully",
-        ]
 
     def test_a_file_cut_short_is_no_gpu_fallback_and_is_not_read_again(self, engine, setup, monkeypatch):
         # Most GPU->CPU fallbacks seen in production were files cut short, the GPU blamed for each.
@@ -1133,7 +708,6 @@ class TestCreditTextOnTheWorkers:
         episode = "Rick and Morty (2013) S01E01"
         first = [line.split("] ", 1)[1] for line in engine.jm.get_logs(job.id)]
         assert f"INFO - {episode} · Credit text: {cut_short}" in first
-        assert f"INFO - {episode} · [PLEX-1] Failed (Couldn't read the credits: {cut_short})" in first
 
         # The next scan of the same file: no worker, no decode; the recorded reason fails the file again.
         again = self._run(engine, setup)
@@ -1146,7 +720,6 @@ class TestCreditTextOnTheWorkers:
         assert f"INFO - {episode}: checking credits" in messages
         assert f"INFO - {episode} · Credit text: {cut_short}" in messages
         assert f"INFO - {episode} · Decided: credits nothing found" in messages
-        assert f"INFO - {episode} · [PLEX-1] Failed (Couldn't read the credits: {cut_short})" in messages
         assert detector.credits_text_failed_here(rec, SimpleNamespace(store=setup.store)) is True
 
     def test_a_detector_stopped_by_a_siblings_folder_leaves_the_job_green(self, engine, setup):
@@ -1157,10 +730,10 @@ class TestCreditTextOnTheWorkers:
         job = self._run(engine, setup)
         assert setup.decodes == [("NVIDIA", "cuda:0")]  # no CPU rerun: the GPU didn't fail
         assert job.status is JobStatus.COMPLETED and job.error is None
-        assert _outcome(engine.jm, job.id) == {"markers_none": 1}
+        assert _outcome(engine.jm, job.id) == {"markers_skipped": 1}
         [row] = engine.jm.get_file_results(job.id)
         assert "Couldn't read" not in (row["reason"] or "")
-        assert [(r["id"], r["status"]) for r in row["servers"]] == [("plex-1", "markers_none")]
+        assert [(r["id"], r["status"]) for r in row["servers"]] == [("plex-1", "markers_skipped")]
         messages = [line.split("] ", 1)[1] for line in engine.jm.get_logs(job.id)]
         assert (
             "INFO - Rick and Morty (2013) S01E01 · Credit text: no answer this time (Season 02 can't be read)"
@@ -1185,7 +758,7 @@ class TestCreditTextOnTheWorkers:
             "The GPU read no frames in the end of Rick and Morty (2013) - S01E01 - Pilot.mkv, but the CPU did; its "
             "credits were read on the CPU"
         )
-        assert job.status is JobStatus.COMPLETED and _outcome(engine.jm, job.id) == {"markers_none": 1}
+        assert job.status is JobStatus.COMPLETED and _outcome(engine.jm, job.id) == {"markers_skipped": 1}
         assert self._released(engine)
         import re
 
@@ -1213,7 +786,7 @@ class TestCreditTextOnTheWorkers:
             worker.fallback_reason
             == "Credits read on the CPU: the GPU crashed (killed by SIGKILL) on this file. It's tried again shortly."
         )
-        assert job.status is JobStatus.COMPLETED and _outcome(engine.jm, job.id) == {"markers_none": 1}
+        assert job.status is JobStatus.COMPLETED and _outcome(engine.jm, job.id) == {"markers_skipped": 1}
         assert self._released(engine)
 
     def test_a_cancel_during_the_decode_frees_the_worker_and_the_slot_without_a_cpu_rerun(self, engine, setup):
@@ -1252,9 +825,6 @@ class TestCreditTextOnTheWorkers:
         failure = "Couldn't read the credits: Text detection failed: the helper exited (-9)"
         assert row["reason"].startswith(f"{failure}; ")
         assert [(r["id"], r["status"]) for r in row["servers"]] == [("plex-1", "failed")]
-        assert f"INFO - Rick and Morty (2013) S01E01 · [PLEX-1] Failed ({failure})" in [
-            line.split("] ", 1)[1] for line in engine.jm.get_logs(job.id)
-        ]
         assert self._released(engine)
 
 

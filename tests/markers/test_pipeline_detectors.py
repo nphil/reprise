@@ -76,7 +76,7 @@ class TestStoredAnswers:
         ctx = _ctx(store, reg, detectors=(spec,), settings_raw=INTRO_ONLY)
         first, _ = _run(ctx, media, _pubs(), stage="process")
         second, _ = _run(ctx, media, _pubs(), stage="process")
-        assert first.outcome_key == second.outcome_key == FileOutcome.NO_MARKERS.value
+        assert first.outcome_key == second.outcome_key == FileOutcome.SKIPPED.value
         decision = store.get_decisions(store.get_file(media).id)[T.INTRO]
         assert decision.status is DecisionStatus.NO_EVIDENCE
         assert (decision.proposed_start_ms, decision.proposed_end_ms) == (126_000, 158_000)
@@ -140,7 +140,7 @@ class TestStoredAnswers:
         rec = store.get_file(media)
         assert store.get_decisions(rec.id)[T.INTRO].status is DecisionStatus.DECIDED
         out, _ = _run(ctx_for(1), media, _pubs())
-        assert out.outcome_key == FileOutcome.UP_TO_DATE.value and detector.call_count == 1
+        assert out.outcome_key == FileOutcome.SKIPPED.value and detector.call_count == 1
         assert _run(ctx_for(2), media, _pubs())[0] is None  # the check hands the decided file to a worker
         _run(ctx_for(2), media, _pubs(), stage="process")
         assert detector.call_count == 2
@@ -158,7 +158,7 @@ class TestStoredAnswers:
         _run(ctx, media, _pubs(), stage="process")
         assert store.get_decisions(store.get_file(media).id)[T.INTRO].status is DecisionStatus.DECIDED
         out, _ = _run(ctx, media, _pubs())
-        assert out is not None and out.outcome_key == FileOutcome.UP_TO_DATE.value
+        assert out is not None and out.outcome_key == FileOutcome.SKIPPED.value
         detector.assert_not_called()
         due.assert_not_called()  # a decision made without it costs nothing more
 
@@ -182,7 +182,7 @@ class TestStoredAnswers:
             assert out is None  # every type is decided, and still the check hands it to a worker
             _run(ctx, media, _pubs(), stage="process")
         else:
-            assert out.outcome_key == FileOutcome.UP_TO_DATE.value
+            assert out.outcome_key == FileOutcome.SKIPPED.value
         assert detector.call_count == (2 if due else 1)
 
     def test_a_locked_marker_crediting_the_detector_does_not_run_it(self, store, media):
@@ -209,7 +209,8 @@ class TestStoredAnswers:
         reg = _registry(media, ServerType.PLEX)
         detector = MagicMock(side_effect=[DetectorUnavailableError("ffmpeg exited 1", this_file=True), [AUDIO_INTRO]])
         ctx = _ctx(store, reg, detectors=(_spec(detector),), settings_raw=INTRO_ONLY)
-        out, _ = _run(ctx, media, _pubs(), stage="process")
+        plex = ready_publisher()
+        out, _ = _run(ctx, media, {"plex-1": plex}, stage="process")
         rec = store.get_file(media)
         # Nothing written and the file's own read failed: the file failed, and says why (no retry job: the next run
         # reads it again anyway).
@@ -219,9 +220,13 @@ class TestStoredAnswers:
             (ServerStatus.FAILED.value, "Couldn't read the intro's audio: ffmpeg exited 1")
         ]
         assert store.evidence_version(rec.id, Source.SEASON_AUDIO) is None
-        out, _ = _run(ctx, media, _pubs(), stage="process")
+        plex.write.assert_not_called()
+        assert store.get_publish_state(rec.id, "plex-1") is None
+        out, _ = _run(ctx, media, {"plex-1": plex}, stage="process")
         assert detector.call_count == 2 and AUDIO_INTRO in store.get_evidence(rec.id)
-        assert out.outcome_key == FileOutcome.PUBLISHED.value and "Couldn't read" not in out.message
+        assert store.get_markers(rec.id)[T.INTRO] == Marker(T.INTRO, 126_000, 158_000, ("season_audio",))
+        assert out.outcome_key == FileOutcome.SKIPPED.value and "Couldn't read" not in out.message
+        plex.write.assert_not_called()
 
     # Season audio stopped by something that isn't this file's read must not fail the file: one unreadable sibling
     # folder would fail a whole season and paint the job red (the false-Failed-job shape of 15753ca).
@@ -232,25 +237,29 @@ class TestStoredAnswers:
         ctx = _ctx(store, reg, detectors=(_spec(detector),), settings_raw=INTRO_ONLY)
         out, _ = _run(ctx, media, _pubs(), stage="process")
         rec = store.get_file(media)
-        assert out.outcome_key == FileOutcome.NO_MARKERS.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         assert out.message == "intro: none"  # the reason is on the source's line in the job log
-        assert [r["status"] for r in out.publisher_rows] == [ServerStatus.NONE.value]
+        assert [r["status"] for r in out.publisher_rows] == [ServerStatus.SKIPPED.value]
         assert store.evidence_version(rec.id, Source.SEASON_AUDIO) is None
         out, _ = _run(ctx, media, _pubs(), stage="process")  # asked again next run
-        assert detector.call_count == 2 and out.outcome_key == FileOutcome.PUBLISHED.value
+        assert detector.call_count == 2 and out.outcome_key == FileOutcome.SKIPPED.value
 
-    def test_a_failed_read_beside_a_written_type_keeps_the_file_written(self, store, media):
+    def test_a_failed_read_beside_a_decided_type_keeps_its_proposal(self, store, media):
         reg = _registry(media, ServerType.PLEX)
         audio = _spec(MagicMock(side_effect=DetectorUnavailableError("fingerprint failed", this_file=True)))
         text = LocalDetectorSpec(Source.CREDITS_TEXT, frozenset({T.CREDITS}), MagicMock(return_value=[TEXT_CREDITS]))
         both = {"sources": [{"id": "theintrodb", "enabled": True}], "detect": {"intro": True, "credits": True}}
         ctx = _ctx(store, reg, detectors=(audio, text), settings_raw=both)
-        out, _ = _run(ctx, media, _pubs(), stage="process")
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        plex = ready_publisher()
+        out, _ = _run(ctx, media, {"plex-1": plex}, stage="process")
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         assert out.message.endswith("; Couldn't read the intro's audio: fingerprint failed")
         assert out.message.startswith("intro: none")
-        assert [r["status"] for r in out.publisher_rows] == [ServerStatus.WRITTEN.value]
+        assert [r["status"] for r in out.publisher_rows] == [ServerStatus.SKIPPED.value]
         assert store.get_markers(store.get_file(media).id)[T.CREDITS].decided_by == ("credits_text",)
+        assert TEXT_CREDITS in store.get_evidence(store.get_file(media).id)
+        assert store.get_publish_state(store.get_file(media).id, "plex-1") is None
+        plex.write.assert_not_called()
 
 
 class TestWhereItRuns:
@@ -262,7 +271,7 @@ class TestWhereItRuns:
         ctx = _ctx(store, reg, detectors=(_spec(detector, needs_worker=needs),), settings_raw=INTRO_ONLY)
         out, _ = _run(ctx, media, _pubs(), cancel_check=cancel)
         # Season audio decides an intro alone: the file is done on the checking thread.
-        assert out is not None and out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out is not None and out.outcome_key == FileOutcome.SKIPPED.value
         kwargs = detector.call_args.kwargs
         assert (kwargs["gpu"], kwargs["gpu_device_path"], kwargs["pause_check"]) == (None, None, None)
         assert kwargs["cancel_check"] is cancel and kwargs["ctx"] is ctx
@@ -522,6 +531,7 @@ class TestAnotherJobsRunOfTheFile:
             entry = pipeline._PATH_LOCKS._locks.get(media)
             return entry is not None and entry[1] >= 2  # the holder and the waiter
 
+        # Server-marker reads still use this factory; never contact a real server during these threaded tests.
         with (
             patch.object(pipeline, "probe_media", return_value=pipeline_helpers._probe()),
             patch.object(pipeline, "publisher_for", side_effect=lambda server, cfg, **kw: ready_publisher()),
@@ -612,8 +622,8 @@ class TestAnotherJobsRunOfTheFile:
         scene.release.set()
         thread.join(10)
         (outcome,) = out
-        # It ran the file once the holder let go (the holder had just sent the same markers).
-        assert outcome.outcome_key == FileOutcome.UP_TO_DATE.value
+        # It ran the file once the holder let go, using the saved evidence.
+        assert outcome.outcome_key == FileOutcome.SKIPPED.value
         assert waiter.busy_promised() == {"/media/other.mkv"}
 
     def test_with_no_promise_left_the_wait_still_ends_at_the_cap(self, store, media, scene, monkeypatch):
@@ -665,7 +675,7 @@ class TestSeasonAudioChecksAnIntroChapter:
     def test_season_audio_agreeing_with_the_online_answer_overrules_the_chapter(self, store, media):
         detect = MagicMock(return_value=[Candidate(T.INTRO, 126_900, 145_600, Source.SEASON_AUDIO, 1.0, "5/6")])
         out, decision, marker = self._run(store, media, detect)
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         assert decision.status is DecisionStatus.DECIDED
         assert decision.reason.startswith(AUDIO_OVER_CHAPTER_REASON)
         # Season audio supplies the end (rule 13); the chapter's 157.068 s end, 11 s into the episode, is gone.
@@ -687,7 +697,7 @@ class TestSeasonAudioChecksAnIntroChapter:
         out, decision, marker = self._run(store, media, detect)
         assert decision.status is DecisionStatus.DECIDED
         assert marker == Marker(T.INTRO, 126_771, 157_068, ("chapters",))
-        assert out.outcome_key == FileOutcome.PUBLISHED.value
+        assert out.outcome_key == FileOutcome.SKIPPED.value
         _again, _decision, marker = self._run(store, media, detect)
         assert marker == Marker(T.INTRO, 126_771, 157_068, ("chapters",))
         assert calls == [media]  # not asked again for the chapter

@@ -10,11 +10,11 @@ import random
 import shutil
 from collections.abc import Collection
 from datetime import datetime
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from loguru import logger
 
-from ..job_kinds import JOB_KIND_INTRO_CREDITS, JOB_KIND_LOUDNESS
+from ..job_kinds import JOB_KIND_INTRO_CREDITS, JOB_KIND_LOUDNESS, JOB_KIND_REPRISE
 from ..markers.models import utcnow as _utcnow
 from ..processing.generator import ProcessingResult, clear_failures, log_failure_summary
 from ..processing.retry_queue import CHAPTER_PUBLISHER_STATUSES, publisher_needs_retry
@@ -24,6 +24,10 @@ from .checkpoints import checkpoint_items
 from .group_runtime import refresh_worker_groups
 from .parking import JobParked
 from .worker import JOB_LOG_SKIP, WorkerPool
+
+if TYPE_CHECKING:
+    from ..processing.types import ProcessableItem
+    from ..servers.base import ServerConfig
 
 
 def _exists(path: str) -> bool:
@@ -826,6 +830,7 @@ def _enumerate_items_for_servers(
     cancel_check=None,
     label: str,
     progress_callback=None,
+    raw_items=None,
 ):
     """Walk every server in ``candidates`` and collect the items each yields.
 
@@ -893,6 +898,8 @@ def _enumerate_items_for_servers(
                     return _one_entry_per_file(all_items), enumeration_errors
 
                 all_items.append((server_cfg, item))
+                if raw_items is not None:
+                    raw_items.append((server_cfg, item))
         except Exception as exc:
             logger.warning(
                 "Enumeration on {} server {!r} failed ({}: {}). Continuing with the next server in scope.",
@@ -1162,6 +1169,7 @@ def _run_recently_added_multi_server(
 
     # At least an hour, as ever; not rounded, so a 1.5 h window (or one widened by a wait) keeps its last half hour.
     lookback = max(1.0, float(lookback_hours))
+    reprise_items: list[tuple[ServerConfig, ProcessableItem]] = []
     all_items, enumeration_errors = _enumerate_items_for_servers(
         candidates,
         enumerate_one=lambda processor, server_cfg: processor.scan_recently_added(
@@ -1172,6 +1180,7 @@ def _run_recently_added_multi_server(
         cancel_check=cancel_check,
         label="recently-added scan",
         progress_callback=progress_callback,
+        **({"raw_items": reprise_items} if follow_up_kinds and JOB_KIND_REPRISE in follow_up_kinds else {}),
     )
 
     # Same warning-on-enumeration-failure contract as the full-scan
@@ -1204,6 +1213,12 @@ def _run_recently_added_multi_server(
         listed = [item for _cfg, item in all_items]
         _remember_item_origins(job_id, listed, config, registry)
         queued_follow_ups = _queue_intro_credits_follow_ups(job_id, listed, server_id_filter, kinds=follow_up_kinds)
+        if follow_up_kinds and JOB_KIND_REPRISE in follow_up_kinds and not enumeration_errors:
+            from ..markers.freeze import Freeze
+
+            Freeze.of(pause_check).hold(cancel_check=cancel_check)
+            if not (cancel_check and cancel_check()):
+                queued_follow_ups[JOB_KIND_REPRISE] = _queue_reprise_follow_ups(job_id, reprise_items)
     else:
         queued_follow_ups = {}
 
@@ -1282,7 +1297,87 @@ def _remember_item_origins(job_id: str, items: list, config, registry) -> None:
         )
 
 
-_FOLLOW_UP_NAMES = ((JOB_KIND_INTRO_CREDITS, "Intro & Credits"), (JOB_KIND_LOUDNESS, "Plex loudness"))
+_FOLLOW_UP_NAMES = (
+    (JOB_KIND_INTRO_CREDITS, "Intro & Credits"),
+    (JOB_KIND_LOUDNESS, "Plex loudness"),
+    (JOB_KIND_REPRISE, "Reprise"),
+)
+
+
+def _queue_reprise_follow_ups(job_id, items):
+    """Queue only the Plex library paths actually enumerated by this scheduled scan."""
+    from ..markers.freeze import Freeze
+    from ..reprise.service import get_service
+    from ..web.jobs import get_job_manager
+    from ..web.routes.job_runner import RECENTLY_ADDED_JOB_SOURCE
+    from ..web.scheduler import _SCHEDULE_STOP_LOCK, get_schedule_manager, normalize_schedule_config
+    from ..web.settings_manager import get_settings_manager
+
+    job = get_job_manager().get_job(job_id)
+    if not job or not job.parent_schedule_id or (job.config or {}).get("source") != RECENTLY_ADDED_JOB_SOURCE:
+        return []
+    grouped = {}
+    for cfg, item in items:
+        if getattr(cfg.type, "value", cfg.type) != "plex":
+            logger.warning("Reprise cannot analyze recently added items on non-Plex server {}", cfg.id)
+            continue
+        if not item.library_id:
+            logger.warning("Reprise skipped a recently added item on {} without a library identity", cfg.id)
+            continue
+        grouped.setdefault((cfg.id, str(item.library_id)), set()).add(item.canonical_path)
+    manager = get_job_manager()
+
+    def paused():
+        return manager.is_pause_requested(job_id) or get_settings_manager().processing_paused
+
+    def cancelled():
+        return manager.is_cancellation_requested(job_id) or job.status.value == "cancelled"
+
+    while True:
+        Freeze.of(paused).hold(cancel_check=cancelled)
+        with _SCHEDULE_STOP_LOCK:
+            if cancelled():
+                return []
+            if paused():
+                continue
+            schedule_manager = get_schedule_manager()
+            schedule = schedule_manager.get_schedule(job.parent_schedule_id) if schedule_manager else None
+            if not schedule or not schedule.get("enabled", True):
+                return []
+            try:
+                current = normalize_schedule_config(schedule.get("config"))
+            except ValueError:
+                return []
+            if current["job_type"] != "recently_added" or JOB_KIND_REPRISE not in current["job_kinds"]:
+                return []
+            picks = {(pair["server_id"], pair["library_id"]) for pair in current.get("libraries", [])}
+            selected_server = schedule.get("server_id")
+            selected_ids = schedule.get("library_ids") or (
+                [schedule["library_id"]] if schedule.get("library_id") else []
+            )
+            queued = []
+            for (server_id, library_id), paths in grouped.items():
+                if picks and (server_id, library_id) not in picks:
+                    continue
+                if not picks and selected_server and server_id != selected_server:
+                    continue
+                if not picks and selected_ids and library_id not in {str(value) for value in selected_ids}:
+                    continue
+                try:
+                    result = get_service().enqueue_library_analysis(
+                        server_id,
+                        library_id,
+                        candidate_paths=sorted(paths),
+                        trigger="recently_added",
+                        parent_schedule_id=job.parent_schedule_id,
+                        priority=job.priority,
+                    )
+                    queued.append(result["id"])
+                except Exception:
+                    logger.exception(
+                        "Could not queue Reprise for recently added library {} on {}", library_id, server_id
+                    )
+            return queued
 
 
 def _queue_intro_credits_follow_ups(

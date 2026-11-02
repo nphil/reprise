@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 import requests
 
+from media_preview_generator.markers.publishers.base import PublishError
 from media_preview_generator.servers import (
     ConnectionResult,
     JellyfinServer,
@@ -3433,31 +3434,14 @@ class TestBridgeMarkers:
         assert server.get_bridge_markers("abc") == [{"type": "Outro"}]
         server.get_bridge_marker_state.assert_called_once_with("abc")
 
-    def test_put_bridge_markers_sends_segments_and_file_size(self, make_server):
+    def test_legacy_mutations_are_rejected_without_request(self, make_server):
         server = make_server()
-        ok = MagicMock(status_code=200)
-        server._request = MagicMock(return_value=ok)
-        segments = [{"type": "Intro", "startTicks": 1, "endTicks": 2}]
-        assert server.put_bridge_markers("abc", segments, file_size=987654321) is ok
-        server._request.assert_called_once_with(
-            "POST", "/MediaPreviewBridge/Markers/abc", json_body={"segments": segments, "fileSize": 987654321}
-        )
-
-    def test_put_bridge_markers_omits_unknown_file_size(self, make_server):
-        server = make_server()
-        server._request = MagicMock(return_value=MagicMock(status_code=200))
-        segments = [{"type": "Outro", "startTicks": 3, "endTicks": 4}]
-        server.put_bridge_markers("abc", segments)
-        server._request.assert_called_once_with(
-            "POST", "/MediaPreviewBridge/Markers/abc", json_body={"segments": segments}
-        )
-
-    def test_delete_bridge_markers(self, make_server):
-        server = make_server()
-        gone = MagicMock(status_code=204)
-        server._request = MagicMock(return_value=gone)
-        assert server.delete_bridge_markers("abc") is gone
-        server._request.assert_called_once_with("DELETE", "/MediaPreviewBridge/Markers/abc")
+        server._request = MagicMock()
+        with pytest.raises(PublishError):
+            server.put_bridge_markers("../System/Restart", [{"type": "Intro"}], file_size=987654321)
+        with pytest.raises(PublishError):
+            server.delete_bridge_markers("../System/Restart")
+        server._request.assert_not_called()
 
     def test_get_media_segments(self, make_server):
         server = make_server()
@@ -3485,8 +3469,6 @@ class TestBridgeMarkers:
         ("call_it", "request_args"),
         [
             pytest.param(lambda s, i: s.get_bridge_marker_state(i), ("GET", "/MediaPreviewBridge/Markers/{q}"), id="get"),
-            pytest.param(lambda s, i: s.put_bridge_markers(i, []), ("POST", "/MediaPreviewBridge/Markers/{q}"), id="post"),
-            pytest.param(lambda s, i: s.delete_bridge_markers(i), ("DELETE", "/MediaPreviewBridge/Markers/{q}"), id="delete"),
             pytest.param(lambda s, i: s.get_media_segments(i), ("GET", "/MediaSegments/{q}"), id="segments"),
         ],
     )  # fmt: skip

@@ -520,14 +520,6 @@ def _user_markers(raw: object, duration_ms: int) -> tuple[list[Any] | None, str]
     return out, ""
 
 
-
-
-
-
-
-
-
-
 @api.route("/markers/item/markers", methods=["POST"])
 @api_token_required
 def marker_item_save():
@@ -580,8 +572,6 @@ def marker_item_save():
         "queued_job_id": None,
     }
     return jsonify(_without_secrets(payload, registry))
-
-
 
 
 @api.route("/markers/item/markers", methods=["DELETE"])

@@ -3,14 +3,13 @@
 `thumbnail_quality` is handed verbatim to FFmpeg's `-q:v`, which is a
 qscale: **lower is better**.  Every user-facing surface that named the
 scale drifted the other way and shipped, because nothing pinned the
-direction.  These tests cover each surface as its own cell — the two
-templates and the Unraid CA template are independent copies that have
-already drifted together once.
+direction. These tests cover each remaining surface as its own cell.
 """
 
 from __future__ import annotations
 
 import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -24,7 +23,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 QUALITY_COPY_SURFACES = {
     "settings.html": REPO_ROOT / "media_preview_generator/web/templates/settings.html",
     "setup.html": REPO_ROOT / "media_preview_generator/web/templates/setup.html",
-    "unraid-template": REPO_ROOT / "unraid-templates/media-preview-generator.xml",
     "faq.md": REPO_ROOT / "docs/faq.md",
     "reference.md": REPO_ROOT / "docs/reference.md",
     "llms.txt": REPO_ROOT / "docs/llms.txt",
@@ -35,7 +33,6 @@ QUALITY_COPY_SURFACES = {
 DIRECTION_PHRASE = {
     "settings.html": "lower is better",
     "setup.html": "lower is better",
-    "unraid-template": "lower = better quality",
     "faq.md": "lower numbers = higher quality",
     "reference.md": "lower = better quality",
     "llms.txt": "lower = sharper",
@@ -68,7 +65,6 @@ SURFACE_SCOPE: dict[str, tuple[str, ...]] = {
         # setup.html puts the visible hint in a .form-text under the slider.
         r'<div class="form-text">\s*Quality:.*?</div>',
     ),
-    "unraid-template": (r"^.*THUMBNAIL_QUALITY.*$",),
     # The whole FAQ answer, question heading to the next question heading. The heading may end in the
     # <a id> that keeps the old MkDocs link to it working.
     "faq.md": (r"^### What does thumbnail quality 1-10 change\?(?:<a id=\"[^\"]+\"></a>)?\n.*?(?=\n### )",),
@@ -92,6 +88,20 @@ def _quality_copy(name: str) -> str:
         assert found, f"{name}: scope pattern matched nothing — {pattern!r}"
         chunks.extend(found)
     return "\n".join(chunks).lower()
+
+
+def test_unraid_template_import_uses_safe_mounts() -> None:
+    root = ET.parse(REPO_ROOT / "unraid-templates/reprise.xml").getroot()
+    assert root.tag == "Container"
+    assert root.findtext("Name") == "Reprise"
+    configs = [config for config in root.findall("Config") if config.get("Type") == "Path"]
+    paths = {config.get("Target"): config for config in configs}
+    assert len(configs) == len(paths)
+    assert {"/config", "/media"} <= paths.keys()
+    assert all(config.get("Mode") == "ro" for target, config in paths.items() if target != "/config")
+    assert paths["/config"].get("Mode") == "rw"
+    assert paths["/media"].get("Mode") == "ro"
+    assert not (paths["/media"].text or "").strip()
 
 
 def test_every_surface_has_a_scope() -> None:

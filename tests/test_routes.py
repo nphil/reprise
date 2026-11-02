@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from media_preview_generator.config import normalize_path_mappings
+from media_preview_generator.job_kinds import JOB_KINDS
 from media_preview_generator.upgrade import _CURRENT_SCHEMA_VERSION
 from media_preview_generator.web.app import create_app
 from media_preview_generator.web.settings_manager import reset_settings_manager
@@ -386,7 +387,9 @@ class TestLoginLogout:
 
         assert resp.status_code == 200
         assert b'id="logoutConfirm"' in resp.data
-        assert authed_client.get("/", follow_redirects=False).status_code == 200
+        with authed_client.session_transaction() as session:
+            assert session.get("authenticated") is True
+        assert authed_client.get("/logout").status_code == 200
 
     def test_logout_get_when_signed_out_goes_to_login(self, client):
         resp = client.get("/logout", follow_redirects=False)
@@ -7979,7 +7982,7 @@ class TestFullScanFilterAPI:
         assert response.get_json()["config"] == {
             "job_type": "recently_added",
             "lookback_hours": 1,
-            "job_kinds": ["previews", "intro_credits", "loudness"],
+            "job_kinds": list(JOB_KINDS),
         }
 
     def test_every_kind_keeps_whole_library_filters_and_bad_kinds_are_refused(self, client) -> None:
@@ -7987,12 +7990,17 @@ class TestFullScanFilterAPI:
             "name": "Markers",
             "interval_minutes": 60,
             "enabled": False,
-            "config": {"job_kinds": ["loudness", "intro_credits"], "added_filter": "last_days", "added_last_days": 5},
+            "config": {
+                "job_kinds": ["reprise", "loudness", "intro_credits"],
+                "added_filter": "last_days",
+                "added_last_days": 5,
+            },
         }
         response = client.post("/api/schedules", headers=_api_headers(), json=body)
         assert response.status_code == 201, response.get_json()
         config = response.get_json()["config"]
-        assert config["job_kinds"] == ["intro_credits", "loudness"] and config["job_type"] == "full_library"
+        assert config["job_kinds"] == ["intro_credits", "loudness", "reprise"]
+        assert config["job_type"] == "full_library"
         assert config["added_filter"] == "last_days" and config["added_last_days"] == 5
 
         for bad in ([], ["previews", "bogus"], "previews"):
@@ -8002,6 +8010,18 @@ class TestFullScanFilterAPI:
 
 class TestQueueDiscoveryContracts:
     """Queue filters apply to the full visible set, before a page is selected."""
+
+    def test_kind_filter_accepts_reprise_and_rejects_unknown_kind(self, client):
+        from media_preview_generator.web.jobs import get_job_manager
+
+        manager = get_job_manager()
+        reprise = manager.create_job(library_name="Reprise analysis", kind="reprise")
+        manager.create_job(library_name="Previews", kind="previews")
+
+        response = client.get("/api/jobs?kind=reprise", headers=_api_headers())
+        assert response.status_code == 200
+        assert [job["id"] for job in response.get_json()["jobs"]] == [reprise.id]
+        assert client.get("/api/jobs?kind=unknown", headers=_api_headers()).status_code == 400
 
     def test_query_finds_off_page_jobs_with_filtered_totals_and_keeps_retry_children_hidden(self, client):
         from media_preview_generator.web.jobs import get_job_manager
@@ -8252,7 +8272,7 @@ class TestLegacySettingsCountsWithMembers:
                 "resource": "cpu",
                 "device": None,
                 "count": 4,
-                "job_types": ["previews", "intro_credits", "loudness"],
+                "job_types": list(JOB_KINDS),
             }
         ]
 

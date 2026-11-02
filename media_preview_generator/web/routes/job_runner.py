@@ -795,15 +795,24 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                 from ...reprise.service import get_service
                 from ..job_gate import get_job_gate
 
-                cancel = lambda: job_manager.is_cancellation_requested(job_id)
-                paused = lambda: job_manager.is_pause_requested(job_id) or get_settings_manager().processing_paused
+                def cancel():
+                    return job_manager.is_cancellation_requested(job_id)
+
+                def paused():
+                    return job_manager.is_pause_requested(job_id) or get_settings_manager().processing_paused
+
                 while True:
                     if not wait_for_capacity(job_manager, job_id, JOB_KIND_PREVIEWS, cancel, paused):
                         return
                     job_manager.note_slot_wait(job_id)
-                    acquired = get_job_gate().acquire(priority=job.priority, cancel_check=cancel,
-                        on_wait=lambda active: job_manager.update_progress(job_id, current_item=format_wait_message(active)),
-                        **admission_options(job_manager, job_id, JOB_KIND_PREVIEWS))
+                    acquired = get_job_gate().acquire(
+                        priority=job.priority,
+                        cancel_check=cancel,
+                        on_wait=lambda active: job_manager.update_progress(
+                            job_id, current_item=format_wait_message(active)
+                        ),
+                        **admission_options(job_manager, job_id, JOB_KIND_PREVIEWS),
+                    )
                     if not acquired:
                         job_manager.cancel_job(job_id)
                         return

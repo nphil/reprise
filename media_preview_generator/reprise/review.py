@@ -21,8 +21,10 @@ def plex_projection(result, identity, eligible):
     """
     if result.analysis_status != "complete" or result.freshness != "current":
         raise ValueError("Analysis is not complete and current")
-    approved = sorted((r for r in result.ranges if r.action == "skip" and r.review_status == "approved"),
-                      key=lambda r: (r.start_ms, r.end_ms, r.id))
+    approved = sorted(
+        (r for r in result.ranges if r.action == "skip" and r.review_status == "approved"),
+        key=lambda r: (r.start_ms, r.end_ms, r.id),
+    )
     eligible = sorted(eligible, key=lambda r: (r.start_ms, r.end_ms, r.id))
     if not approved or approved != eligible:
         raise ValueError("Approved skips are not fully eligible for this playback identity")
@@ -31,9 +33,12 @@ def plex_projection(result, identity, eligible):
     for item in approved:
         if item.kind not in ("intro", "credits") or item.kind in seen:
             raise ValueError("Plex cannot represent this set of skip ranges exactly")
-        if (type(item.start_ms) is not int or type(item.end_ms) is not int
-                or not 0 <= item.start_ms < item.end_ms <= identity.duration_ms
-                or item.start_ms < previous_end):
+        if (
+            type(item.start_ms) is not int
+            or type(item.end_ms) is not int
+            or not 0 <= item.start_ms < item.end_ms <= identity.duration_ms
+            or item.start_ms < previous_end
+        ):
             raise ValueError("Skip ranges overlap or have invalid bounds")
         if item.terminal or item.end_ms >= identity.duration_ms - 2000:
             raise ValueError("The final two seconds cannot be projected safely to Plex")

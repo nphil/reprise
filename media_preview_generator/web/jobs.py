@@ -541,6 +541,12 @@ class Job:
 
     def to_dict(self) -> dict:
         """Serialize to dictionary."""
+        config = self.config
+        if self.kind == "reprise" and (config or {}).get("library_analysis_request"):
+            config = dict(config)
+            request = dict(config["library_analysis_request"])
+            request.pop("candidate_paths", None)
+            config["library_analysis_request"] = request
         return {
             "id": self.id,
             "status": self.status.value,
@@ -555,7 +561,7 @@ class Job:
             "publishers": list(self.publishers or []),
             "progress": chain_waiting_progress(self) or self.progress.to_dict(),
             "error": self.error,
-            "config": self.config,
+            "config": config,
             "paused": self.paused,
             "priority": self.priority,
             "parent_schedule_id": self.parent_schedule_id,
@@ -695,7 +701,7 @@ class JobStorage:
                     1 if d["paused"] else 0,
                     d["error"],
                     json.dumps(job.progress.to_dict()),
-                    json.dumps(d["config"]),
+                    json.dumps(job.config),
                     json.dumps(d["publishers"]),
                     d.get("parent_schedule_id") or "",
                     d.get("kind") or JOB_KIND_PREVIEWS,
@@ -1615,6 +1621,10 @@ class JobManager:
         not_revived: list[Job] = []
 
         for job in self._interrupted_jobs:
+            if job.kind == "reprise" and (job.config or {}).get("library_analysis_request") and job.started_at:
+                # A discovery/analysis run interrupted mid-flight must not restart itself.
+                not_revived.append(job)
+                continue
             # Check age — skip stale jobs.  Use started_at (when
             # available) so long-running jobs aren't wrongly considered
             # "too old" based on their creation timestamp.
@@ -2502,8 +2512,11 @@ class JobManager:
         """
         with self._lock:
             job = self._jobs.get(job_id)
-            if (job is None or job.status not in (JobStatus.PENDING, JobStatus.RUNNING)
-                    or self._cancellation_flags.get(job_id, False)):
+            if (
+                job is None
+                or job.status not in (JobStatus.PENDING, JobStatus.RUNNING)
+                or self._cancellation_flags.get(job_id, False)
+            ):
                 return False
             commit()
             if complete:

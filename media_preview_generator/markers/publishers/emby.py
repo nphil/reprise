@@ -368,6 +368,7 @@ class EmbyMarkerPublisher(MarkerPublisher):
                 removed again, best effort).
         """
         from ...reprise.review import reject_legacy_publication
+
         reject_legacy_publication()
         self.last_write_changed = False
         self.last_replaced_own_types = frozenset()

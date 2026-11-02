@@ -72,13 +72,16 @@ class TestExternalAuthRouteBehavior:
     def _set_external(self, monkeypatch):
         monkeypatch.setenv("AUTH_METHOD", "external")
 
-    def test_dashboard_accessible_without_token(self, client):
-        """GET / should not redirect to login when external auth is active."""
+    def test_home_and_dashboard_accessible_without_token(self, client):
+        """External auth allows the home redirect and both destination pages."""
         settings = get_settings_manager()
         settings.set("setup_complete", True)
 
         response = client.get("/", follow_redirects=False)
-        assert response.status_code == 200
+        assert response.status_code == 302
+        assert response.headers["Location"].endswith("/reprise")
+        assert client.get("/reprise").status_code == 200
+        assert client.get("/dashboard").status_code == 200
 
     def test_api_jobs_accessible_without_token(self, client):
         """GET /api/jobs should succeed without any token."""

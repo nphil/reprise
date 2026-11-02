@@ -435,13 +435,6 @@ def _library_health_rows(remote: RemotePlexDb) -> dict:
 _REPORT = {"report": {"state": "ok", "message": "", "details": {}}}
 _SMALL_ANSWER_CALLS = [
     pytest.param(lambda r: r.read_item(7, deadline=_deadline()), {"item": {"exists": True, "parts": []}}, id="read"),
-    pytest.param(
-        lambda r: r.write_item(
-            WriteRequest(7, [PART], [INTRO], [], 1, [], (1,), frozenset(), False), deadline=_deadline()
-        ),
-        {"write": {"changed": True, "shown": "ours", "replaced_own": [], "replaced_stale": []}},
-        id="write",
-    ),
     pytest.param(lambda r: r.item_exists(7, deadline=_deadline()), {"exists": True}, id="exists"),
     pytest.param(
         lambda r: r.loudness("streams", {}, deadline=_deadline(), needs="1"),
@@ -456,17 +449,6 @@ _SMALL_ANSWER_CALLS = [
 
 class TestFailuresLookLikeTodays:
     """Whatever goes wrong, the app sees the same exception shape it sees from a local database."""
-
-    def test_a_refusal_from_the_agent_is_raised_unchanged(self):
-        remote, _ = _remote(
-            _refusal({"kind": "publish", "message": "Plex is busy writing its database", "state": "unreachable"})
-        )
-        with pytest.raises(PublishError) as ei:
-            remote.write_item(
-                WriteRequest(7, [PART], [INTRO], [], 1, [], (1,), frozenset(), False), deadline=_deadline()
-            )
-        assert str(ei.value) == "Plex is busy writing its database"
-        assert ei.value.state is Capability.UNREACHABLE and type(ei.value) is PublishError
 
     @pytest.mark.parametrize(
         ("call", "says"),
@@ -511,14 +493,6 @@ class TestFailuresLookLikeTodays:
             "state": "unreachable",
             "machine_identifier": "",
         }
-
-    def test_an_agent_that_goes_away_mid_publish_fails_the_write_and_says_so(self):
-        remote, _ = _remote(requests.ReadTimeout("timed out"))
-        with pytest.raises(AgentError) as ei:
-            remote.write_item(
-                WriteRequest(7, [PART], [INTRO], [], 1, [], (1,), frozenset(), False), deadline=_deadline()
-            )
-        assert ei.value.state is Capability.AGENT_UNAVAILABLE and URL in str(ei.value)
 
     def test_a_node_asking_this_apps_address_to_wait_is_a_wait_not_a_refused_key(self):
         remote, _ = _remote(FakeResponse(429, {"ok": False, "error": {"kind": "rate_limited"}}))
@@ -802,16 +776,12 @@ class TestFailuresLookLikeTodays:
 class TestWhatIsSent:
     """The agent is told what to do and nothing else — no path, and a bounded deadline."""
 
-    def test_the_write_carries_the_decision_and_no_database_path(self):
-        remote, session = _remote(
-            _envelope({"write": {"changed": True, "ours": [], "kept_types": [], "replaced_own": []}})
-        )
-        request = WriteRequest(7, [PART], [INTRO], [CREDITS], 1_320_000, [], (1,), frozenset({T.CREDITS}), True)
-        remote.write_item(request, deadline=_deadline())
-        body = session.calls[0]["json"]
-        assert plex_remote.write_request_from_json(body["write"]) == request
-        assert body["deadline_s"] > 0
-        assert "db_path" not in str(body) and "plex_config_folder" not in str(body)
+    def test_legacy_write_is_refused_before_contacting_the_node(self):
+        remote, session = _remote()
+        request = WriteRequest(7, [PART], [INTRO], [], 1, [], (1,), frozenset(), False)
+        with pytest.raises(PublishError, match="Legacy marker publication"):
+            remote.write_item(request, deadline=_deadline())
+        assert session.calls == []
 
     def test_the_deadline_the_app_is_holding_is_what_the_agent_is_given(self):
         remote, session = _remote(_envelope({"report": {"state": "ready", "message": "", "details": {}}}))
@@ -890,48 +860,6 @@ class TestTheNodesSavedId:
         headers = session.calls[0]["headers"]
         assert NODE_UID_HEADER not in headers
         assert headers[plex_remote.PROTOCOL_HEADER] == str(plex_remote.AGENT_PROTOCOL)
-
-    def test_another_machine_at_the_address_is_a_wait_and_a_recheck_never_a_failed_write(self):
-        wrong = _refusal({"kind": KIND_WRONG_NODE, "message": "another id"}, version="1.2.0", protocols=(1, 2))
-        remote, _, told = self._remote(wrong)
-        with pytest.raises(plex_remote.AgentUnreachableError) as ei:
-            remote.write_item(self._write(), deadline=_deadline())
-        assert "isn't the Plex database node saved there" in str(ei.value)
-        assert plex_remote.MARKERS_WAIT_FOR_THE_NODE in str(ei.value)
-        assert ei.value.state is Capability.AGENT_UNAVAILABLE
-        assert remote.agent_details()["state"] == plex_remote.AGENT_UNREACHABLE
-        assert told == [1]
-
-    def test_a_node_from_before_the_check_refuses_the_request_and_is_to_be_updated(self):
-        # Its guard refuses protocol 2 before anything runs; the app says which side to update.
-        older = FakeResponse(409, {"agent": {"version": "1.2.0", "protocols": [1]}, "error": {"kind": "protocol"}})
-        remote, _, told = self._remote(older)
-        with pytest.raises(AgentError) as ei:
-            remote.write_item(self._write(), deadline=_deadline())
-        message = str(ei.value)
-        assert not isinstance(ei.value, plex_remote.AgentUnreachableError)
-        assert "protocol 1" in message and "needs 2" in message and "Update the node." in message
-        assert "Update this app" not in message
-        assert remote.agent_details()["state"] == plex_remote.AGENT_INCOMPATIBLE
-        assert told == []
-
-    def test_an_id_dropped_on_the_way_is_the_nodes_refusal_and_the_badge_says_so(self):
-        """A proxy that strips the id header: the node speaks protocol 2 and refuses the request without it. Every
-        request fails the same way, so the badge can't say connected, and the node's message names the fix."""
-        said = "The node's id (X-MPG-Node-Uid) didn't arrive with this request, so this node ran nothing."
-        stripped = _refusal(
-            {"kind": "protocol", "message": said, "state": Capability.AGENT_UNAVAILABLE.value},
-            version="1.2.0",
-            protocols=(1, 2),
-        )
-        remote, _, told = self._remote(stripped)
-        with pytest.raises(AgentError) as ei:
-            remote.write_item(self._write(), deadline=_deadline())
-        assert not isinstance(ei.value, plex_remote.AgentUnreachableError)
-        assert str(ei.value) == said
-        assert ei.value.state is Capability.AGENT_UNAVAILABLE
-        assert remote.agent_details()["state"] == plex_remote.AGENT_INCOMPATIBLE
-        assert told == []
 
     def test_the_id_is_read_for_each_request(self):
         uids = iter(["uid-a", ""])
@@ -1076,50 +1004,6 @@ def _publisher(database, *, keep_plex=False, mappings=None, identity=None, item_
 class TestThePublisherTalksToWhicheverDatabaseItWasGiven:
     """The seam itself: what the publisher decides is what the database half is asked for."""
 
-    def test_the_write_carries_every_decided_value(self):
-        database = FakeDatabase()
-        publisher = _publisher(database, keep_plex=True)
-        publisher.write(
-            "7",
-            [INTRO, CREDITS],
-            previous=[INTRO],
-            duration_ms=1_320_000,
-            canonical_path="/data/tv/S01E01.mkv",
-            own_previous=[CREDITS],
-            kept_types=frozenset({T.CREDITS}),
-        )
-        request = database.writes[0]
-        assert request.rating_key == 7
-        assert request.wanted == [INTRO, CREDITS]
-        assert request.prior == [INTRO]
-        assert request.own_prior == [CREDITS]
-        assert request.duration_ms == 1_320_000
-        assert request.calling_part_ids == (1,)
-        assert request.kept_types == frozenset({T.CREDITS})
-        assert request.keep_plex is True
-        assert request.parts == [PART]
-
-    def test_use_ours_is_forwarded_as_keep_plex_false(self):
-        database = FakeDatabase()
-        _publisher(database).write("7", [INTRO], previous=None, duration_ms=1, canonical_path="/data/tv/S01E01.mkv")
-        assert database.writes[0].keep_plex is False
-        assert database.writes[0].prior == []  # previous=None removes nothing
-
-    def test_what_the_write_answered_is_what_the_publisher_reports(self):
-        database = FakeDatabase()
-        database.result = WriteResult(False, [CREDITS], frozenset({T.INTRO}), frozenset({T.CREDITS}))
-        publisher = _publisher(database)
-        ours = publisher.write("7", [INTRO], previous=None, duration_ms=1, canonical_path="/data/tv/S01E01.mkv")
-        assert ours == [CREDITS]
-        assert publisher.last_write_changed is False
-        assert publisher.last_kept_types == frozenset({T.INTRO})
-        assert publisher.last_replaced_own_types == frozenset({T.CREDITS})
-
-    def test_an_item_the_database_half_doesnt_have_is_not_found(self):
-        database = FakeDatabase(exists=False, parts=())
-        with pytest.raises(ItemNotFoundError):
-            _publisher(database).write("7", [INTRO], previous=None, duration_ms=1, canonical_path="/data/tv/S01E01.mkv")
-
     def test_the_read_back_asks_with_projected_markers_and_maps_the_files_back(self):
         database = FakeDatabase()
         publisher = _publisher(database)
@@ -1132,23 +1016,6 @@ class TestThePublisherTalksToWhicheverDatabaseItWasGiven:
         assert ask.kept_types == frozenset({T.CREDITS})
         assert ask.item_files == ("/plexmedia/tv/S01E01.mkv",)
         assert publisher.live_files("7") == ("/data/tv/S01E01.mkv",)
-
-    def test_the_write_carries_the_records_of_the_items_sharing_its_file_and_reports_theirs(self):
-        database = FakeDatabase()
-        database.item = ItemRead(True, [PART], frozenset(), (8, 9))
-        recap = Marker(T.RECAP, 0, 1_000, ("chapters",))
-        records = {"8": ItemRecord([INTRO, recap], frozenset({T.CREDITS}), ("/plexmedia/tv/S01E01.mkv",))}
-        database.result = WriteResult(
-            True, [INTRO], frozenset(), frozenset(),
-            siblings=(SiblingResult(8, True, [INTRO], frozenset()), SiblingResult(9, False, [], frozenset({T.INTRO}))),
-        )  # fmt: skip
-        publisher = _publisher(database, item_record=records.get)
-
-        publisher.write("7", [INTRO], previous=[INTRO], duration_ms=1, canonical_path="/data/tv/S01E01.mkv")
-
-        # Item 9 has no record: the database half writes it as having none.
-        assert database.writes[0].siblings == (SiblingState(8, [INTRO], frozenset({T.CREDITS})),)
-        assert publisher.last_siblings == {"8": ([INTRO], frozenset()), "9": ([], frozenset({T.INTRO}))}
 
     @pytest.mark.parametrize(
         ("records", "sibling_shows", "shown"),
@@ -1317,13 +1184,6 @@ class TestTheAgentMustBeNextToThisPlex:
         report = _publisher(database, identity="plex-aaa").capability()
         assert report.state is Capability.AGENT_UNAVAILABLE
         assert "different Plex server" in report.message
-
-    def test_a_write_to_another_plexs_agent_never_reaches_the_database(self):
-        publisher, database = self._publisher_seeing(agent_identity="plex-bbb", server_identity="plex-aaa")
-        with pytest.raises(PublishError) as ei:
-            publisher.write("7", [INTRO], previous=[], duration_ms=1, canonical_path="/data/tv/S01E01.mkv")
-        assert ei.value.state is Capability.AGENT_UNAVAILABLE
-        assert database.writes == []
 
 
 class TestARefusalNamesTheContainerItIsAbout:

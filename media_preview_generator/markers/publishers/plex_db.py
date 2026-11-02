@@ -1697,6 +1697,7 @@ class LocalPlexDb(PlexDatabase):
             PublishError: Nothing was written (one transaction).
         """
         from ...reprise.review import reject_legacy_publication
+
         reject_legacy_publication()
         calling = set(request.calling_part_ids)
         try:
@@ -2054,6 +2055,7 @@ class LocalPlexDb(PlexDatabase):
         # BEGIN IMMEDIATE can wait the rest of the call's deadline — exactly while Plex is writing, often to this item.
         # Everything we merge is re-read after it, or Plex's fresh extra_data keys would be overwritten from a stale read.
         from ...reprise.review import reject_legacy_publication
+
         reject_legacy_publication()
         self._begin_write(conn, deadline)
         try:
@@ -2102,6 +2104,7 @@ class LocalPlexDb(PlexDatabase):
     def _apply_plan(conn: sqlite3.Connection, rating_key: int, tag_id: int, plan: _Plan, created_at: int) -> None:
         """Run one item's plan inside the open write transaction."""
         from ...reprise.review import reject_legacy_publication
+
         reject_legacy_publication()
         if plan.replaced_texts:
             placeholders = ",".join("?" * len(plan.replaced_texts))
@@ -2461,6 +2464,7 @@ class PlexMarkerPublisher(MarkerPublisher):
             PublishError: Nothing was written (one transaction; see ``MarkerPublisher.write``).
         """
         from ...reprise.review import reject_legacy_publication
+
         reject_legacy_publication()
         self.last_write_changed = False
         self.last_replaced_own_types = frozenset()
