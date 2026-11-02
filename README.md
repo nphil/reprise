@@ -29,6 +29,8 @@ Do not expose the interface publicly without appropriate authentication and tran
 
 The image stores settings and results in `/config`, reads media from `/media`, and listens on TCP 8080 by default. The example runs on CPU, mounts media read-only and does not mount Plex's database. Other inherited features can write to server APIs or paths if configured: a read-only media mount is not an authorization boundary for a connected server. A writable Plex database mount is **not** a default; grant one only for an explicitly authorized publishing operation, after backups and validation. New builds from this source use CPU-focused FFmpeg 8.1.2 and matching ffprobe on PATH, with a separate patched loudness binary. GPU acceleration and Dolby Vision Profile 5 colour accuracy are not established for the new build. The previously published pinned image predates this change.
 
+The container media mount target must match the local path in the configured path mapping so Reprise can find the files. When installing with the Unraid template, you can override the media mount Target to match that mapping.
+
 The Unraid template in `unraid-templates/reprise.xml` uses the same older pin. For production, replace it with the independently accepted image digest. Configure an internal reverse proxy separately.
 
 ## Image delivery and acceptance
