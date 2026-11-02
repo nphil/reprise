@@ -531,7 +531,7 @@ class TestNavbarMenus:
         box = page.locator(toggle).bounding_box()
         page.mouse.click(box["x"] + box["width"] - 10, box["y"] + box["height"] / 2)
         expect(page.locator(menu)).to_be_visible()
-        assert page.url.endswith("/")
+        assert page.url.endswith("/dashboard")
 
     def test_settings_menu_has_two_groups_and_tools_keeps_run_setup_again(self, overlay_page) -> None:
         page, _ = overlay_page

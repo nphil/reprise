@@ -47,7 +47,7 @@ def _open(page: Page, app_url: str, path: str) -> list[dict]:
 
 @pytest.mark.e2e
 class TestInfoIconRule:
-    @pytest.mark.parametrize("path", ["/", "/settings", "/servers", "/automation"])
+    @pytest.mark.parametrize("path", ["/dashboard", "/settings", "/servers", "/automation"])
     def test_click_for_more_and_pointer_exactly_when_a_detail_is_attached(
         self, authed_page: Page, app_url: str, path: str
     ) -> None:
