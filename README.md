@@ -21,15 +21,23 @@ The detector compares native decoded video and every selected audio channel at f
 
 An unsigned image is published on GitHub Container Registry. The examples pin the image built from commit `2e6e9c183e886283d5539f4fc423a98bdb074605`; they do not update automatically. There is no versioned release or `latest` tag.
 
-1. Replace the host paths in `docker-compose.example.yml`. Optionally set `IMAGE` to a different published immutable image tag or digest.
+1. Replace the host paths in `docker-compose.example.yml`. For production, set `IMAGE` to the independently accepted image digest described below.
 2. Run `docker compose -f docker-compose.example.yml up -d`.
 3. Visit port 8080. Sign in with the token in the persistent config directory's `auth.json`, or set `WEB_AUTH_TOKEN` securely before starting. Connect your media server and review the configuration.
 
-To use a different published build, set `IMAGE` to its full source-commit tag or digest before starting Compose. Do not expose the interface publicly without appropriate authentication and transport security.
+Do not expose the interface publicly without appropriate authentication and transport security.
 
 The image stores settings and results in `/config`, reads media from `/media`, and listens on TCP 8080 by default. The example runs on CPU, mounts media read-only and does not mount Plex's database. Other inherited features can write to server APIs or paths if configured: a read-only media mount is not an authorization boundary for a connected server. A writable Plex database mount is **not** a default; grant one only for an explicitly authorized publishing operation, after backups and validation. New builds from this source use CPU-focused FFmpeg 8.1.2 and matching ffprobe on PATH, with a separate patched loudness binary. GPU acceleration and Dolby Vision Profile 5 colour accuracy are not established for the new build. The previously published pinned image predates this change.
 
-The Unraid template in `unraid-templates/reprise.xml` uses the same pinned image. Select a newer published immutable image to update. Configure an internal reverse proxy separately.
+The Unraid template in `unraid-templates/reprise.xml` uses the same older pin. For production, replace it with the independently accepted image digest. Configure an internal reverse proxy separately.
+
+## Image delivery and acceptance
+
+The image workflow makes one cold candidate build, pushes it by digest, and checks the bundled source and license artifacts, FFmpeg configuration, and startup health before publishing a full source-commit tag. A tag identifies the source revision; use the immutable image digest to ensure the image deployed is exactly the one independently tested and accepted. These automated checks do not establish legal compliance or replace independent acceptance.
+
+The candidate built from source `170b633b8e6adeefadf5201106fbfce51a19e8e5` with digest `sha256:cfd007e23417dbb8c4dab8ce7e1e5c46b81acb1102bfdd30d4424175a1b2ec79` passed the independent holdout and was accepted on that basis. Full CI remains a launch gate. Production must use that exact digest, not a fresh rebuild or a tag alone. The examples remain on their older pin.
+
+An earlier two-cold-build comparison of revision `ac40` found matching runtime configuration and uncompressed layer inventories; source, license and startup checks passed. That comparison concerned a different revision and does not establish that current rebuilds are identical.
 
 ## Publication safety
 

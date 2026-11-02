@@ -1,10 +1,11 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>Reprise</Name>
-  <Repository>ghcr.io/nphil/reprise@sha256:91571a47ff1108e4526ec3d2c449877c0aef69815f8d345d39ee3089b9939bd1</Repository>
+  <Repository>ghcr.io/nphil/reprise@sha256:cfd007e23417dbb8c4dab8ce7e1e5c46b81acb1102bfdd30d4424175a1b2ec79</Repository>
   <Registry>https://github.com/nphil/reprise/pkgs/container/reprise</Registry>
   <Network>bridge</Network>
   <Privileged>false</Privileged>
+  <ExtraParams>--cpus=1 --memory=2g --pids-limit=128 --security-opt=no-new-privileges --tmpfs /tmp:rw,nosuid,size=64m --tmpfs /run:rw,exec,nosuid,size=64m,mode=755</ExtraParams>
   <Support>https://github.com/nphil/reprise/issues</Support>
   <Project>https://github.com/nphil/reprise</Project>
   <Overview>Self-hosted media analysis and review. In development: review results and keep production publishing disabled during evaluation. The pinned image is a specific published build; select a newer published immutable image to update. Media is read-only; Plex database access is not mounted by default.</Overview>

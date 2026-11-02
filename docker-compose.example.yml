@@ -1,13 +1,21 @@
 services:
   reprise:
-    image: ${IMAGE:-ghcr.io/nphil/reprise@sha256:91571a47ff1108e4526ec3d2c449877c0aef69815f8d345d39ee3089b9939bd1}
+    image: ${IMAGE:-ghcr.io/nphil/reprise@sha256:cfd007e23417dbb8c4dab8ce7e1e5c46b81acb1102bfdd30d4424175a1b2ec79}
     container_name: reprise
     restart: unless-stopped
+    cpus: 1
+    mem_limit: 2g
+    pids_limit: 128
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,nosuid,size=64m
+      - /run:rw,exec,nosuid,size=64m,mode=755
     ports:
       - "8080:8080"
     environment:
-      PUID: "1000"
-      PGID: "1000"
+      PUID: "99"
+      PGID: "100"
     volumes:
       - /path/to/reprise/config:/config:rw
       - /path/to/media:/media:ro
