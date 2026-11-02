@@ -2,7 +2,9 @@
 # Build stages: `toolchain` (compiler + Python, shared), `model` (the credit
 # text detection model) and `builder` (dependency and app wheels)
 # =============================================================================
-FROM linuxserver/ffmpeg:8.1.2-cli-ls73@sha256:282f8c023eb24cafc8fbd92e35a35627815cd1c8b183beddf6e29b9a93329435 AS toolchain
+FROM ghcr.io/linuxserver/baseimage-ubuntu:noble@sha256:cc0fb3598832cdfeb3bcdb8b170a232bba51ab4d769f59b079cc7138bc7f763b AS base
+
+FROM base AS toolchain
 
 # Build-time only: compiler toolchain + Python + git (for setuptools-scm)
 RUN apt-get update && \
@@ -12,9 +14,23 @@ RUN apt-get update && \
 
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
-# Build a separate CPU-only analyzer. It carries the optimized loudnorm code
-# while leaving both GPU-capable FFmpeg binaries used for preview generation
-# untouched. The build runs natively for the requested target architecture.
+# Build the CPU-focused fallback and retain its exact source and build recipe.
+FROM toolchain AS ffmpeg-gpl-builder
+RUN arch="$(dpkg --print-architecture)" && \
+    if [ "$arch" = amd64 ]; then mirror=http://archive.ubuntu.com/ubuntu; \
+    else mirror=http://ports.ubuntu.com/ubuntu-ports; fi && \
+    printf "deb-src %s noble main universe\ndeb-src %s noble-updates main universe\ndeb-src %s noble-security main universe\n" "$mirror" "$mirror" "$mirror" > /etc/apt/sources.list.d/ffmpeg-source.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+      make g++ dpkg-dev nasm pkg-config xz-utils curl ca-certificates \
+      zlib1g-dev libbz2-dev liblzma-dev libgnutls28-dev libzimg-dev libchromaprint-dev && \
+    rm -rf /var/lib/apt/lists/*
+COPY docker/ffmpeg/build.sh /tmp/ffmpeg-gpl-build.sh
+ARG FFMPEG_JOBS=4
+RUN apt-get update && FFMPEG_JOBS="$FFMPEG_JOBS" bash /tmp/ffmpeg-gpl-build.sh && \
+    rm -rf /var/lib/apt/lists/*
+
+# The optimized loudness analyzer remains a separate CPU-only binary.
 FROM toolchain AS ffmpeg-loudness-builder
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -81,25 +97,11 @@ RUN if [ -n "$SETUPTOOLS_SCM_PRETEND_VERSION" ]; then \
 # =============================================================================
 # Runtime stage — lean production image (no compiler toolchain)
 # =============================================================================
-FROM linuxserver/ffmpeg:8.1.2-cli-ls73@sha256:282f8c023eb24cafc8fbd92e35a35627815cd1c8b183beddf6e29b9a93329435
+FROM base
 
-# Runtime dependencies.  Split into two apt passes because we add two
-# third-party repos before pulling jellyfin-ffmpeg + newer Intel drivers.
+# Runtime dependencies, including the existing Intel graphics repository.
 #
-# GPU drivers for hardware acceleration:
-# - Intel: intel-media-va-driver-non-free (modern Gen 8+), i965-va-driver (legacy Gen 5-9).
-#   Ubuntu Noble ships 24.1.0 which is 18 months old and missing DG2
-#   (Arc Alchemist) fixes.  We pull 25.x from Intel's graphics apt repo
-#   on amd64 to get working VAAPI on Arc A380/A750/A770 + modern iGPUs.
-# - AMD: mesa-va-drivers (AMD GPUs via VAAPI)
-# - ARM/VideoCore: mesa-va-drivers (Mali GPUs, Raspberry Pi)
-# - mesa-vulkan-drivers: Mesa's Vulkan ICDs (Intel ANV, AMD RADV, llvmpipe).
-#   Used by libplacebo DV5 tone mapping on NVIDIA and AMD.  (Intel DV5 uses
-#   tonemap_opencl via intel-opencl-icd instead — libplacebo+Vulkan+Intel
-#   VAAPI has an upstream interop bug that returns VK_ERROR_OUT_OF_DEVICE_MEMORY
-#   on both iGPU and Arc discrete inside containers.  See issue #212.)
-# - intel-opencl-icd: Intel's OpenCL runtime for DV5 tone mapping via
-#   tonemap_opencl (Jellyfin-ffmpeg's patched DV-aware code path).
+# Existing graphics drivers are retained; the bundled FFmpeg build is CPU-focused.
 # - libvpl2 / libmfx-gen1: Intel oneVPL runtime (QSV).
 # - libva2, libva-drm2: VA-API libraries
 # - vainfo: Tool to test/verify VA-API functionality
@@ -107,29 +109,13 @@ FROM linuxserver/ffmpeg:8.1.2-cli-ls73@sha256:282f8c023eb24cafc8fbd92e35a3562781
 # - git: For version detection (version_check.get_git_commit_sha) when /app is a git checkout
 # - mediainfo: For media file metadata
 #
-# ffmpeg: we ship jellyfin-ffmpeg (8.1.2) as /usr/lib/jellyfin-ffmpeg/ffmpeg.
-# The base image also has an 8.1.2 build at /usr/local/bin/ffmpeg which we
-# leave in place as a fallback (our code defaults to the Jellyfin binary
-# because it carries the DV RPU-aware tonemap_opencl patches upstream lacks).
-#
-# Both must stay >= 8.1.2: earlier builds are vulnerable to CVE-2026-8461
-# ("PixelSmash"), a heap OOB write in the MagicYUV decoder reachable from
-# ordinary preview generation on an untrusted library file.  jellyfin-ffmpeg7
-# is NOT an option -- it stopped at 7.1.4-3 (2026-06-06), before the fix.
+# FFmpeg 8.1.2 includes the fix for CVE-2026-8461 (PixelSmash).
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
       mediainfo python3 python3-pip gosu pciutils git curl gnupg ca-certificates \
       mesa-va-drivers mesa-vulkan-drivers libva2 libva-drm2 vainfo \
-      zlib1g libbz2-1.0 liblzma5 && \
+      zlib1g libbz2-1.0 liblzma5 libgnutls30t64 libzimg2 libchromaprint1 && \
     if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
-      # Jellyfin apt repo (Ubuntu Noble) for jellyfin-ffmpeg8.
-      # --retry-all-errors so a flaky HTTP 403 from the repo (seen
-      # intermittently in CI) is retried instead of failing the build.
-      curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors --retry-connrefused \
-        https://repo.jellyfin.org/jellyfin_team.gpg.key \
-        | gpg --dearmor -o /usr/share/keyrings/jellyfin.gpg && \
-      printf 'Types: deb\nURIs: https://repo.jellyfin.org/ubuntu\nSuites: noble\nComponents: main\nArchitectures: amd64\nSigned-By: /usr/share/keyrings/jellyfin.gpg\n' \
-        > /etc/apt/sources.list.d/jellyfin.sources && \
       # Intel graphics apt repo (Ubuntu Noble) for newer VAAPI + OpenCL
       curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors --retry-connrefused \
         https://repositories.intel.com/gpu/intel-graphics.key \
@@ -138,7 +124,6 @@ RUN apt-get update && \
         > /etc/apt/sources.list.d/intel-graphics.list && \
       apt-get update && \
       apt-get install -y --no-install-recommends \
-        jellyfin-ffmpeg8 \
         intel-media-va-driver-non-free \
         i965-va-driver \
         libmfx-gen1 \
@@ -148,6 +133,11 @@ RUN apt-get update && \
     fi && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
+
+# Install the bundled FFmpeg and ffprobe.
+COPY --from=ffmpeg-gpl-builder /opt/ffmpeg-gpl /opt/ffmpeg-gpl
+RUN ln -s /opt/ffmpeg-gpl/bin/ffmpeg /usr/local/bin/ffmpeg && \
+    ln -s /opt/ffmpeg-gpl/bin/ffprobe /usr/local/bin/ffprobe
 
 # Install pre-built wheels from builder (no compiler needed)
 COPY --from=builder /wheels /tmp/wheels
@@ -256,7 +246,7 @@ LABEL maintainer="nphil" \
       org.opencontainers.image.description="Self-hosted media analysis and review" \
       org.opencontainers.image.authors="nphil and contributors" \
       org.opencontainers.image.vendor="nphil" \
-      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.licenses="MIT AND GPL-2.0-or-later" \
       org.opencontainers.image.url="https://github.com/nphil/reprise" \
       org.opencontainers.image.documentation="https://github.com/nphil/reprise" \
       org.opencontainers.image.source="https://github.com/nphil/reprise" \

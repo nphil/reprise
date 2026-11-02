@@ -1,0 +1,42 @@
+name: Install runtime FFmpeg
+description: Install and check the same source-built FFmpeg used in the runtime image
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@v8
+      with:
+        name: ffmpeg-runtime-bundle
+        path: ${{ runner.temp }}/reprise-ffmpeg
+    - shell: bash
+      run: |
+        set -euo pipefail
+        cd "$RUNNER_TEMP/reprise-ffmpeg"
+        sha256sum --check ffmpeg-bundle.tar.sha256
+        tar -xf ffmpeg-bundle.tar
+        sudo cp -a opt/ffmpeg-gpl /opt/ffmpeg-gpl
+        cmp opt/ffmpeg-gpl/bin/ffmpeg /opt/ffmpeg-gpl/bin/ffmpeg
+        cmp opt/ffmpeg-gpl/bin/ffprobe /opt/ffmpeg-gpl/bin/ffprobe
+        for program in ffmpeg ffprobe; do
+          printf '%s\n' '#!/bin/sh' 'export LD_LIBRARY_PATH="/opt/ffmpeg-gpl/runtime-libs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"' "exec /opt/ffmpeg-gpl/bin/$program \"\$@\"" | sudo tee "/usr/local/bin/$program" >/dev/null
+          sudo chmod 755 "/usr/local/bin/$program"
+          sudo ln -sf "/usr/local/bin/$program" "/usr/bin/$program"
+        done
+        ffmpeg -version | head -n 1 | grep -F 'ffmpeg version 8.1.2'
+        ffprobe -version | head -n 1 | grep -F 'ffprobe version 8.1.2'
+        ffmpeg -L
+        ffmpeg -buildconf | tee ffmpeg-buildconf.txt
+        grep -F -- '--enable-gpl' ffmpeg-buildconf.txt
+        if grep -F -- '--enable-nonfree' ffmpeg-buildconf.txt; then
+          echo 'Nonfree FFmpeg configuration is not distributable' >&2
+          exit 1
+        fi
+        ffmpeg -hide_banner -encoders > ffmpeg-encoders.txt
+        grep -E '(^| )libx264 ' ffmpeg-encoders.txt
+        grep -E '(^| )aac ' ffmpeg-encoders.txt
+        ffmpeg -hide_banner -loglevel error -f lavfi -i sine=frequency=440:duration=0.1 -c:a aac -f null -
+        ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=64x64:rate=1 -frames:v 1 -c:v libx264 -f null -
+        ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=64x64:rate=1 -frames:v 1 -c:v ffv1 -chroma_sample_location left -y ci-ffv1.mkv
+        ffprobe -v error -select_streams v:0 -show_entries stream=pix_fmt,chroma_location -of json ci-ffv1.mkv | python -c 'import json,sys; s=json.load(sys.stdin)["streams"][0]; print(s); assert s["pix_fmt"] == "yuv420p" and s["chroma_location"] == "left"'
+        ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=64x64:rate=1 -vf zscale=w=32:h=32 -frames:v 1 -f null -
+        ffmpeg -hide_banner -loglevel error -f lavfi -i sine=frequency=440:duration=2 -f chromaprint -y ci-fingerprint.txt
+        test -s ci-fingerprint.txt
