@@ -11,6 +11,7 @@ import os
 
 import pytest
 
+from media_preview_generator.markers.publishers.base import PublishError
 from media_preview_generator.servers import JellyfinServer, Library, PlexServer, ServerConfig, ServerType
 
 pytestmark = [pytest.mark.vcr]
@@ -78,7 +79,8 @@ class TestPlexMarkerReadContract:
 
 
 class TestJellyfinBridgeMarkersContract:
-    def test_store_serve_read_delete_round_trip(self, jellyfin_lab):
+    def test_store_serve_read_delete_round_trip(self, jellyfin_lab, monkeypatch):
+        # Keep the historical test name to replay its cassette; publication is now disabled.
         item_id = jellyfin_lab._uncached_resolve_remote_path_to_item_id(SYNTH_E01)
         assert item_id, "the synth episode must be in the lab Jellyfin library when recording"
         before = jellyfin_lab.get_bridge_marker_state(item_id)
@@ -88,22 +90,20 @@ class TestJellyfinBridgeMarkersContract:
             {"type": "Intro", "startTicks": 10_000 * TICKS, "endTicks": 40_000 * TICKS},
             {"type": "Outro", "startTicks": 100_000 * TICKS, "endTicks": 120_000 * TICKS},
         ]
-        resp = jellyfin_lab.put_bridge_markers(item_id, segments, file_size=before["fileSize"])
-        assert resp.status_code == 200
-
         served = jellyfin_lab.get_media_segments(item_id)
         keys = {(r["Type"], r["StartTicks"], r["EndTicks"]) for r in served}
         assert {(s["type"], s["startTicks"], s["endTicks"]) for s in segments} <= keys
 
-        state = jellyfin_lab.get_bridge_marker_state(item_id)
-        assert state["segments"] == segments and state["stale"] is False
+        assert before["segments"] == segments and before["stale"] is False
 
-        assert jellyfin_lab.delete_bridge_markers(item_id).status_code == 204
-        assert jellyfin_lab.get_bridge_marker_state(item_id)["segments"] == []
+        def unexpected_request(*args, **kwargs):
+            pytest.fail("legacy publication must not send a request")
 
-        # Put back what the lab had, so recording leaves the lab as it found it.
-        if before["segments"]:
-            jellyfin_lab.put_bridge_markers(item_id, before["segments"], file_size=before["fileSize"])
+        monkeypatch.setattr(jellyfin_lab, "_request", unexpected_request)
+        with pytest.raises(PublishError, match="Legacy marker publication"):
+            jellyfin_lab.put_bridge_markers(item_id, segments, file_size=before["fileSize"])
+        with pytest.raises(PublishError, match="Legacy marker publication"):
+            jellyfin_lab.delete_bridge_markers(item_id)
 
     def test_unknown_item_is_unknown_not_empty(self, jellyfin_lab):
         assert jellyfin_lab.get_bridge_marker_state("ffffffffffffffffffffffffffffffff") is None

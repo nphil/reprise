@@ -302,6 +302,7 @@ class TestScheduleCRUD:
             cron_expression="*/15 * * * *",
             config={"job_type": "recently_added", "lookback_hours": 1},
             priority=stored_priority,
+            server_id="plex-1",
         )
 
         with patch(
@@ -311,6 +312,7 @@ class TestScheduleCRUD:
             assert scheduler_manager.run_now(schedule["id"]) is True
 
         mock_start.assert_called_once()
+        assert mock_start.call_args.kwargs["server_id"] == "plex-1"
         assert mock_start.call_args.kwargs["priority"] == expected_forwarded, (
             f"stored priority {stored_priority!r} must reach the helper unchanged; "
             f"got {mock_start.call_args.kwargs.get('priority')!r}"
@@ -1308,6 +1310,7 @@ class TestExecuteScheduledJobDispatch:
             library_name="TV",
             interval_minutes=15,
             config={"job_type": "recently_added", "lookback_hours": 2},
+            server_id="plex-1",
         )
 
         sched_mod.execute_scheduled_job(
@@ -1315,10 +1318,12 @@ class TestExecuteScheduledJobDispatch:
             library_id="2",
             library_name="TV",
             config={"job_type": "recently_added", "lookback_hours": 2},
+            server_id="plex-1",
         )
 
         mock_helper.assert_called_once()
         kwargs = mock_helper.call_args.kwargs
+        assert kwargs["server_id"] == "plex-1"
         assert kwargs["library_ids"] == ["2"]
         assert kwargs["lookback_hours"] == 2.0
         assert kwargs["schedule_id"] == schedule["id"]

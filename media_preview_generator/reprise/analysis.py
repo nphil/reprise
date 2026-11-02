@@ -177,6 +177,8 @@ def _audio_support(target, reference, tracks, ref_tracks, start, end, offset, ca
             b = decoder.native_audio_pcm(reference, ref_track[1], chunk + offset, stop + offset, cancel, pause, threads)
             if (a.sample_rate, a.channel_layout, a.channel_ids) != (b.sample_rate, b.channel_layout, b.channel_ids):
                 raise decoder.DecodeError("Native audio rate or channel layout differs")
+            if a.declarations != b.declarations:
+                raise decoder.DecodeError("Native audio declarations differ")
             if a.support_start_ms + offset != b.support_start_ms or a.support_end_ms + offset != b.support_end_ms:
                 raise decoder.DecodeError("Native audio sample grids do not align")
             rate = a.sample_rate

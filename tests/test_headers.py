@@ -12,9 +12,9 @@ def test_default_headers_set_on_import(monkeypatch):
     else:
         importlib.import_module("media_preview_generator")
 
-    expected_identifier = uuid.uuid3(uuid.NAMESPACE_DNS, "PlexGeneratePreviews").hex
+    expected_identifier = uuid.uuid3(uuid.NAMESPACE_DNS, "Reprise").hex
     assert os.environ.get("PLEXAPI_HEADER_IDENTIFIER") == expected_identifier
-    assert os.environ.get("PLEXAPI_HEADER_DEVICE_NAME") == "PlexGeneratePreviews"
+    assert os.environ.get("PLEXAPI_HEADER_DEVICE_NAME") == "Reprise"
 
 
 def test_env_overrides_respected(monkeypatch):

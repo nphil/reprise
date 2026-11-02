@@ -295,7 +295,7 @@ The repository's GitHub Actions workflows live in `.github/workflows/`:
 
 | Workflow | Purpose | Fork action |
 |---|---|---|
-| `ci.yml` | Lint (ruff, actionlint), unit and e2e tests, integration tests, Docker image build/push for `main`, `dev` and tags | Change `DOCKER_IMAGE` (top of the file) to your Docker Hub namespace |
+| `ci.yml` | Lint (ruff, actionlint), unit and e2e tests, and image build checks | Works as-is |
 | `docker-pr.yml` | Builds per-PR Docker previews on GHCR (needs the `build-docker` label) | Works as-is |
 | `docker-pr-cleanup.yml` | Removes PR-preview images when PRs close | Works as-is |
 | `docs.yml`, `docs-check.yml` | Build and publish the Jekyll docs site; check docs-only PRs | Works as-is |
@@ -307,8 +307,6 @@ Repository secrets (**Settings → Secrets and variables → Actions**):
 
 | Secret | Used by | Purpose |
 |---|---|---|
-| `DOCKER_USERNAME` / `DOCKER_PASSWORD` | `ci.yml` | Push the app image to Docker Hub |
-| `DOCKERHUB_TOKEN` | `ci.yml` (tag pushes) | Sync `DOCKERHUB_README.md` to the Docker Hub description |
 | `CODECOV_TOKEN` | `ci.yml` | Upload test coverage to Codecov (drives the README coverage badge) |
 | `PLEX_CLAIM_TOKEN` | `ci.yml` | Optional: claims the Plex container used by the real-vendor tests (those tests skip without it) |
 

@@ -421,7 +421,7 @@ def _native_audit(media, stream, start, end, cancel, pause, threads):
     if not pts:
         raise DecodeError("Empty native video chroma audit")
     check_current(media)
-    return pix, width, height, sample, cw, ch, size, chroma, sar, flags, pts
+    return pix, width, height, sample, cw, ch, size, chroma, sar, flags, pts, tb
 
 
 def _bounded_log_lines(pipe):
@@ -494,6 +494,7 @@ class NativeFrameReader:
             self.sar,
             self.interpretation_flags,
             self.audit_pts,
+            self.time_base,
         ) = _native_audit(
             self.media, self.stream, self.request_start_ms, self.request_end_ms, self.cancel, self.pause, self.threads
         )
@@ -528,7 +529,7 @@ class NativeFrameReader:
             "-fps_mode",
             "passthrough",
             "-enc_time_base",
-            "-1",
+            f"{self.time_base.numerator}:{self.time_base.denominator}",
             "-pix_fmt",
             self.pix,
             "-f",
@@ -822,6 +823,7 @@ class NativeAudio:
     channel_ids: tuple[str, ...]
     support_start_ms: Fraction
     support_end_ms: Fraction
+    declarations: tuple[tuple[str, tuple[str, ...]], ...]
 
 
 _AUDIO_LAYOUTS = {
@@ -837,6 +839,31 @@ _AUDIO_LAYOUTS = {
     "5.1(side)": ("FL", "FR", "FC", "LFE", "SL", "SR"),
     "7.1": ("FL", "FR", "FC", "LFE", "BL", "BR", "SL", "SR"),
 }
+
+
+def _native_audio_side_record(text):
+    """Parse only supported ashowinfo declarations, preserving printed tokens."""
+    if text == "side data - audio service type: Main Audio Service":
+        return "audio_service_initial", ("Main Audio Service",)
+    if text == "side data - matrix encoding: none":
+        return "matrix_encoding", ("none",)
+    number = r"([01]\.\d{6})"
+    match = re.fullmatch(
+        r"side data - downmix: preferred downmix type - (unknown) Mix levels: center "
+        + number
+        + r" \("
+        + number
+        + r" ltrt\) - surround "
+        + number
+        + r" \("
+        + number
+        + r" ltrt\) - lfe "
+        + number,
+        text,
+    )
+    if not match or any(Fraction(value) > 1 for value in match.groups()[1:]):
+        raise DecodeError("Unsupported native audio interpretation metadata")
+    return "downmix", match.groups()
 
 
 def native_audio_pcm(media, stream_index, start_ms, end_ms, cancel_check, pause_check, threads):
@@ -979,12 +1006,58 @@ def native_audio_pcm(media, stream_index, start_ms, end_ms, cancel_check, pause_
         raise DecodeError("Native audio decoder reported an error")
     decoded = []
     sample_format = None
+    frame_declarations = None
+    uniform_declarations = None
+    initial_service = None
+    service_count = 0
+    frame_has_service = False
+    audio_filter_id = None
+
+    def finish_frame():
+        nonlocal uniform_declarations
+        if frame_declarations is None:
+            return
+        if uniform_declarations is None:
+            uniform_declarations = frame_declarations
+        elif frame_declarations != uniform_declarations:
+            raise DecodeError("Native audio frame declarations changed")
+
     for line in lines:
         if "Parsed_ashowinfo_" not in line:
             continue
-        match = re.search(
+        source = re.fullmatch(r"\[Parsed_ashowinfo_(\d+)\s+@[^]]+\]\s+\[info\]\s?(.*)", line)
+        if not source:
+            raise DecodeError("Malformed native audio decoder metadata")
+        if audio_filter_id is None:
+            audio_filter_id = source.group(1)
+        elif source.group(1) != audio_filter_id:
+            raise DecodeError("Ambiguous native audio metadata source")
+        text = source.group(2).strip()
+        if text.startswith("side data - "):
+            if frame_declarations is None:
+                raise DecodeError("Native audio declaration precedes its frame")
+            name, value = _native_audio_side_record(text)
+            if name == "audio_service_initial":
+                if frame_has_service or frame_declarations or (initial_service is None and len(decoded) != 1):
+                    raise DecodeError("Ambiguous native audio service declaration")
+                if initial_service is not None and value != initial_service:
+                    raise DecodeError("Native audio service declaration changed")
+                initial_service = value
+                frame_has_service = True
+                service_count += 1
+            else:
+                if name == "matrix_encoding" and "downmix" in frame_declarations:
+                    raise DecodeError("Ambiguous native audio declaration order")
+                if name in frame_declarations:
+                    raise DecodeError("Duplicate native audio frame declaration")
+                frame_declarations[name] = value
+            continue
+        finish_frame()
+        frame_declarations = {}
+        frame_has_service = False
+        match = re.match(
             r"\bn:(\d+)\s+pts:(-?\d+).*?fmt:(\S+)\s+channels:(\d+)\s+chlayout:(\S+)\s+rate:(\d+)\s+nb_samples:(\d+)",
-            line,
+            text,
         )
         if not match:
             raise DecodeError("Malformed native audio decoder metadata")
@@ -1006,6 +1079,13 @@ def native_audio_pcm(media, stream_index, start_ms, end_ms, cancel_check, pause_
         if abs(Fraction(int(pts), rate) - raw_pts) > tb / 2 + Fraction(1, rate):
             raise DecodeError("Native audio decoder timeline disagrees with audit")
         decoded.append(int(n))
+    finish_frame()
+    declarations = dict(uniform_declarations or {})
+    if initial_service is not None:
+        if service_count not in (1, len(decoded)):
+            raise DecodeError("Native audio service declaration has ambiguous scope")
+        scope = "audio_service_per_frame" if service_count > 1 else "audio_service_initial"
+        declarations[scope] = initial_service
     if not decoded or sum(decoded) < last_sample:
         raise DecodeError("Native audio decoder did not cover the window")
     samples = np.frombuffer(data, dtype="<f8").reshape(-1, channels)
@@ -1019,4 +1099,5 @@ def native_audio_pcm(media, stream_index, start_ms, end_ms, cancel_check, pause_
         ids,
         (first + Fraction(first_sample, rate)) * 1000,
         (first + Fraction(last_sample, rate)) * 1000,
+        tuple(sorted(declarations.items())),
     )

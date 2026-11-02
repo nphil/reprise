@@ -22,7 +22,6 @@ from media_preview_generator.markers.publishers.base import (
     Capability,
     CapabilityReport,
     MarkerPublisher,
-    PublishError,
     Shown,
     stopped_unreadable,
 )
@@ -980,7 +979,7 @@ class TestFailedItems:
         _published(store, server_id, item_id, path)
         store.set_item_publish_state(server_id, item_id, None, "failed")
 
-    def test_a_transient_failure_is_retried_a_day_later_and_then_read_back(self, tmp_path, media):
+    def test_a_failed_item_is_retried_without_bypassing_review(self, tmp_path, media):
         from tests.markers.pipeline_helpers import CHAPTERS_BOTH, _ctx, _probe, _run
         from tests.markers.pipeline_helpers import _registry as pipeline_registry
 
@@ -990,9 +989,13 @@ class TestFailedItems:
         registry = pipeline_registry(path, ServerType.PLEX)
         pub = ready_publisher()
         _run(_ctx(store, registry), path, {"plex-1": pub}, probe=_probe(CHAPTERS_BOTH))
-        pub.write.side_effect = PublishError("Plex is busy writing its database", state=Capability.UNREACHABLE)
-        _run(_ctx(store, registry, force=True), path, {"plex-1": pub}, probe=_probe(CHAPTERS_BOTH))
-        assert store.get_item_publish_state("plex-1", "item-plex-1").status == "failed"
+        rec = store.get_file(path)
+        markers = list(store.get_markers(rec.id).values())
+        assert markers
+        # A previously published item whose later write failed, not an automatic detector write.
+        store.set_publish_state(rec.id, "plex-1", item_id="item-plex-1", markers=markers, status="written")
+        store.set_item_publish_state("plex-1", "item-plex-1", markers, "written")
+        store.set_item_publish_state("plex-1", "item-plex-1", None, "failed")
         pub.shows_many.side_effect = lambda items, cancel_check=None: {i[0]: Shown.OURS for i in items}
 
         def check_servers(days):
@@ -1001,17 +1004,19 @@ class TestFailedItems:
                 patch.object(reconcile, "publisher_for", return_value=pub),
                 patch.object(reconcile, "_utcnow", return_value=clock["t"]),
             ):
-                listing = reconcile.check_servers_listing(registry=registry, store=store, max_files=500)
-            return [i.canonical_path for i in listing.items]
+                return reconcile.check_servers_listing(registry=registry, store=store, max_files=500)
 
-        assert check_servers(0.5) == []  # not due yet
-        assert check_servers(1.1) == [path] and not pub.shows_many.called
-        pub.write.side_effect = pub.succeed
-        out, _ = _run(_ctx(store, registry), path, {"plex-1": pub}, probe=_probe(CHAPTERS_BOTH))
-        assert out.publisher_rows[0]["status"] == "markers_up_to_date"
-        assert store.get_item_publish_state("plex-1", "item-plex-1").status == "written"
-        assert check_servers(3.2) == []
-        assert [[i[0] for i in c.args[0]] for c in pub.shows_many.call_args_list] == [["item-plex-1"]]
+        assert check_servers(0.5).retries == {}
+        listing = check_servers(1.1)
+        assert listing.retries == {path: frozenset({("plex-1", "item-plex-1")})}
+        assert not pub.shows_many.called
+        out, _ = _run(_ctx(store, registry, force=True), path, {"plex-1": pub}, probe=_probe(CHAPTERS_BOTH))
+        assert out.publisher_rows[0]["status"] == "markers_skipped"
+        pub.write.assert_not_called()
+        assert store.get_item_publish_state("plex-1", "item-plex-1").status == "failed"
+        listing.count_checked(store, path)
+        assert check_servers(2.0).retries == {}
+        assert check_servers(3.2).retries == {path: frozenset({("plex-1", "item-plex-1")})}
         store.close()
 
     def test_a_failure_that_stays_is_retried_on_the_backoff_five_times_then_no_more(self, tmp_path, media):

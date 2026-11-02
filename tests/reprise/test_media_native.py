@@ -14,6 +14,79 @@ def execute(*args):
     return subprocess.check_output(["ffmpeg", "-nostdin", "-v", "error", "-threads", "1", *args])
 
 
+def assert_generated_video_format(path, pix="yuv420p"):
+    info = json.loads(
+        subprocess.check_output(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_streams",
+                "-show_frames",
+                "-show_entries",
+                "stream=pix_fmt,chroma_location:frame=pix_fmt,chroma_location",
+                "-of",
+                "json",
+                str(path),
+            ]
+        )
+    )
+    streams, frames = info.get("streams", []), info.get("frames", [])
+    actual_streams = [(s.get("pix_fmt"), s.get("chroma_location")) for s in streams]
+    actual_frames = {(f.get("pix_fmt"), f.get("chroma_location")) for f in frames}
+    assert actual_streams == [(pix, "left")] and frames and actual_frames == {(pix, "left")}, (
+        f"generated video fixture has unexpected pixel format/chroma: expected ({pix}, left), "
+        f"streams={actual_streams}, frame_values={actual_frames}, frame_count={len(frames)}"
+    )
+
+
+def test_generated_video_fixture_precondition_reports_actual_format(tmp_path):
+    path = tmp_path / "fixture.mkv"
+    execute(
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=size=64x48:rate=2:duration=1",
+        "-c:v",
+        "ffv1",
+        "-chroma_sample_location",
+        "left",
+        "-y",
+        str(path),
+    )
+    assert_generated_video_format(path)
+    with pytest.raises(AssertionError, match="yuv422p.*yuv420p"):
+        assert_generated_video_format(path, "yuv422p")
+
+
+def assert_generated_audio_gap(path):
+    info = json.loads(
+        subprocess.check_output(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "a:0",
+                "-show_frames",
+                "-show_entries",
+                "frame=pts_time,nb_samples",
+                "-of",
+                "json",
+                str(path),
+            ]
+        )
+    )
+    frames = info["frames"]
+    gaps = [
+        Fraction(b["pts_time"]) - Fraction(a["pts_time"]) - Fraction(int(a["nb_samples"]), 48000)
+        for a, b in zip(frames, frames[1:], strict=False)
+    ]
+    assert gaps and max(gaps) > Fraction(1, 10), f"generated audio gap missing: max={max(gaps, default=None)}"
+
+
 @pytest.fixture(params=[0, 5], ids=["zero-origin", "offset-origin"])
 def native_media(tmp_path, request):
     path = tmp_path / "native.mkv"
@@ -111,6 +184,7 @@ def test_audio_gap_is_not_silently_filled(tmp_path):
         "-y",
         str(path),
     )
+    assert_generated_audio_gap(path)
     item = media_version(str(path), 6000, "{}")
     with pytest.raises(DecodeError, match="continuous sample clock"):
         audio_pcm(item, ("a", 0, 48000, 1), 1000, 4000, Fraction(0), lambda: False, lambda: False, 1)
@@ -146,8 +220,11 @@ def test_native_close_pts_preserve_every_frame_and_pixel(tmp_path, codec):
     expected = [(Fraction(frame["best_effort_timestamp_time"]) - origin) * 1000 for frame in info["frames"]]
     assert len(expected) == 48
     assert all(0 < b - a < Fraction(1000, 24) for a, b in zip(expected, expected[1:], strict=False))
+    assert_generated_video_format(path)
     item = media_version(str(path), 2000, "{}")
     with native_frames(item, 0, 0, 2000, lambda: False, lambda: False, 1) as reader:
+        args = reader.proc.args
+        assert args[args.index("-enc_time_base") + 1] == "1:1000"
         frames = list(reader)
         assert reader.termination == "eof"
     assert [frame.pts_ms for frame in frames] == expected
@@ -158,7 +235,7 @@ def test_native_close_pts_preserve_every_frame_and_pixel(tmp_path, codec):
         "-fps_mode",
         "passthrough",
         "-enc_time_base",
-        "-1",
+        "1:1000",
         "-pix_fmt",
         "yuv420p",
         "-f",
@@ -190,6 +267,7 @@ def test_native_h264_b_frames_partial_windows(tmp_path):
         "-y",
         str(path),
     )
+    assert_generated_video_format(path)
     item = media_version(str(path), 12000, "{}")
     info = json.loads(
         subprocess.check_output(
@@ -256,6 +334,7 @@ def test_native_planes_pts_and_boundary(tmp_path, pix, dx, dy, sample):
         "-y",
         str(path),
     )
+    assert_generated_video_format(path, pix)
     item = media_version(str(path), 3000, "{}")
     with native_frames(item, 0, 1000, 2000, lambda: False, lambda: False, 1) as reader:
         frames = list(reader)
@@ -295,6 +374,7 @@ def test_native_eof_abandon_and_cancel(tmp_path):
         "-y",
         str(path),
     )
+    assert_generated_video_format(path)
     item = media_version(str(path), 2000, "{}")
     with native_frames(item, 0, 1000, 3000, lambda: False, lambda: False, 1) as reader:
         assert len(list(reader)) == 4
@@ -337,6 +417,7 @@ def test_native_vfr_nonzero_origin_and_lookahead_cap(tmp_path):
         "-y",
         str(path),
     )
+    assert_generated_video_format(path)
     item = media_version(str(path), 7000, "{}")
     with native_frames(item, 0, 0, 1000, lambda: False, lambda: False, 1) as reader:
         frames = list(reader)
@@ -368,6 +449,7 @@ def test_native_rejects_missing_chroma_and_reaps_on_exception(tmp_path):
         "-y",
         str(path),
     )
+    assert_generated_video_format(path)
     item = media_version(str(path), 2000, "{}")
     with pytest.raises(RuntimeError, match="consumer"):
         with native_frames(item, 0, 0, 1000, lambda: False, lambda: False, 1) as reader:
@@ -403,6 +485,7 @@ def test_native_vfr_seek_preserves_exact_timestamps(tmp_path, offset):
         "-y",
         str(path),
     )
+    assert_generated_video_format(path)
     item = media_version(str(path), 7000, "{}")
     info = timing(str(path))
     origin = Fraction(info["format"]["start_time"])
@@ -430,6 +513,7 @@ def test_native_pause_and_changed_file_fail_closed(tmp_path):
         "-y",
         str(path),
     )
+    assert_generated_video_format(path)
     item = media_version(str(path), 2000, "{}")
     states = iter([True, True, False])
 
@@ -494,6 +578,7 @@ def test_native_audio_rejects_gap_and_unknown_layout(tmp_path):
         "-y",
         str(path),
     )
+    assert_generated_audio_gap(path)
     item = media_version(str(path), 3000, "{}")
     with pytest.raises(DecodeError, match="discontinuous"):
         native_audio_pcm(item, 0, 0, 2500, lambda: False, lambda: False, 1)
@@ -543,6 +628,7 @@ def test_native_uses_unrotated_pixels(tmp_path):
         str(original),
     )
     execute("-i", str(original), "-c", "copy", "-metadata:s:v:0", "rotate=180", "-y", str(rotated))
+    assert_generated_video_format(rotated)
     item = media_version(str(rotated), 2000, "{}")
     with native_frames(item, 0, 0, 1000, lambda: False, lambda: False, 1) as reader:
         frames = list(reader)
@@ -573,6 +659,7 @@ def test_native_protocol_failure_never_commits(tmp_path, monkeypatch, fault):
         "-y",
         str(path),
     )
+    assert_generated_video_format(path)
     item = media_version(str(path), 2000, "{}")
     original = media._bounded_log_lines
 
@@ -649,6 +736,7 @@ def test_missing_complete_metadata_pair_times_out_and_reaps(tmp_path, monkeypatc
         "-y",
         str(path),
     )
+    assert_generated_video_format(path)
     item = media_version(str(path), 2000, "{}")
     real_popen = media.subprocess.Popen
     lines = (
@@ -694,6 +782,7 @@ def test_metadata_error_interrupts_partial_payload(tmp_path, monkeypatch):
         "-y",
         str(path),
     )
+    assert_generated_video_format(path)
     item = media_version(str(path), 2000, "{}")
     real_popen = media.subprocess.Popen
     config = "config in time_base: 1/1000, frame_rate: 4/1"
@@ -743,6 +832,7 @@ def test_stderr_eof_does_not_stall_decoder_cleanup(tmp_path, monkeypatch, extra)
         "-y",
         str(path),
     )
+    assert_generated_video_format(path)
     item = media_version(str(path), 2000, "{}")
     real_popen = media.subprocess.Popen
     script = "import os,time; os.close(2); " + ("os.write(1,b'x'*1048576); " if extra else "") + "time.sleep(10)"
@@ -781,6 +871,7 @@ def test_native_rejects_actual_interlaced_frames(tmp_path):
         "-y",
         str(path),
     )
+    assert_generated_video_format(path)
     item = media_version(str(path), 2000, "{}")
     with pytest.raises(DecodeError, match="interpretation"):
         with native_frames(item, 0, 0, 1000, lambda: False, lambda: False, 1):
@@ -804,3 +895,176 @@ def test_native_audio_rejects_nonfinite_samples(tmp_path):
     item = media_version(str(path), 1000, "{}")
     with pytest.raises(DecodeError, match="nonfinite"):
         native_audio_pcm(item, 0, 0, 1000, lambda: False, lambda: False, 1)
+
+
+@pytest.fixture
+def ac3_native_audio(tmp_path):
+    path = tmp_path / "surround.mp4"
+    signals = "|".join(f"0.1*sin(2*PI*{300 + 75 * i}*t)" for i in range(6))
+    execute(
+        "-f",
+        "lavfi",
+        "-i",
+        f"aevalsrc={signals}:s=48000:d=2:c=5.1(side)",
+        "-c:a",
+        "ac3",
+        "-b:a",
+        "384k",
+        "-y",
+        str(path),
+    )
+    return media_version(str(path), 2000, "{}")
+
+
+def test_ac3_native_declarations_and_channels(ac3_native_audio):
+    import numpy as np
+
+    from media_preview_generator.reprise.media import native_audio_pcm
+
+    item = ac3_native_audio
+    decoded = native_audio_pcm(item, 0, 0, 1000, lambda: False, lambda: False, 1)
+    reference = np.frombuffer(
+        execute("-i", item.canonical_path, "-c:a", "pcm_f64le", "-f", "f64le", "-"), dtype="<f8"
+    ).reshape(-1, 6)
+    assert decoded.data.shape == (48000, 6)
+    assert np.array_equal(decoded.data, reference[:48000])
+    declarations = dict(decoded.declarations)
+    assert declarations["audio_service_initial"] == ("Main Audio Service",)
+    assert declarations["matrix_encoding"] == ("none",)
+    assert declarations["downmix"][0] == "unknown"
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "duplicate",
+        "missing",
+        "dynamic",
+        "dynamic_valid",
+        "unknown",
+        "malformed",
+        "late_service",
+        "before_frame",
+        "order",
+        "filter_id",
+    ],
+)
+def test_ac3_native_rejects_bad_declarations(ac3_native_audio, monkeypatch, fault):
+    from media_preview_generator.reprise import media
+
+    original = media.run
+
+    def altered(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if not kwargs.get("capture_stderr"):
+            return result
+        data, log = result
+        lines = log.splitlines(keepends=True)
+        matrices = [i for i, line in enumerate(lines) if b"side data - matrix encoding:" in line]
+        services = [i for i, line in enumerate(lines) if b"side data - audio service type:" in line]
+        assert len(matrices) >= 2 and len(services) == 1
+        idx = matrices[1]
+        if fault == "duplicate":
+            lines.insert(idx, lines[idx])
+        elif fault == "missing":
+            lines.pop(idx)
+        elif fault == "dynamic":
+            lines[idx] = lines[idx].replace(b"matrix encoding: none", b"matrix encoding: dolby")
+        elif fault == "dynamic_valid":
+            idx = next(i for i, line in enumerate(lines) if i > matrices[1] and b"side data - downmix:" in line)
+            lines[idx] = lines[idx].replace(b"0.594604", b"0.500000")
+        elif fault == "unknown":
+            lines[idx] = lines[idx].replace(b"matrix encoding: none", b"unknown declaration: value")
+        elif fault == "malformed":
+            lines[idx] = lines[idx].replace(b"matrix encoding: none", b"downmix: nan")
+        elif fault == "late_service":
+            lines.insert(idx, lines[services[0]])
+        elif fault == "order":
+            following = next(i for i, line in enumerate(lines) if i > idx and b"side data - downmix:" in line)
+            lines[idx], lines[following] = lines[following], lines[idx]
+        elif fault == "filter_id":
+            lines[idx] = lines[idx].replace(b"Parsed_ashowinfo_1", b"Parsed_ashowinfo_9")
+        else:
+            service = lines.pop(services[0])
+            first_frame = next(i for i, line in enumerate(lines) if b"Parsed_ashowinfo_" in line and b" n:" in line)
+            lines.insert(first_frame, service)
+        return data, b"".join(lines)
+
+    monkeypatch.setattr(media, "run", altered)
+    with pytest.raises(DecodeError):
+        media.native_audio_pcm(ac3_native_audio, 0, 0, 1000, lambda: False, lambda: False, 1)
+
+
+@pytest.mark.parametrize(
+    ("declaration", "other"),
+    [
+        ((("matrix_encoding", ("none",)),), (("matrix_encoding", ("none",)),)),
+        ((("matrix_encoding", ("none",)),), ()),
+        ((("matrix_encoding", ("none",)),), (("matrix_encoding", ("different",)),)),
+        (
+            (("audio_service_initial", ("Main Audio Service",)),),
+            (("audio_service_per_frame", ("Main Audio Service",)),),
+        ),
+    ],
+)
+def test_native_audio_comparison_requires_identical_declarations(monkeypatch, declaration, other):
+    import numpy as np
+
+    from media_preview_generator.reprise import analysis, media
+
+    data = np.zeros((9600, 2), dtype="<f8")
+    values = iter(
+        [
+            media.NativeAudio(data, 48000, "stereo", ("FL", "FR"), Fraction(0), Fraction(200), declaration),
+            media.NativeAudio(data, 48000, "stereo", ("FL", "FR"), Fraction(0), Fraction(200), other),
+        ]
+    )
+    called = []
+    monkeypatch.setattr(media, "native_audio_pcm", lambda *args: next(values))
+    monkeypatch.setattr(analysis.verify, "audio_matches", lambda *args: called.append(True) or True)
+    args = (object(), object(), [("a", 0, 48000, 2)], [("b", 0, 48000, 2)], 0, 200, 0, lambda: False, lambda: False, 1)
+    if other == declaration:
+        analysis._audio_support(*args)
+        assert called
+    else:
+        with pytest.raises(DecodeError, match="declarations differ"):
+            analysis._audio_support(*args)
+        assert not called
+
+
+@pytest.mark.parametrize("repeat", [True, False])
+def test_ac3_per_frame_service_scope_and_absent_matrix(ac3_native_audio, monkeypatch, repeat):
+    from media_preview_generator.reprise import media
+
+    original = media.run
+
+    def altered(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if not kwargs.get("capture_stderr"):
+            return result
+        data, log = result
+        lines = log.splitlines(keepends=True)
+        service = next(line for line in lines if b"side data - audio service type:" in line)
+        output = []
+        count = 0
+        for line in lines:
+            if b"side data - matrix encoding:" in line or b"side data - audio service type:" in line:
+                continue
+            output.append(line)
+            if b"Parsed_ashowinfo_" in line and b" n:" in line:
+                count += 1
+                if repeat or count <= 2:
+                    output.append(service)
+        assert count > 2
+        return data, b"".join(output)
+
+    monkeypatch.setattr(media, "run", altered)
+    if repeat:
+        result = media.native_audio_pcm(ac3_native_audio, 0, 0, 1000, lambda: False, lambda: False, 1)
+        declarations = dict(result.declarations)
+        assert declarations["audio_service_per_frame"] == ("Main Audio Service",)
+        assert "audio_service_initial" not in declarations and "matrix_encoding" not in declarations
+        assert declarations["downmix"][0] == "unknown"
+    else:
+        with pytest.raises(DecodeError, match="ambiguous scope"):
+            media.native_audio_pcm(ac3_native_audio, 0, 0, 1000, lambda: False, lambda: False, 1)

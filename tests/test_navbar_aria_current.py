@@ -51,7 +51,7 @@ class TestNavbarAriaCurrent:
     @pytest.mark.parametrize(
         ("path", "expected"),
         [
-            ("/", [("", "/")]),
+            ("/reprise", [("", "/reprise"), ("", "/reprise")]),
             ("/servers", [("", "/servers")]),
             ("/automation", [("navAutomationDropdown", "/automation")]),
             ("/settings", [("navSettingsDropdown", "/settings")]),

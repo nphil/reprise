@@ -75,10 +75,8 @@ class TestServersPage:
         assert 'data-type="jellyfin"' in body
 
     def test_navbar_includes_servers_link(self, authenticated_client):
-        # Wrapping the assertion in `if status_code == 200:` made this test
-        # silently pass even when /  bounces to /setup or /login. Demand 200
-        # unconditionally so we actually verify the navbar contents.
-        response = authenticated_client.get("/")
+        # Verify the rendered library page, not the root redirect.
+        response = authenticated_client.get("/reprise")
         assert response.status_code == 200
         body = response.get_data(as_text=True)
         assert "/servers" in body

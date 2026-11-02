@@ -7961,7 +7961,14 @@ class TestFullScanFilterAPI:
             )
         )
 
-    def test_recently_added_schedule_drops_full_scan_filters(self, client) -> None:
+    @pytest.mark.parametrize(
+        ("requested_kinds", "expected_kinds"),
+        [
+            (None, ["previews", "intro_credits", "loudness"]),
+            (["reprise", "previews"], ["previews", "reprise"]),
+        ],
+    )
+    def test_recently_added_schedule_drops_full_scan_filters(self, client, requested_kinds, expected_kinds) -> None:
         response = client.post(
             "/api/schedules",
             headers=_api_headers(),
@@ -7975,6 +7982,7 @@ class TestFullScanFilterAPI:
                     "latest_seasons": -1,
                     "added_filter": "last_days",
                     "added_last_days": False,
+                    **({"job_kinds": requested_kinds} if requested_kinds is not None else {}),
                 },
             },
         )
@@ -7982,7 +7990,7 @@ class TestFullScanFilterAPI:
         assert response.get_json()["config"] == {
             "job_type": "recently_added",
             "lookback_hours": 1,
-            "job_kinds": list(JOB_KINDS),
+            "job_kinds": expected_kinds,
         }
 
     def test_every_kind_keeps_whole_library_filters_and_bad_kinds_are_refused(self, client) -> None:

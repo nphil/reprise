@@ -448,6 +448,7 @@ class TestRequeueInterruptedOnStartup:
         assert [c.args for c in jm.fail_unrevived_interrupted_jobs.call_args_list] == [
             ("intro_credits",),
             ("loudness",),
+            ("reprise",),
             ("previews",),
         ]
         mock_start_job.assert_not_called()
@@ -473,6 +474,7 @@ class TestRequeueInterruptedOnStartup:
         assert [c.args for c in mock_get_job_manager.return_value.fail_unrevived_interrupted_jobs.call_args_list] == [
             ("intro_credits",),
             ("loudness",),
+            ("reprise",),
             ("previews",),
         ]
         mock_start_job.assert_called_once_with("job-123", {"foo": "bar"})
@@ -503,6 +505,7 @@ class TestRequeueInterruptedOnStartup:
         assert [c.args for c in jm.fail_unrevived_interrupted_jobs.call_args_list] == [
             ("intro_credits",),
             ("loudness",),
+            ("reprise",),
         ]
 
     @pytest.mark.parametrize("auto_requeue", [True, False])
@@ -534,6 +537,7 @@ class TestRequeueInterruptedOnStartup:
         assert [c.args for c in jm.fail_unrevived_interrupted_jobs.call_args_list] == [
             ("intro_credits",),
             ("loudness",),
+            ("reprise",),
             ("previews",),
         ]
         if auto_requeue:
@@ -567,6 +571,7 @@ class TestRequeueInterruptedOnStartup:
         assert [c.args for c in jm.fail_unrevived_interrupted_jobs.call_args_list] == [
             ("intro_credits",),
             ("loudness",),
+            ("reprise",),
             ("previews",),
         ]
         mock_start_job.assert_not_called()

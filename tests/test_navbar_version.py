@@ -119,7 +119,7 @@ def _version_link(html: str) -> str:
 
 
 class TestNavbarVersionRendering:
-    @pytest.mark.parametrize("path", ["/", "/settings", "/automation", "/servers", "/logs", "/inspector"])
+    @pytest.mark.parametrize("path", ["/reprise", "/settings", "/automation", "/servers", "/logs", "/inspector"])
     def test_every_page_shows_the_version_linking_to_release_notes(self, client, monkeypatch, path):
         monkeypatch.setenv("GIT_BRANCH", "dev")
         monkeypatch.setenv("GIT_SHA", "a9c8177d2e41")
@@ -140,7 +140,7 @@ class TestNavbarVersionRendering:
             {"current_version": "3.4.0", "latest_version": "3.4.1", "update_available": True, "install_type": "docker"}
         )
 
-        link = _version_link(client.get("/").get_data(as_text=True))
+        link = _version_link(client.get("/reprise").get_data(as_text=True))
 
         assert '<span id="navVersionText">v3.4.0</span>' in link
         assert 'id="navVersionDot"' in link
@@ -158,7 +158,7 @@ class TestNavbarVersionRendering:
             }
         )
 
-        link = _version_link(client.get("/").get_data(as_text=True))
+        link = _version_link(client.get("/reprise").get_data(as_text=True))
 
         assert f'<span id="navVersionText">{label}</span>' in link
         assert "navVersionDot" not in link

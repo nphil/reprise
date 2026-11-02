@@ -1,10 +1,8 @@
 """scripts/build_jellyfin_manifest.py: the Jellyfin plugin manifest, rebuilt from plugin-v* releases.
 
-Every Pages deploy runs the builder, so whichever deploy wins the `pages` queue ships the same file.
-Real Jellyfin servers poll it, so the builder must fail closed: a download error, a digest mismatch, an
-unreadable template or an empty version list stops the deploy instead of publishing a broken or empty
-manifest. Everything in it, the plugin's description included, comes from the releases: text edited on
-`dev` reaches users only with the next plugin release.
+The builder preserves the format of historical plugin releases.
+It must fail closed: a download error, a digest mismatch, an unreadable template or an empty version
+list must not produce a broken or empty manifest. Metadata comes from the historical releases.
 """
 
 from __future__ import annotations
@@ -18,7 +16,6 @@ import urllib.error
 from pathlib import Path
 
 import pytest
-import yaml
 
 from media_preview_generator.servers.jellyfin import JellyfinServer
 from scripts import build_jellyfin_manifest as builder
@@ -32,7 +29,6 @@ REPO_API = "https://api.github.com/repos/stevezau/media_preview_generator"
 API = f"{REPO_API}/releases"
 CONTENTS = f"{REPO_API}/contents/{TEMPLATE_REPO_PATH}"
 PUBLISHED = "2026-06-29T04:38:25Z"
-PLUGIN_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "jellyfin-plugin.yml"
 
 
 def _zip_bytes(version: str) -> bytes:
@@ -404,38 +400,22 @@ class TestRequiredTag:
 
 
 class TestPluginReleaseContract:
-    def test_the_builder_lists_what_jellyfin_plugin_yml_releases(self, downloads, templates) -> None:
-        # The tag, zip names and ABIs are a contract between the release workflow and the builder. Each pinned line
-        # below is one side of it: change it and this names the builder rule that must follow.
-        job = yaml.safe_load(PLUGIN_WORKFLOW.read_text(encoding="utf-8"))["jobs"]["build-release"]
-        steps = {step["name"]: step for step in job["steps"]}
-        workflow_abis = {row["abi"] for row in job["strategy"]["matrix"]["include"]}
-        resolve = steps["Resolve version"]["run"]
-        release_step = steps["Create / update GitHub release"]["with"]
-
-        assert workflow_abis == set(builder.ABIS)
-        assert r'"$VERSION" =~ ^10\.11\.[0-9]+\.[0-9]+$' in resolve
-        assert 'if [[ "$ABI" == "10.11" ]]; then' in resolve
-        assert 'ROW_VERSION="$VERSION"' in resolve
-        assert 'ROW_VERSION="12.0.$(echo "$VERSION" | cut -d. -f3-4)"' in resolve
-        assert 'ZIP="media-preview-bridge_${ROW_VERSION}.zip"' in steps["Pack zip"]["run"]
-        assert release_step["tag_name"] == "plugin-v${{ steps.ver.outputs.release_version }}"
-        assert release_step["files"] == "jellyfin-plugin/${{ steps.pack.outputs.zip }}"
-
-        version = "10.11.7.3"
-        tag = f"plugin-v{version}"
-        row_versions = {abi: version if abi == "10.11" else f"12.0.{version.split('.', 2)[2]}" for abi in workflow_abis}
+    def test_builder_lists_historical_dual_abi_release(self, downloads, templates) -> None:
+        # The retired workflow used these tag and asset names for the two Jellyfin ABIs.
+        tag = "plugin-v10.11.7.3"
+        row_versions = {"10.11": "10.11.7.3", "12.0": "12.0.7.3"}
         release = {
             "tag_name": tag,
             "draft": False,
             "published_at": PUBLISHED,
-            "assets": [_asset(tag, row_versions[abi]) for abi in sorted(workflow_abis)],
+            "assets": [_asset(tag, row_versions[abi]) for abi in sorted(row_versions)],
         }
 
         manifest = build_manifest([release], downloads, templates, require_tag=tag)
 
         assert {(entry["version"], entry["targetAbi"]) for entry in manifest[0]["versions"]} == {
-            (row_versions[abi], builder.ABIS[abi]) for abi in workflow_abis
+            ("10.11.7.3", "10.11.0.0"),
+            ("12.0.7.3", "12.0.0.0"),
         }
 
 

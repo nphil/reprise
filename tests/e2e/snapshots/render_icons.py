@@ -24,7 +24,6 @@ APP_IMAGES = REPO_ROOT / "media_preview_generator/web/static/images"
 RENDERS = [
     (FAVICON, 32, REPO_ROOT / "docs/assets/img/favicon-32.png"),
     (LOGO, 180, REPO_ROOT / "docs/assets/img/apple-touch-icon.png"),
-    (LOGO, 512, REPO_ROOT / "docs/images/icon.png"),
     (LOGO, 512, APP_IMAGES / "icon.png"),
     (FAVICON, 32, APP_IMAGES / "favicon-32.png"),
 ]

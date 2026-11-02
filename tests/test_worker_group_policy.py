@@ -503,7 +503,7 @@ def test_groups_from_legacy_emits_member_shape_with_m1():
         {"cpu_threads": 4, "gpu_config": [{"device": "cuda:0", "name": "RTX", "workers": 2, "enabled": False}]}
     )
     assert [g["id"] for g in groups][0] == "legacy-cpu"
-    assert groups[0]["members"] == [member("m1", "cpu", None, 4, ["previews", "intro_credits", "loudness"])]
+    assert groups[0]["members"] == [member("m1", "cpu", None, 4, ["previews", "intro_credits", "loudness", "reprise"])]
     assert groups[1]["name"] == "RTX"
     assert groups[1]["enabled"] is False
-    assert groups[1]["members"] == [member("m1", "gpu", "cuda:0", 2, ["previews", "intro_credits"])]
+    assert groups[1]["members"] == [member("m1", "gpu", "cuda:0", 2, ["previews", "intro_credits", "reprise"])]

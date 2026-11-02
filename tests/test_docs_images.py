@@ -1,4 +1,4 @@
-"""Image references across the README, Docker Hub README, docs, site templates and Unraid templates.
+"""Image references across the README, docs, site templates and Unraid templates.
 
 Two failures nothing else catches: a reference to an image that isn't there (Jekyll and GitHub both
 render a broken picture without failing the build), and an image in docs/images/ or
@@ -30,7 +30,7 @@ SOCIAL_TEMPLATE = REPO_ROOT / "tests" / "e2e" / "snapshots" / "assets" / "social
 
 
 def _sources() -> list[Path]:
-    fixed = [REPO_ROOT / "README.md", REPO_ROOT / "DOCKERHUB_README.md", DOCS / "_config.yml", DOCS / "404.html"]
+    fixed = [REPO_ROOT / "README.md", DOCS / "_config.yml", DOCS / "404.html"]
     globbed = [
         *DOCS.glob("_data/*.yml"),
         *DOCS.glob("_layouts/*.html"),
