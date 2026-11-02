@@ -1,0 +1,27 @@
+name: 'test'
+on: 'pull_request'
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -l {0}
+    steps:
+    - uses: actions/checkout@v3
+
+    - uses: FedericoCarboni/setup-ffmpeg@v1
+      id: setup-ffmpeg
+
+    - uses: actions/setup-python@v4
+      with:
+        python-version: '3.9' 
+
+    - name: System dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install libglib2.0-0 -y
+        sudo apt-get install libsm6 libxext6 libxrender-dev -y
+    
+    - run: |
+        pip install .
+        python -m pytest -s
