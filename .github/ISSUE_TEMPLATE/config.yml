@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: Discussions — questions, config help, show-and-tell
-    url: https://github.com/stevezau/media_preview_generator/discussions
+    url: https://github.com/nphil/reprise/discussions
     about: For setup/config questions and non-bug conversations.

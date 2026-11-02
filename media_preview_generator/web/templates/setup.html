@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}Setup - Media Preview Generator{% endblock %}
+{% block title %}Setup - Reprise{% endblock %}
 
 {% block head %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/settings.css') }}">
@@ -12,8 +12,8 @@
    slim bar replaces it. base.html has no navbar block to override. #}
 <header class="setup-topbar">
     <span class="setup-brand">
-        <img src="{{ url_for('static', filename='images/icon.svg') }}" alt="" width="26" height="26">
-        <span>Media Preview Generator</span>
+        <img src="{{ url_for('static', filename='images/reprise.svg') }}" alt="" width="26" height="26">
+        <span>Reprise</span>
     </span>
     <span class="setup-topbar-actions">
         <button type="button" class="setup-icon-btn" id="setupThemeBtn" aria-label="Toggle dark/light theme" title="Toggle dark/light theme">

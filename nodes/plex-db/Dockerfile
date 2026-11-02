@@ -34,7 +34,7 @@ RUN pip wheel --wheel-dir=/wheels --no-cache-dir --require-hashes -r requirement
 COPY pyproject.toml ./
 COPY media_preview_generator/ ./media_preview_generator/
 ARG SETUPTOOLS_SCM_PRETEND_VERSION="0.0.0.dev0"
-RUN SETUPTOOLS_SCM_PRETEND_VERSION_FOR_MEDIA_PREVIEW_GENERATOR="$SETUPTOOLS_SCM_PRETEND_VERSION" \
+RUN SETUPTOOLS_SCM_PRETEND_VERSION_FOR_REPRISE="$SETUPTOOLS_SCM_PRETEND_VERSION" \
       pip wheel --wheel-dir=/wheels --no-cache-dir --no-deps .
 
 FROM python:3.12-slim-bookworm@sha256:392307d22300de8b5986851a12d9176dfc0fc073e65bf6523ebd7dcbeb23564e

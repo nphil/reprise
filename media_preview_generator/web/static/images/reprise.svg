@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">Reprise</title>
+  <rect x="24" y="24" width="464" height="464" rx="112" fill="#191724"/>
+  <rect x="102" y="122" width="202" height="268" rx="38" fill="none" stroke="#a79bf5" stroke-width="22"/>
+  <path d="M246 122h72c24 0 44 20 44 44v31M362 251v95c0 24-20 44-44 44h-72" fill="none" stroke="#e0def4" stroke-width="22" stroke-linecap="round"/>
+  <rect x="348" y="212" width="28" height="25" rx="7" fill="#9ccfd8"/>
+</svg>

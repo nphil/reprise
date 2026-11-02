@@ -5,6 +5,8 @@ description: Offload preview generation to another machine and reuse one decode 
 render_with_liquid: false
 ---
 
+> **Reprise fork notice:** This preserved upstream Media Preview Generator guide may describe automatic marker writes that do not apply to Reprise. Plex publication is off by default and requires separate review, preparation and apply steps. See the [Reprise README](../README.md) and [playback API guide](reprise-api.md).
+
 The tool can drive any number of **Plex**, **Emby**, and **Jellyfin** servers
 from a single instance. A new file is processed exactly once (one FFmpeg pass
 on the GPU) and the resulting frames are published to **every** configured

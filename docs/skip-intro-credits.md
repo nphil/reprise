@@ -4,6 +4,8 @@ heading: Skip Intro and Skip Credits
 description: Set up Skip Intro and Skip Credits for Plex, Jellyfin and Emby. Check subscriptions, node or plugin requirements, then inspect one file.
 ---
 
+> **Reprise fork notice:** This is a preserved upstream Media Preview Generator guide, not the Reprise publication workflow. Reprise does not automatically publish reviewed markers: Plex publication is off by default and requires separate review, preparation and apply steps. See the [Reprise README](../README.md) and [playback API guide](reprise-api.md).
+
 Media Preview Generator detects where each file's intro and end credits are and sends those points to Plex, Emby and Jellyfin, so viewers get a skip button. It detects each file once and sends the same answer to every server that has the file. On Jellyfin and Emby it works through its own plugin. It runs in the same Docker container that makes your preview thumbnails, and it stays off until you turn it on for a server.
 
 ## What viewers get, and what each server needs

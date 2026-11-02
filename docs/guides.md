@@ -6,6 +6,8 @@ description: Use the Media Preview Generator web UI, trigger jobs from Sonarr, R
 render_with_liquid: false
 ---
 
+> **Reprise fork notice:** This preserved upstream Media Preview Generator guide may describe automatic marker writes that do not apply to Reprise. Plex publication is off by default and requires separate review, preparation and apply steps. See the [Reprise README](../README.md) and [playback API guide](reprise-api.md).
+
 > [Back to Docs](README.md)
 
 Guides for the web interface, remote nodes, webhooks, Intro & Credits, HDR handling, and troubleshooting.

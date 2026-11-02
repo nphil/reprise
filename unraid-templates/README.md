@@ -1,29 +1,3 @@
-# Unraid Templates
+# Reprise Unraid template
 
-This folder contains the [Community Applications](https://forums.unraid.net/topic/38582-plug-in-community-applications/) template for Unraid.
-
-## Installation
-
-### Option 1: Community Applications (Recommended)
-
-Search for **media-preview-generator** in the Community Applications plugin.
-
-### Option 2: Manual Template URL
-
-1. Go to **Docker** → **Add Container** → **Template** dropdown
-2. Click **Add Template Repository**
-3. Enter: `https://github.com/stevezau/media_preview_generator`
-4. Save, then select **media-preview-generator** from templates
-
-## Files
-
-- `media-preview-generator.xml` - Unraid Docker template
-- `ca_profile.xml` - Community Applications author profile
-
-## Documentation
-
-See [Unraid Guide](../docs/getting-started.md#unraid) for complete setup instructions including:
-- GPU passthrough (Intel QuickSync, NVIDIA)
-- Network configuration (bridge vs custom)
-- Path mapping for Plex
-- Troubleshooting
+Import `reprise.xml` as a user template. Before starting it, select an existing immutable `ghcr.io/nphil/reprise:sha-<full-commit>` tag or digest, and choose the media and appdata paths. The media mount is read-only; no Plex database is mounted. The app listens on port 8080 and persists its token and configuration in appdata. The image must first be built and published; this template does not create it.

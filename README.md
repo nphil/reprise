@@ -1,222 +1,56 @@
-<!-- PROJECT SHIELDS: reference-style (defined at the bottom), amber like the docs site. -->
-<div align="center">
+# Reprise
 
-[![Build][build-shield]][build-url]
-[![Release][release-shield]][release-url]
-[![Coverage][codecov-shield]][codecov-url]
-[![Docker Pulls][docker-shield]][docker-url]
-[![Image Size][size-shield]][docker-url]
-[![Stargazers][stars-shield]][stars-url]
-[![Issues][issues-shield]][issues-url]
-[![MIT License][license-shield]][license-url]
-[![AI-Assisted][ai-shield]][ai-url]
-[![Buy me a coffee][kofi-shield]][kofi-url]
+Reprise is an in-development, self-hosted media analysis and review application. It builds on Media Preview Generator and incorporates Recurring Content Detector research. Its goal is to find repeated material while keeping unique scenes; **that preservation outcome is not yet validated**. Review results yourself. Do not enable automatic production Plex publication during evaluation.
 
-</div>
+## Review your library
 
-<div align="center">
-  <img src="docs/images/icon.svg" alt="" width="110" height="110">
+Start in the library-first interface: connect a Plex server, refresh a library, choose an episode and its exact media version, and explicitly request analysis. Refresh indexes the library; it does not implicitly start analysis. Analysis, video comparison previews and refresh run as queued jobs with pause, resume and cancel controls. CPU-only operation is supported; no GPU or language model is required.
 
-  <h1 align="center">Media Preview Generator</h1>
+Detection proposes ranges; it never approves them. Inspect the evidence and original video, adjust keep and skip ranges, and approve or lock your decisions. A keep range vetoes overlapping skips; eligible skips remain separate rather than being joined across protected material. Reprise uses conservative audio and video verification, and uncertain or changed evidence is not approval. A changed file or meaningful evidence can require review again.
 
-  <p align="center">
-    <strong>Your media server's slowest jobs, done on your GPU.</strong>
-    <br />
-    Media Preview Generator makes the preview thumbnails and the Skip Intro and Skip Credits markers for
-    Plex, Emby and Jellyfin. It starts the moment Sonarr or Radarr imports a file and sends the results
-    to every server at once.
-    <br />
-    Self-hosted, in Docker.
-    <br />
-    <br />
-    <a href="https://mediapreviewgenerator.dev/"><strong>Explore the docs »</strong></a>
-    <br />
-    <br />
-    <a href="#quick-start">Quick start</a>
-    &middot;
-    <a href="https://mediapreviewgenerator.dev/comparison/">How it compares</a>
-    &middot;
-    <a href="https://github.com/stevezau/media_preview_generator/discussions">Ask a question</a>
-    &middot;
-    <a href="https://github.com/stevezau/media_preview_generator/issues/new?labels=bug">Report a bug</a>
-  </p>
-</div>
-
-![Tears of Steel in the Plex, Jellyfin and Emby web players, each showing a preview thumbnail over the seek bar](docs/images/players-3up.webp)
-
-<sub>Plex, Jellyfin and Emby web players on test servers, each paused mid-scrub on the same film. The
-thumbnails were made by this app. Tears of Steel, (CC) Blender Foundation | mango.blender.org,
-[CC BY 3.0](https://creativecommons.org/licenses/by/3.0/).</sub>
-
-## What it does
-
-Plex, Emby and Jellyfin can make preview thumbnails themselves, but they do it inside the server, mostly
-on the CPU, and mostly on a schedule. On a big library that can take days, and the episode that arrived
-tonight can sit with a blank timeline until the next maintenance window.
-
-**Media Preview Generator makes them on your GPU, for each file as it arrives.** When more than one
-server holds the same file, it decodes it once and writes each server's own format.
-
-**It also adds Skip Intro and Skip Credits.** It finds each file's intro and end credits once and sends
-the markers to every server that has the file. When it isn't sure, it sends nothing; you can add or adjust
-a marker in the Inspector.
-
-**The GPU can be in another machine.** Add it as a [worker node](docs/remote-nodes.md); the app keeps the queue and every write.
-
-## What it looks like
-
-| It finds every server with that file |
-| --- |
-| ![Servers page with one card each for Home Plex, Home Jellyfin and Home Emby, each showing its address and enabled libraries](docs/images/tour-resolve.webp) |
-
-| One GPU pass per file |
-| --- |
-| ![Workers panel as a table: busy GPU and CPU workers with percent, speed and ETA, idle workers folded into one line, and a worker group on the gpu-box node](docs/images/tour-extract.webp) |
-
-| Each server gets its own format |
-| --- |
-| ![A completed job's details with the Files tab open: one file marked Generated, with Home Plex, Home Jellyfin and Home Emby listed as its servers](docs/images/tour-publish.webp) |
-
-| It waits for slow servers |
-| --- |
-| ![The Jobs queue with four rows: Tears of Steel running at 62%, Sintel pending with Retry 2/5 and Retry starting in 4 min, Big Buck Bunny completed, and Elephants Dream pending](docs/images/tour-retry.webp) |
-
-<sub>App screenshots come from a test setup with made-up servers; the job titles are open films.</sub>
-
-## Features
-
-**GPU first, CPU when needed**
-- **Every GPU you pass in.** NVIDIA, Intel and AMD on Linux; NVIDIA on Windows through WSL2.
-- **Named worker groups.** Pick each group's devices, job types, worker count and weekly hours. [Worker guide](docs/guides.md#worker-groups-and-availability).
-- **Remote nodes.** Use a GPU or CPU on another machine as a worker node. For a Plex on another machine, including Plex on Windows, a Plex database node opens Plex's database beside Plex. The app keeps the queue, tokens and every write. [Nodes guide](docs/remote-nodes.md).
-- **CPU fallback built in.** A file one GPU can't decode tries your other GPUs first, then the CPU.
-- **Key-frame skipping.** Jumps between key frames when a file's key-frame spacing allows it.
-
-**Starts on its own**
-- **Webhooks.** Sonarr, Radarr, Sportarr, Tdarr, FileFlows, Plex (Plex Pass), Emby (Premiere) and Jellyfin, or any JSON with a path. Sonarr, Radarr and the three servers can share one URL.
-- **Schedules.** Recently Added polling, plus cron and interval schedules.
-- **Process a file or folder.** Search your servers by title (a whole show, a movie or one episode), or browse the media folders, and make previews for just those.
-- **Plex without waiting for a scan.** File/folder jobs and path-based webhooks generate from the media itself, even while Plex is offline or has not indexed the file.
-- **Retries and skips.** Retries after 1, 2, 5, 15 and 60 minutes by default while a server indexes a new file, and skips files whose previews are current.
-
-**Every server from one decode**
-- **Each server's own format.** A BIF in Plex's data folder, a BIF next to the video for Emby, and Jellyfin trickplay tiles (next to the video, or in Jellyfin's data folder with the companion plugin).
-- **Setup Health.** Checks each server's settings and offers fixes one library at a time.
-
-**Choose what to generate.** Filter manual or scheduled library scans by date
-added, keep the most recent X available TV seasons, or select a movie release-year
-range. Combine filters while keeping existing previews. See the
-[library-scan guide](docs/guides.md#choosing-media-for-a-library-scan).
-
-**Right colours**
-- **HDR tone mapping.** Tone-maps HDR10, HLG and HDR10+, and uses the HDR10 layer of Dolby Vision profiles 7 and 8. Profile 5 needs a GPU with a hardware Vulkan driver.
-
-**Skip Intro and Skip Credits**
-- **Found once, sent to every server.** Finds intros and end credits from the file's chapters, online skip databases (TheIntroDB, IntroDB.app, SkipDB), the season's theme song or the credit roll itself (read on the GPU when that's faster), then sends the markers to every server. When it isn't sure, it sends nothing instead of a guess; you can add or adjust a marker in the Inspector. Off until you [turn it on](docs/guides.md#turning-it-on) for a server.
-- **Yours to correct.** Tools → Inspector adjusts, adds and locks a file's markers by hand, and Setup Health checks each server's Intro & Credits setup.
-- **Plex.** Needs Plex Pass on the server, and for viewers (or their Plex Home). The app runs on the Plex machine, or next to it through a [Plex database node](docs/guides.md#plex-on-another-machine-the-plex-database-node).
-- **Jellyfin.** Jellyfin 10.11 or 12.0, with the Media Preview Bridge plugin (the one trickplay uses).
-- **Emby.** Emby 4.9 or 4.10, with the Media Preview Bridge for Emby plugin. Skip Intro needs Emby Premiere; Skip Credits doesn't.
-
-**Plex loudness**
-- **Loudness analysis.** Measures audio tracks on CPU worker groups and stores the results in Plex. Off until you [turn it on](docs/plex-loudness-normalization.md) for a Plex 1.43.4.x or 1.43.5.x server; independent of Intro & Credits.
-
-## Where it fits
-
-Plex [chapter thumbnails](https://mediapreviewgenerator.dev/guides/#plex-chapter-thumbnails) and [loudness](https://mediapreviewgenerator.dev/plex-loudness-normalization/) write Plex's database, so they need this app on the Plex machine or a [Plex database node](docs/remote-nodes.md) beside it.
-
-It sits next to Sonarr, Radarr and Tdarr and takes over the media server's own preview job. Once it
-runs, the server's own generation is the same work done twice. The app's
-[Setup Health](docs/guides/previews-readiness.md) tab says which setting to turn off on each
-server, and which to leave on: switching Jellyfin's trickplay off deletes the tiles this app wrote.
-If your server's own generator keeps up, you don't need this: see
-[how it compares](https://mediapreviewgenerator.dev/comparison/).
+The [playback API](docs/reprise-api.md) serves saved results using the exact Plex playback identity, including the selected audio stream. Missing, stale, ambiguous or unapproved results yield no eligible skips. Named client credentials are scoped, and only their hashes are stored. The direct integration API is available for a future Marquee client, but this repository does not provide that client or deploy anything to a TV. Exact range ends and the explicit terminal flag must be respected.
 
 ## Quick start
 
-**You'll need:** Docker · Plex, Emby or Jellyfin (Jellyfin 10.10 or newer), reachable from the
-container · write access where previews go: Plex's data folder, or the media folder for Emby and
-Jellyfin. A GPU is optional: its driver on the host, plus the NVIDIA Container Toolkit for NVIDIA on
-Linux.
+An unsigned image is intended for GitHub Container Registry after a successful build and publication. Pin the full source-commit tag shown below, or its digest; there is currently no published image or versioned release, and no `latest` tag is promised. The tag is a usage pattern, not evidence that an image has been built.
 
-```bash
-docker run -d \
-  --name media-preview-generator \
-  --restart unless-stopped \
-  -p 8080:8080 \
-  --device /dev/dri:/dev/dri \
-  -e PUID=1000 -e PGID=1000 \
-  -v /path/to/media:/media \
-  -v /path/to/plex/config:/plex \
-  -v /path/to/app/config:/config \
-  stevezzau/media_preview_generator:latest
+1. Export `IMAGE` as a published `ghcr.io/nphil/reprise:sha-<full-commit>` (or an image digest), and replace the host paths in `docker-compose.example.yml`.
+2. Run `docker compose -f docker-compose.example.yml up -d`.
+3. Visit port 8080. Sign in with the token in the persistent config directory's `auth.json`, or set `WEB_AUTH_TOKEN` securely before starting. Connect your media server and review the configuration.
+
+For example, substitute the actual commit in `export IMAGE="ghcr.io/nphil/reprise:sha-<full-commit>"` before starting Compose. Do not expose the interface publicly without appropriate authentication and transport security.
+
+The image stores settings and results in `/config`, reads media from `/media`, and listens on TCP 8080 by default. The example runs on CPU, mounts media read-only and does not mount Plex's database. Other inherited features can write to server APIs or paths if configured: a read-only media mount is not an authorization boundary for a connected server. A writable Plex database mount is **not** a default; grant one only for an explicitly authorized publishing operation, after backups and validation. GPU passthrough is optional.
+
+The Unraid template in `unraid-templates/reprise.xml` has the same defaults. Choose a published immutable image tag before creating the container. Configure an internal reverse proxy separately.
+
+## Publication safety
+
+Plex publication is off by default. Preparation may be reviewed without enabling writes; applying or undoing a change requires explicit enablement and current, approved, compatible results for every playable version. Unsupported, missing or mismatched versions and unsafe end-of-file ranges are refused rather than guessed. Before a Plex write, Reprise records intent separately; after interruption it compares the recorded before and after states and marks any other state uncertain rather than replaying blindly. Undo refuses when the affected Plex state has changed since publication. Back up Plex and validate on disposable data before considering production use.
+
+Saving or locking review decisions does not publish them. Prepare, inspect and apply are separate steps; incompatible disjoint or protected ranges are refused rather than merged into an unsafe Plex marker. Recovery does not blindly repeat an interrupted write. The retained upstream guides describe Media Preview Generator and can differ from this fork, especially around automatic marker publication: use this README and the [Reprise API guide](docs/reprise-api.md) for current behavior.
+
+## Attribution and provenance
+
+Reprise derives from [Media Preview Generator](https://github.com/stevezau/media_preview_generator), MIT copyright 2025 Steve Adams and contributors; see [LICENSE](LICENSE). The repository preserves its history from commit `49fd9f6592d7b74139d31075a75f83bdf1a3bb28`. [Recurring Content Detector](https://github.com/nielstenboom/recurring-content-detector), MIT copyright 2019 Niels ten Boom, is retained with its [license](third_party/recurring-content-detector/LICENSE) and non-squashed history. The original revision was `b248e17fa9f8d384ae8a146abc7a5d47190aaaa6`; the filtered imported revision is `9905c17c9e17a08a1b99bd90708d867f978015eb`. Two film-derived test videos with unverified redistribution rights were removed from every imported revision, so their original integration tests need independently licensed fixtures.
+
+The bundled Manrope font identifies itself as version 4.504, copyright 2019 The Manrope Project Authors. Its [SIL Open Font License 1.1 and copyright notice](media_preview_generator/web/static/fonts/MANROPE-LICENSE.txt) are distributed alongside the font; the [Manrope project](https://github.com/sharanda/manrope) is its upstream.
+
+To update the detector, make a disposable clone and filter it *before* pulling it into this repository. Replace `<revision>` with the chosen upstream commit. Do not fetch its unfiltered history into Reprise.
+
+```sh
+git clone --no-tags https://github.com/nielstenboom/recurring-content-detector.git /tmp/reprise-rcd-update
+git -C /tmp/reprise-rcd-update checkout -B filtered <revision>
+git -C /tmp/reprise-rcd-update filter-branch --force --index-filter 'git rm --cached --ignore-unmatch tests/data/video0.mp4 tests/data/video1.mp4' --prune-empty -- filtered
+git subtree pull --prefix=third_party/recurring-content-detector /tmp/reprise-rcd-update filtered
 ```
 
-- Intel or AMD: `--device /dev/dri` as above. NVIDIA: `--gpus all -e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=all` instead. No GPU, or on Windows or macOS? Delete the `--device /dev/dri` line.
-- Plex writes into `/plex`, so the media can be `:ro`. Emby, and Jellyfin in its default layout, write next to each video, so for them the media mount must be read-write. No Plex? Drop the `/plex` mount.
-- Open `http://YOUR_IP:8080` and sign in with the token saved in `auth.json` in your app config folder (or pin your own with `-e WEB_AUTH_TOKEN=...`), then follow the setup wizard.
-- The image is `stevezzau/media_preview_generator`. The double z is the Docker Hub account's name, not a typo.
+Review new upstream assets and licensing before an update; filtering those two known paths alone does not prove other material is redistributable. Record the original and filtered revision with each update.
 
-Docker Compose, Unraid and GPU details: [Getting started](docs/getting-started.md).
+The GPU capability probe clip is generated synthetic video, not footage. Reproduce it with FFmpeg:
 
-## Documentation
+```sh
+ffmpeg -f lavfi -i testsrc2=size=320x240:rate=24:duration=2 -an -c:v libx264 -pix_fmt yuv420p -movflags +faststart -y media_preview_generator/gpu/assets/test_video.mp4
+```
 
-The docs are also a website: **[mediapreviewgenerator.dev](https://mediapreviewgenerator.dev/)**.
-
-| Page | What's in it |
-| --- | --- |
-| [Getting started](docs/getting-started.md) | Docker, GPUs, mounts, Unraid, networking |
-| [How it compares](docs/comparison.md) | Plex, Jellyfin and Emby built-in generation, side by side |
-| [Guides](docs/guides.md) | The web UI, webhooks, schedules, troubleshooting |
-| [Remote nodes](docs/remote-nodes.md) | Another machine's GPU, and Plex on another machine or Windows |
-| [Multi-server](docs/multi-server.md) | Plex, Emby and Jellyfin from one instance |
-| [Reference](docs/reference.md) | Every setting, environment variable and API endpoint |
-| [FAQ](docs/faq.md) | Windows, GPUs, RAM, skipped files |
-| [Why Plex previews are slow](docs/plex-preview-thumbnails-slow.md) | What Plex does, and what to change |
-| [Plex previews with a GPU](docs/plex-preview-thumbnails-gpu.md) | Moving Plex's preview job to a GPU |
-| [Faster Jellyfin trickplay](docs/jellyfin-trickplay-gpu.md) | Jellyfin's own settings first, then a GPU |
-| [Emby BIF previews with a GPU](docs/emby-bif-thumbnails-gpu.md) | Emby BIFs made on a GPU, next to each video |
-| [Previews on Sonarr or Radarr import](docs/sonarr-radarr-preview-thumbnails.md) | Webhooks, quiet period, retries |
-| [HDR and Dolby Vision previews](docs/hdr-dolby-vision-thumbnails.md) | Tone mapping, and the Dolby Vision 5 caveat |
-| [Skip Intro and Skip Credits](docs/skip-intro-credits.md) | What each server needs, how they're found, limits |
-
-## Support the project
-
-It's free and MIT licensed. Helping is optional.
-
-- **[Star it on GitHub](https://github.com/stevezau/media_preview_generator)**: free, and it's how other server owners find it.
-- **[Buy me a coffee on Ko-fi](https://ko-fi.com/stevezau)**: no account needed.
-
-## Get help
-
-- **Previews don't show up?** Open the server's Setup Health tab in the app. It names the setting that's in the way.
-- **Not sure it's a bug?** Ask in [Discussions](https://github.com/stevezau/media_preview_generator/discussions).
-- **Found a bug?** [Open an issue](https://github.com/stevezau/media_preview_generator/issues/new?labels=bug) with the app version and what you tried.
-
-## License
-
-MIT, see [LICENSE](LICENSE). Development is AI-assisted (Claude); every change is reviewed and tested.
-
-<!-- Amber #a06a00, not the brand #e5a00d: shields.io always draws white text, and white on #e5a00d fails
-     contrast. Value badges take `color=`; build, coverage and issues take `labelColor=` so their message
-     keeps its status colour (a red build must still look red). The build badge follows pushes to `dev`,
-     because CI doesn't run on pushes to `main`: a `branch=main` badge would show one old run forever. -->
-[build-shield]: https://img.shields.io/github/actions/workflow/status/stevezau/media_preview_generator/ci.yml?branch=dev&event=push&style=for-the-badge&label=build&labelColor=a06a00
-[build-url]: https://github.com/stevezau/media_preview_generator/actions/workflows/ci.yml?query=branch%3Adev+event%3Apush
-[release-shield]: https://img.shields.io/github/v/release/stevezau/media_preview_generator?style=for-the-badge&label=release&color=a06a00
-[release-url]: https://github.com/stevezau/media_preview_generator/releases
-[codecov-shield]: https://img.shields.io/codecov/c/github/stevezau/media_preview_generator?style=for-the-badge&labelColor=a06a00
-[codecov-url]: https://codecov.io/gh/stevezau/media_preview_generator
-[docker-shield]: https://img.shields.io/docker/pulls/stevezzau/media_preview_generator?style=for-the-badge&color=a06a00
-[docker-url]: https://hub.docker.com/r/stevezzau/media_preview_generator
-[size-shield]: https://img.shields.io/docker/image-size/stevezzau/media_preview_generator/latest?style=for-the-badge&label=image&color=a06a00
-[stars-shield]: https://img.shields.io/github/stars/stevezau/media_preview_generator.svg?style=for-the-badge&color=a06a00
-[stars-url]: https://github.com/stevezau/media_preview_generator/stargazers
-[issues-shield]: https://img.shields.io/github/issues/stevezau/media_preview_generator.svg?style=for-the-badge&labelColor=a06a00
-[issues-url]: https://github.com/stevezau/media_preview_generator/issues
-[license-shield]: https://img.shields.io/github/license/stevezau/media_preview_generator.svg?style=for-the-badge&color=a06a00
-[license-url]: https://github.com/stevezau/media_preview_generator/blob/main/LICENSE
-[ai-shield]: https://img.shields.io/badge/AI--Assisted-Claude-8A2BE2?style=for-the-badge&logo=anthropic&logoColor=white
-[ai-url]: #license
-[kofi-shield]: https://img.shields.io/badge/Buy%20me%20a%20coffee-FF5E5B?style=for-the-badge&logo=kofi&logoColor=white
-[kofi-url]: https://ko-fi.com/stevezau
+No detector accuracy, playback compatibility, or production write safety is claimed until evaluated on representative labeled material.

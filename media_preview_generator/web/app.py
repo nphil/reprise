@@ -859,6 +859,21 @@ def create_app(config_dir: str | None = None) -> Flask:
     app.register_blueprint(api)
     app.register_blueprint(webhooks_bp)
 
+    from ..markers.store import get_marker_store
+    from ..reprise.service import RepriseService, SettingsRegistry, set_service
+    from ..reprise.store import RepriseStore
+    from ..reprise.publishing import ReprisePublisher
+    from .routes.api_reprise import create_reprise_blueprint
+
+    reprise_store = RepriseStore(get_marker_store(config_dir))
+    reprise_registry = SettingsRegistry(sm)
+    reprise_service = RepriseService(reprise_store, reprise_registry, get_job_manager())
+    reprise_service.publisher = ReprisePublisher(reprise_store, reprise_registry, reprise_service,
+        writes_enabled=sm.get("reprise_plex_writes_enabled", False) is True)
+    set_service(reprise_service)
+    app.extensions["reprise"] = reprise_service
+    app.register_blueprint(create_reprise_blueprint(reprise_service))
+
     @app.context_processor
     def _inject_navbar_version() -> dict:
         from .routes.api_system import navbar_version_info
@@ -969,6 +984,10 @@ def create_app(config_dir: str | None = None) -> Flask:
         try:
             settings = get_settings_manager()
             if not settings.is_setup_complete() and not settings.is_configured():
+                if request.path.startswith(("/api/reprise/", "/api/v1/")):
+                    from flask import jsonify
+
+                    return jsonify(error="setup_required"), 503
                 # Not configured and setup not complete - redirect to setup
                 if request.endpoint not in ["main.login", "main.setup_wizard"] and is_authenticated():
                     return redirect(url_for("main.setup_wizard"))

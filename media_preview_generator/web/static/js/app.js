@@ -3514,7 +3514,7 @@ function showNotification(title, body, type = 'info') {
 
     new Notification(`${icon} ${title}`, {
         body: body,
-        icon: '/static/images/icon.png',
+        icon: '/static/icon-512.png',
         tag: 'plex-preview-generator'
     });
 }

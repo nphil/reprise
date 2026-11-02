@@ -548,6 +548,8 @@ class JellyfinServer(EmbyApiClient):
         Raises:
             requests.RequestException: Transport failure.
         """
+        from ..reprise.review import reject_legacy_publication
+        reject_legacy_publication()
         body: dict[str, Any] = {"segments": segments}
         if file_size is not None:
             body["fileSize"] = file_size
@@ -565,6 +567,8 @@ class JellyfinServer(EmbyApiClient):
         Raises:
             requests.RequestException: Transport failure.
         """
+        from ..reprise.review import reject_legacy_publication
+        reject_legacy_publication()
         return self._request("DELETE", self._bridge_markers_path(item_id))
 
     def item_missing(self, item_id: str) -> bool | None:

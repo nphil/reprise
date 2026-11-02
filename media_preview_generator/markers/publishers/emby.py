@@ -367,6 +367,8 @@ class EmbyMarkerPublisher(MarkerPublisher):
             PublishError: The item is another version than this file, not written, or stored but not shown (then
                 removed again, best effort).
         """
+        from ...reprise.review import reject_legacy_publication
+        reject_legacy_publication()
         self.last_write_changed = False
         self.last_replaced_own_types = frozenset()
         keep = self._keeps_emby()

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Login - Media Preview Generator</title>
+    <title>Login - Reprise</title>
 
     <!-- Apply saved theme before CSS loads to avoid a flash of the wrong
          theme. Mirrors the pre-paint script in base.html so the login page
@@ -29,14 +29,17 @@
          rest of the app. login.css adds page-specific layout on top. -->
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/login.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/reprise-tokens.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/reprise-login.css') }}">
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/reprise.svg') }}">
 </head>
 <body>
     <main class="form-signin w-100 m-auto">
         <div class="card login-card">
             <div class="card-body p-4">
                 <div class="logo-container">
-                    <img class="login-logo" src="{{ url_for('static', filename='images/icon.svg') }}" alt="" width="44" height="44">
-                    <h1>Media Preview Generator</h1>
+                    <img class="login-logo" src="{{ url_for('static', filename='images/reprise.svg') }}" alt="" width="44" height="44">
+                    <h1>Reprise</h1>
                     <p class="text-muted mb-0">Enter your token to continue</p>
                 </div>
 

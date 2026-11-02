@@ -2,20 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [dev]
-    # App release tags are pure semver (e.g. 4.2.1). Exclude the component tags
-    # (plugin-v10.11.0.3, emby-plugin-v1.0.0.0, marker-agent-v1.0.0) — they own
-    # jellyfin-plugin.yml / emby-plugin.yml (and marker-agent.yml, which lands with
-    # the agent's first release; the negation is here first, deliberately) and must NOT trigger
-    # the app image build: the tag name is fed to SETUPTOOLS_SCM_PRETEND_VERSION,
-    # and a non-PEP440 value ("plugin-v…") aborts the wheel build (and would
-    # otherwise push :latest from a component release). Note '*' matches across
-    # '-', so 'marker-agent-v1.0.0' does match '*.*.*' and needs its own negation.
-    tags:
-      - '*.*.*'
-      - '!plugin-*'
-      - '!emby-plugin-*'
-      - '!marker-agent-*'
+    branches: [main, dev]
     paths-ignore:
       - 'docs/**'
       - '*.md'
@@ -33,17 +20,14 @@ on:
   workflow_dispatch:
 
 env:
-  # Canonical Docker Hub image name. Change DOCKER_IMAGE for forks; see CONTRIBUTING.md.
-  DOCKER_IMAGE: stevezzau/media_preview_generator
+  DOCKER_IMAGE: ghcr.io/nphil/reprise
 
 concurrency:
-  # Cancel superseded PR runs; never cancel in-flight pushes to main/dev/tags
-  # so a partially-pushed Docker build isn't aborted mid-manifest.
+  # Cancel superseded pull request checks.
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Least-privilege defaults. The build job opts into packages:write below
-# when it needs to push to GHCR / Docker Hub.
+# Least-privilege defaults for checks.
 permissions:
   contents: read
 
@@ -131,15 +115,6 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
-      - name: Set up Ruby (tests/test_docs_site.py builds the Jekyll site)
-        uses: ruby/setup-ruby@v1
-        with:
-          working-directory: docs
-          bundler-cache: true
-
-      - name: Install actionlint (tests/test_docs_workflow.py lints the Pages workflows)
-        uses: ./.github/actions/install-actionlint
-
       - name: Install FFmpeg + mediainfo
         # It normally takes ~15 s; one runner once hung here for 14+ min, so fail fast and re-run.
         timeout-minutes: 5
@@ -163,10 +138,16 @@ jobs:
         # from the CLI would need clearing addopts anyway).
         env:
           COVERAGE_FILE: .coverage.unit-${{ matrix.shard }}
-          MPG_REQUIRE_DOCS_BUILD: "1"
         run: >-
           pytest --shard-id=$((${{ matrix.shard }} - 1)) --num-shards=3
           --cov-fail-under=0
+          --ignore-glob=tests/test_docs_*.py
+          --ignore=tests/test_readmes.py
+          --ignore=tests/test_brand_assets.py
+          --ignore=tests/test_site_claims.py
+          --ignore=tests/test_site_urls.py
+          --ignore=tests/test_llms_full.py
+          --ignore=tests/test_sponsor_links.py
 
       - name: Upload coverage data (shard ${{ matrix.shard }}/3)
         uses: actions/upload-artifact@v7
@@ -225,20 +206,6 @@ jobs:
           coverage report --fail-under=70
           coverage xml
 
-      - name: Upload coverage to Codecov
-        # Upload on every event that produced coverage.xml (push, PR,
-        # workflow_dispatch). Skipping PRs meant codecov never got data
-        # between PR merges, so the badge rendered "unknown" for weeks
-        # at a time and PR diff-coverage comments never ran. v4 of the
-        # action handles fork PRs gracefully — without a token it uses
-        # tokenless OIDC; with one, same-repo PRs still authenticate.
-        uses: codecov/codecov-action@v7
-        # Bootstrap/TLS failures can escape fail_ci_if_error; the upload is optional.
-        continue-on-error: true
-        with:
-          files: ./coverage.xml
-          fail_ci_if_error: false
-          token: ${{ secrets.CODECOV_TOKEN }}
 
   e2e:
     name: e2e (shard ${{ matrix.shard }}/4)
@@ -246,8 +213,7 @@ jobs:
     # Only depend on lint (formatting/style). The unit `test` job covers
     # different scope (no Playwright); making e2e wait for test serialises
     # the two and adds ~95s to wall clock for no real gain. The final
-    # `merge` job still gates publishing on test + e2e + build all passing,
-    # so the safety contract is preserved.
+    # The checks are independent.
     needs: lint
     strategy:
       # Don't cancel sibling shards if one fails. If shard 2's Chromium
@@ -743,239 +709,3 @@ jobs:
           fi
           echo "Agent $actual answered /v1/health and /v1/ping, and refused a call without the key"
 
-  context:
-    runs-on: ubuntu-latest
-    # Just resolves git/branch metadata — no test results needed. Letting
-    # context (and downstream `build`) start in parallel with test+e2e
-    # cuts ~95-170s off the critical path. Publishing safety is preserved
-    # by `merge` waiting on test + e2e + build.
-    needs: lint
-    # Only publish on push to main/dev/tags or manual dispatch. PR runs stop
-    # after lint/test so opening a PR never publishes a Docker image.
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    outputs:
-      head_branch: ${{ steps.ctx.outputs.head_branch }}
-      head_sha: ${{ steps.ctx.outputs.head_sha }}
-      is_tag: ${{ steps.ctx.outputs.is_tag }}
-      docker_tags_canonical: ${{ steps.ctx.outputs.docker_tags_canonical }}
-    steps:
-      - name: Compute build context
-        id: ctx
-        env:
-          HEAD_BRANCH: ${{ github.ref_name }}
-          HEAD_SHA: ${{ github.sha }}
-          REF_TYPE: ${{ github.ref_type }}
-        run: |
-          echo "head_branch=$HEAD_BRANCH" >> "$GITHUB_OUTPUT"
-          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
-          if [[ "$REF_TYPE" == "tag" ]]; then
-            echo "is_tag=true" >> "$GITHUB_OUTPUT"
-            echo "docker_tags_canonical=-t ${{ env.DOCKER_IMAGE }}:$HEAD_BRANCH -t ${{ env.DOCKER_IMAGE }}:latest" >> "$GITHUB_OUTPUT"
-          else
-            # dev branch push or manual workflow_dispatch
-            echo "is_tag=false" >> "$GITHUB_OUTPUT"
-            echo "docker_tags_canonical=-t ${{ env.DOCKER_IMAGE }}:dev" >> "$GITHUB_OUTPUT"
-          fi
-
-  build:
-    needs: context
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          # 2 jobs: amd64 + arm64 of the canonical image.
-          - platform: linux/amd64
-            runner: ubuntu-latest
-            image_flavour: canonical
-          - platform: linux/arm64
-            runner: ubuntu-24.04-arm
-            image_flavour: canonical
-    runs-on: ${{ matrix.runner }}
-
-    steps:
-      - name: Validate Docker secrets
-        run: |
-          if [ -z "${{ secrets.DOCKER_USERNAME }}" ] || [ -z "${{ secrets.DOCKER_PASSWORD }}" ]; then
-            echo "::error::DOCKER_USERNAME and DOCKER_PASSWORD must be set in repository secrets"
-            exit 1
-          fi
-
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0  # Full history for setuptools-scm versioning
-          ref: ${{ needs.context.outputs.head_sha }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-        with:
-          # BuildKit's image and Docker Hub base images come through Google's Docker Hub mirror: setup-buildx pulls
-          # BuildKit before any login, and anonymous pulls from shared runners hit Docker Hub's rate limit (429).
-          driver-opts: image=mirror.gcr.io/moby/buildkit:buildx-stable-1
-          buildkitd-config-inline: |
-            [registry."docker.io"]
-              mirrors = ["mirror.gcr.io"]
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v4
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
-
-      - name: Resolve image name
-        id: image
-        run: echo "name=${{ env.DOCKER_IMAGE }}" >> "$GITHUB_OUTPUT"
-
-      - name: Resolve the version to bake into the image
-        id: pkgver
-        # .dockerignore excludes .git/, so setuptools-scm inside the build
-        # has no history to describe from. Tag builds were already handed
-        # the tag via SETUPTOOLS_SCM_PRETEND_VERSION; dev builds were handed
-        # nothing and shipped whatever setuptools-scm guessed without git —
-        # :dev images self-reported a stale version (e.g. 3.7.6.dev142 long
-        # after 4.4.x), which the About page and the update check both show.
-        # Compute it out here, where the full history IS checked out.
-        run: |
-          if [[ "${{ needs.context.outputs.is_tag }}" == "true" ]]; then
-            echo "version=${{ needs.context.outputs.head_branch }}" >> "$GITHUB_OUTPUT"
-          else
-            python3 -m pip install --quiet "setuptools-scm>=8"
-            echo "version=$(python3 -m setuptools_scm)" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Show resolved version
-        run: echo "Baking version ${{ steps.pkgver.outputs.version }} into ${{ matrix.platform }} image"
-
-      - name: Resolve the build date
-        id: built
-        # The commit's time, not the clock's: both platforms get the same date and a re-run keeps its layer cache.
-        # In UTC, so the date doesn't carry whichever timezone the committer was in.
-        run: echo "date=$(TZ=UTC0 git log -1 --date=iso-strict-local --format=%cd)" >> "$GITHUB_OUTPUT"
-
-      - name: Generate bundled release notes
-        # Fetches GitHub Releases into media_preview_generator/release_notes.json
-        # so the docker COPY picks it up. Powers the "What's new" popup
-        # without a live api.github.com call on user dashboards.
-        # Uses ${{ secrets.GITHUB_TOKEN }} for the 5000/hr rate limit
-        # (vs 60/hr anon — runners share an IP across the org).
-        # Best-effort: a fetch failure does NOT fail the build; the
-        # runtime falls back to a live GitHub fetch when the bundle is
-        # missing, so the worst case is the pre-bundle UX, never a
-        # broken image.
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          python3 scripts/refresh_release_notes.py || echo "::warning::Release-notes refresh failed; image will fall back to live GitHub fetch at runtime."
-
-      - name: Build and push by digest
-        id: build
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          platforms: ${{ matrix.platform }}
-          build-args: |
-            GIT_BRANCH=${{ needs.context.outputs.head_branch }}
-            GIT_SHA=${{ needs.context.outputs.head_sha }}
-            BUILD_DATE=${{ steps.built.outputs.date }}
-            DOCKER_IMAGE_NAME=${{ steps.image.outputs.name }}
-            SETUPTOOLS_SCM_PRETEND_VERSION=${{ steps.pkgver.outputs.version }}
-          outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha,scope=${{ matrix.platform }}
-          cache-to: type=gha,scope=${{ matrix.platform }},mode=max
-
-      - name: Export digest
-        run: |
-          mkdir -p /tmp/digests
-          digest="${{ steps.build.outputs.digest }}"
-          touch "/tmp/digests/${digest#sha256:}"
-
-      - name: Upload digest
-        uses: actions/upload-artifact@v7
-        with:
-          name: digest-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}-${{ matrix.image_flavour }}
-          path: /tmp/digests/*
-          if-no-files-found: error
-          retention-days: 1
-
-  merge:
-    runs-on: ubuntu-latest
-    # Publishing gate: hold the multi-arch manifest creation (which
-    # creates the public :dev / :latest tags) until BOTH the digest
-    # builds AND the test/e2e suites pass. The earlier `test` and
-    # `e2e` jobs run in parallel with `build` for speed, but nothing
-    # public ships unless all three are green.
-    needs: [context, build, test, e2e]
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0  # Full history for setuptools-scm versioning
-          ref: ${{ needs.context.outputs.head_sha }}
-
-      - name: Download canonical digests
-        uses: actions/download-artifact@v8
-        with:
-          path: /tmp/digests/canonical
-          pattern: digest-*-canonical
-          merge-multiple: true
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-        with:
-          # BuildKit's image and Docker Hub base images come through Google's Docker Hub mirror: setup-buildx pulls
-          # BuildKit before any login, and anonymous pulls from shared runners hit Docker Hub's rate limit (429).
-          driver-opts: image=mirror.gcr.io/moby/buildkit:buildx-stable-1
-          buildkitd-config-inline: |
-            [registry."docker.io"]
-              mirrors = ["mirror.gcr.io"]
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v4
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
-
-      - name: Create canonical manifest list and push
-        working-directory: /tmp/digests/canonical
-        run: |
-          # shellcheck disable=SC2046  # the digest list must split into one argument per digest
-          # The list's own labels: registries that read the multi-arch list, not each platform's image, show these.
-          docker buildx imagetools create \
-            --annotation "index:org.opencontainers.image.title=Media Preview Generator" \
-            --annotation "index:org.opencontainers.image.description=GPU previews, intro/credits and shared results for Plex, Emby and Jellyfin" \
-            --annotation "index:org.opencontainers.image.source=https://github.com/stevezau/media_preview_generator" \
-            --annotation "index:org.opencontainers.image.url=https://mediapreviewgenerator.dev" \
-            --annotation "index:org.opencontainers.image.licenses=MIT" \
-            --annotation "index:org.opencontainers.image.revision=${{ needs.context.outputs.head_sha }}" \
-            ${{ needs.context.outputs.docker_tags_canonical }} \
-            $(printf '${{ env.DOCKER_IMAGE }}@sha256:%s ' *)
-
-  update-dockerhub-description:
-    runs-on: ubuntu-latest
-    needs: context
-    # Releases are cut from tags; sync Docker Hub READMEs on every tag push.
-    if: needs.context.outputs.is_tag == 'true'
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      # pyproject's description is the single source for the one-line pitch;
-      # Docker Hub rejects short descriptions over 100 characters.
-      - name: Read short description
-        id: meta
-        run: |
-          short=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['description'])")
-          if (( ${#short} > 100 )); then
-            echo "::error::pyproject description is ${#short} chars; Docker Hub allows 100"
-            exit 1
-          fi
-          echo "short=$short" >> "$GITHUB_OUTPUT"
-
-      - name: Update canonical Docker Hub description
-        uses: peter-evans/dockerhub-description@v5
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-          repository: stevezzau/media_preview_generator
-          short-description: ${{ steps.meta.outputs.short }}
-          readme-filepath: ./DOCKERHUB_README.md

@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Library · Reprise{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ url_for('static', filename='css/reprise.css') }}">{% endblock %}
+{% block content %}
+<div class="reprise" id="repriseApp">
+  <header class="rp-header"><div><h1>Library</h1><p>Find an episode, then review what stays and what can be skipped.</p></div><div class="rp-actions"><button type="button" id="rpRefresh">Refresh library</button><a href="{{ url_for('main.servers_page') }}">Connections</a></div></header>
+  <div id="rpMessage" class="rp-message" role="status" aria-live="polite" hidden></div>
+  <form id="rpRefreshForm" class="rp-message" hidden><label>Configured library<select id="rpLibraryChoice" required></select></label><div class="rp-actions"><button type="submit">Refresh</button><button type="button" id="rpRefreshCancel">Cancel</button></div><p class="rp-note" id="rpRefreshState"></p></form>
+  <div class="rp-layout">
+    <section class="rp-library" aria-labelledby="rpLibraryTitle">
+      <div class="rp-section-head"><h2 id="rpLibraryTitle">Your library</h2><button type="button" id="rpAnalyze" disabled>Analyze selected</button></div>
+      <label class="rp-search">Search<input id="rpSearch" type="search" autocomplete="off" placeholder="Search shows and episodes"></label>
+      <div class="rp-filter-row"><label>Show<select id="rpShow"><option value="">All shows</option></select></label><label>Season<select id="rpSeason"><option value="">All seasons</option></select></label></div>
+      <div id="rpLibraryState" class="rp-state" role="status">Loading library…</div><div id="rpLibraryList" class="rp-episodes"></div>
+      <button type="button" id="rpMore" hidden>Load more</button>
+    </section>
+    <section class="rp-workspace" aria-labelledby="rpReviewTitle"><div class="rp-section-head"><div><h2 id="rpReviewTitle">Episode review</h2><p id="rpReviewSubtitle">Choose an episode from your library.</p></div></div>
+      <div id="rpReviewEmpty" class="rp-state">Your selected episode and its evidence will appear here.</div>
+      <div id="rpReview" hidden>
+        <div class="rp-status-row"><span id="rpAnalysisStatus"></span><span id="rpFreshness"></span></div>
+        <div class="rp-filter-row"><label>Episode audio for preview<select id="rpVideoAudio"><option value="">Select audio</option></select></label><label>Reference audio for preview<select id="rpReferenceAudio"><option value="">Select audio</option></select></label></div>
+        <div class="rp-video-grid"><div><h3>Episode</h3><video id="rpVideo" controls preload="metadata"></video><p id="rpVideoError" class="rp-error" hidden>This file cannot be played directly by your browser.</p><button type="button" id="rpVideoPreview" hidden>Create playable preview</button><p id="rpVideoOrigin" class="rp-note"></p></div><div><h3>Reference episode</h3><label>Reference<select id="rpReference"><option value="">Choose an episode</option></select></label><video id="rpReferenceVideo" controls preload="metadata" hidden></video><p id="rpReferenceState" class="rp-note">Choose an episode to compare.</p><button type="button" id="rpReferencePreview" hidden>Create playable preview</button><p id="rpReferenceOrigin" class="rp-note"></p></div></div>
+        <div class="rp-section-head rp-timeline-heading"><h3>Timeline</h3><span id="rpDuration"></span></div><p class="rp-note">Skip · Keep · Evidence. Times are file-relative; the end is excluded. Protected content takes priority.</p><div id="rpTimeline" class="rp-timeline" role="img" aria-label="Skip, keep and evidence timeline; exact times are listed in Ranges and Evidence below."></div>
+        <div class="rp-section-head"><h3>Ranges</h3><button type="button" id="rpAddKeep">Add protected range</button></div><div id="rpRanges"></div><div class="rp-actions"><button type="button" id="rpSave">Save review</button><button type="button" id="rpDiscard">Discard changes</button></div><p id="rpSaveState" class="rp-note" aria-live="polite"></p>
+        <details><summary>Evidence</summary><div id="rpEvidence"></div></details>
+        <details><summary>Publication and recovery</summary><p class="rp-note">Saving a review never writes to Plex. Publication is a separate action.</p><div id="rpPublication"></div></details>
+      </div>
+    </section>
+  </div>
+  <section class="rp-secondary" aria-labelledby="rpQueueTitle"><div class="rp-section-head"><h2 id="rpQueueTitle">Work queue</h2><button type="button" id="rpQueueRefresh">Refresh</button></div><div id="rpQueue" class="rp-state">Loading queue…</div></section>
+  <section class="rp-secondary" aria-labelledby="rpWriteTitle"><div class="rp-section-head"><div><h2 id="rpWriteTitle">Plex publication</h2><p>Off by default. Changes still require a separate review and confirmation.</p></div><label><input id="rpWritesEnabled" type="checkbox" disabled> Allow publication</label></div><p id="rpWriteState" class="rp-note" aria-live="polite">Checking publication availability…</p></section>
+  <section class="rp-secondary" aria-labelledby="rpClientsTitle"><div class="rp-section-head"><div><h2 id="rpClientsTitle">API clients</h2><p>Give a client its own limited access.</p></div><button type="button" id="rpClientOpen">Add client</button></div>
+    <form id="rpClientForm" hidden><label>Name<input name="name" required maxlength="100" autocomplete="off"></label><fieldset><legend>Permissions</legend><label><input type="checkbox" checked disabled> Read results and job status</label><label><input type="checkbox" name="analysis"> Request analysis</label></fieldset><div class="rp-actions"><button type="submit">Create token</button><button type="button" id="rpClientCancel">Cancel</button></div></form>
+    <div id="rpSecret" class="rp-secret" hidden><strong>Copy this token now. It will not be shown again.</strong><output id="rpSecretValue"></output><div class="rp-actions"><button type="button" id="rpSecretCopy">Copy token</button><button type="button" id="rpSecretClose">Done</button></div></div><div id="rpClients" class="rp-state">Loading clients…</div>
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='js/reprise.js') }}" defer></script>{% endblock %}

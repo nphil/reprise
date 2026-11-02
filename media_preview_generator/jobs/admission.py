@@ -66,7 +66,7 @@ def prepare_admissions(manager, jobs) -> None:
             job.id,
             created_at=job.created_at or "",
             priority=job.priority,
-            kind=job.kind,
+            kind=JOB_KIND_PREVIEWS if job.kind == "reprise" else job.kind,
             policy=policy,
         )
 

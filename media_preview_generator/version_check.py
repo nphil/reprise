@@ -28,7 +28,7 @@ def get_current_version() -> str:
     try:
         import importlib.metadata
 
-        return importlib.metadata.version("media-preview-generator")
+        return importlib.metadata.version("reprise")
     except Exception:
         logger.debug("importlib.metadata version lookup failed", exc_info=True)
 
@@ -75,10 +75,10 @@ def get_latest_github_release() -> str | None:
     """
     try:
         # GitHub API endpoint for latest release
-        url = "https://api.github.com/repos/stevezau/media_preview_generator/releases/latest"
+        url = "https://api.github.com/repos/nphil/reprise/releases/latest"
 
         # Set timeout and user agent
-        headers = {"User-Agent": "media-preview-generator-version-check"}
+        headers = {"User-Agent": "reprise-version-check"}
 
         response = requests.get(url, headers=headers, timeout=3)
         response.raise_for_status()
@@ -132,8 +132,8 @@ def get_branch_head_sha(branch: str) -> str | None:
 
     """
     try:
-        url = f"https://api.github.com/repos/stevezau/media_preview_generator/branches/{branch}"
-        headers = {"User-Agent": "media-preview-generator-version-check"}
+        url = f"https://api.github.com/repos/nphil/reprise/branches/{branch}"
+        headers = {"User-Agent": "reprise-version-check"}
         response = requests.get(url, headers=headers, timeout=3)
         response.raise_for_status()
         data = response.json()

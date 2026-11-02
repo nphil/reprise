@@ -1,7 +1,6 @@
-"""Media Preview Generator
+"""Reprise: skip repeated footage without losing the story.
 
-A tool for generating video preview thumbnails for Plex, Emby and Jellyfin.
-Supports GPU acceleration (NVIDIA, AMD, Intel, Windows) and CPU processing.
+Built on Media Preview Generator and Recurring Content Detector.
 """
 
 import os
@@ -11,9 +10,9 @@ import uuid
 # Users can override these via environment variables before import if desired.
 os.environ.setdefault(
     "PLEXAPI_HEADER_IDENTIFIER",
-    uuid.uuid3(uuid.NAMESPACE_DNS, "PlexGeneratePreviews").hex,
+    uuid.uuid3(uuid.NAMESPACE_DNS, "Reprise").hex,
 )
-os.environ.setdefault("PLEXAPI_HEADER_DEVICE_NAME", "PlexGeneratePreviews")
+os.environ.setdefault("PLEXAPI_HEADER_DEVICE_NAME", "Reprise")
 
 
 def _get_version() -> str:
@@ -28,7 +27,7 @@ def _get_version() -> str:
     try:
         import importlib.metadata
 
-        ver = importlib.metadata.version("media-preview-generator")
+        ver = importlib.metadata.version("reprise")
         if not ver.startswith("0.0.0"):
             return ver
     except Exception:
@@ -46,5 +45,5 @@ def _get_version() -> str:
 
 __version__ = _get_version()
 
-__author__ = "stevezau"
-__description__ = "Generate video preview thumbnails for Plex, Emby and Jellyfin"
+__author__ = "nphil, stevezau, nielstenboom"
+__description__ = "Skip the repeat. Keep the story."

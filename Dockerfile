@@ -52,10 +52,10 @@ WORKDIR /build
 COPY pyproject.toml ./
 RUN mkdir -p media_preview_generator && \
     touch media_preview_generator/__init__.py && \
-    SETUPTOOLS_SCM_PRETEND_VERSION_FOR_MEDIA_PREVIEW_GENERATOR=0.0.0 \
+    SETUPTOOLS_SCM_PRETEND_VERSION_FOR_REPRISE=0.0.0 \
       pip3 wheel --wheel-dir=/wheels --no-cache-dir . && \
     # Drop the stub app wheel — Layer B builds the real one.
-    rm -f /wheels/media_preview_generator-*.whl && \
+    rm -f /wheels/reprise-*.whl && \
     rm -rf media_preview_generator
 
 # ---------------------------------------------------------------------------
@@ -72,7 +72,7 @@ RUN mkdir -p media_preview_generator && \
 COPY media_preview_generator/ ./media_preview_generator/
 ARG SETUPTOOLS_SCM_PRETEND_VERSION=""
 RUN if [ -n "$SETUPTOOLS_SCM_PRETEND_VERSION" ]; then \
-      SETUPTOOLS_SCM_PRETEND_VERSION_FOR_MEDIA_PREVIEW_GENERATOR=$SETUPTOOLS_SCM_PRETEND_VERSION \
+      SETUPTOOLS_SCM_PRETEND_VERSION_FOR_REPRISE=$SETUPTOOLS_SCM_PRETEND_VERSION \
       pip3 wheel --wheel-dir=/wheels --no-cache-dir --no-deps .; \
     else \
       pip3 wheel --wheel-dir=/wheels --no-cache-dir --no-deps .; \
@@ -209,6 +209,8 @@ ENV GIT_BRANCH=${GIT_BRANCH} \
 # Copy application source (needed for Flask templates and static files)
 COPY pyproject.toml ./
 COPY media_preview_generator/ ./media_preview_generator/
+# Retain the filtered detector source for the Reprise integration; do not install its obsolete requirements.
+COPY third_party/recurring-content-detector/ ./third_party/recurring-content-detector/
 
 # Copy wrapper script
 COPY wrapper.sh /app/wrapper.sh
@@ -248,16 +250,16 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
 # Our own labels: without these the image shows linuxserver/ffmpeg's, inherited from the base (#428). Last, because
 # GIT_SHA changes every commit and a changed LABEL rebuilds every layer after it.
 ARG SETUPTOOLS_SCM_PRETEND_VERSION=""
-LABEL maintainer="stevezau" \
-      build_version="Media Preview Generator ${SETUPTOOLS_SCM_PRETEND_VERSION} (${GIT_SHA})" \
-      org.opencontainers.image.title="Media Preview Generator" \
-      org.opencontainers.image.description="GPU previews, intro/credits and shared results for Plex, Emby and Jellyfin" \
-      org.opencontainers.image.authors="stevezau" \
-      org.opencontainers.image.vendor="stevezau" \
+LABEL maintainer="nphil" \
+      build_version="Reprise ${SETUPTOOLS_SCM_PRETEND_VERSION} (${GIT_SHA})" \
+      org.opencontainers.image.title="Reprise" \
+      org.opencontainers.image.description="Self-hosted media analysis and review" \
+      org.opencontainers.image.authors="nphil and contributors" \
+      org.opencontainers.image.vendor="nphil" \
       org.opencontainers.image.licenses="MIT" \
-      org.opencontainers.image.url="https://mediapreviewgenerator.dev" \
-      org.opencontainers.image.documentation="https://mediapreviewgenerator.dev" \
-      org.opencontainers.image.source="https://github.com/stevezau/media_preview_generator" \
+      org.opencontainers.image.url="https://github.com/nphil/reprise" \
+      org.opencontainers.image.documentation="https://github.com/nphil/reprise" \
+      org.opencontainers.image.source="https://github.com/nphil/reprise" \
       org.opencontainers.image.version="${SETUPTOOLS_SCM_PRETEND_VERSION}" \
       org.opencontainers.image.revision="${GIT_SHA}" \
       org.opencontainers.image.ref.name="${GIT_BRANCH}" \

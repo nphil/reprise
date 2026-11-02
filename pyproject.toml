@@ -3,12 +3,9 @@ requires = ["setuptools>=64", "wheel", "setuptools-scm[toml]>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "media-preview-generator"
+name = "reprise"
 dynamic = ["version"]
-authors = [
-    {name = "Steve Adams", email = "stevezau@gmail.com"},
-]
-description = "GPU previews, intro/credits and shared results for Plex, Emby and Jellyfin. Self-hosted Docker."
+description = "Self-hosted media analysis and review, built on Media Preview Generator."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
@@ -107,10 +104,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/stevezau/media_preview_generator"
-Repository = "https://github.com/stevezau/media_preview_generator"
-Issues = "https://github.com/stevezau/media_preview_generator/issues"
-Documentation = "https://mediapreviewgenerator.dev/"
+Homepage = "https://github.com/nphil/reprise"
+Repository = "https://github.com/nphil/reprise"
+Issues = "https://github.com/nphil/reprise/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -198,6 +194,7 @@ show_error_codes = true
 line-length = 120
 target-version = "py311"
 extend-exclude = [
+    "third_party/recurring-content-detector",
     "media_preview_generator/_version.py",
     ".venv",
     ".venv-test",

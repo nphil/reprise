@@ -5,6 +5,8 @@ description: Every Media Preview Generator setting, environment variable, path m
   request and response examples.
 ---
 
+> **Reprise fork notice:** This is a preserved Media Preview Generator reference; its marker publication and API descriptions may not apply to Reprise. Plex publication is off by default and requires separate review, preparation and apply steps. Use the [Reprise README](../README.md) and [playback API guide](reprise-api.md) for current behavior.
+
 > [Back to Docs](README.md)
 
 > [!IMPORTANT]

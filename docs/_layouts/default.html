@@ -6,6 +6,9 @@
 <body data-search-index="{{ '/search.json' | relative_url }}">
   <a class="skip-link" href="#main">Skip to content</a>
   {% include nav.html %}
+  <aside aria-label="Reprise fork notice" style="padding:1rem; background:#eee8d5; color:#222;">
+    <strong>Reprise fork notice:</strong> This site preserves upstream Media Preview Generator documentation and may describe automatic marker writes or installation steps that do not apply to Reprise. Plex publication in Reprise is off by default and requires separate review, preparation and apply steps. See the <a href="https://github.com/nphil/reprise#readme">current Reprise README</a> and <a href="https://github.com/nphil/reprise/blob/main/docs/reprise-api.md">playback API guide</a>.
+  </aside>
 
   {{ content }}
 

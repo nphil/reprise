@@ -258,6 +258,8 @@ class EmbyServer(EmbyApiClient):
         Raises:
             requests.RequestException: Transport failure.
         """
+        from ..reprise.review import reject_legacy_publication
+        reject_legacy_publication()
         body = {
             "IntroStartTicks": intro_start_ticks,
             "IntroEndTicks": intro_end_ticks,
@@ -279,6 +281,8 @@ class EmbyServer(EmbyApiClient):
         Raises:
             requests.RequestException: Transport failure.
         """
+        from ..reprise.review import reject_legacy_publication
+        reject_legacy_publication()
         return self._request("DELETE", self._markers_path(item_id))
 
     def bridge_catalog_listed(self) -> bool | None:

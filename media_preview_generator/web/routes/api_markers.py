@@ -520,125 +520,31 @@ def _user_markers(raw: object, duration_ms: int) -> tuple[list[Any] | None, str]
     return out, ""
 
 
-def _owning_configs(path: str, registry: Any) -> tuple[list[Any], set[str]]:
-    """Every server whose library holds ``path``, and the ids of those with Intro & Credits on for it."""
-    from ...markers.ownership import marker_matches, owning_servers
-
-    configs = [cfg for cfg, _server, _matches in owning_servers(path, registry)]
-    return configs, set(marker_matches(path, configs))
 
 
-def _unshowable_type(saved: list[Any], configs: list[Any], enabled_ids: set[str]) -> str | None:
-    """Why one of the saved types can't be published at all, or None when every type has an owner that shows it."""
-    from ...markers.inspect import CAN_SHOW
-
-    shown: set[str] = set()
-    for cfg in configs:
-        if cfg.id in enabled_ids:
-            shown |= set(CAN_SHOW.get(cfg.type, ()))
-    missing = [m.type.value for m in saved if m.type.value not in shown]
-    if not missing:
-        return None
-    return f"No server with Intro & Credits turned on for this file can show a {' or '.join(sorted(missing))} marker"
 
 
-# What the editor calls each per-server outcome. The rows themselves are a job's rows, unchanged.
-# Every ServerStatus needs an entry: a missing one would leak the job's own `markers_*` wording into the editor.
-# `test_api_markers_edit.py` asserts the two sets match, so a new status can't ship without a word for it here.
-_EDITOR_RESULTS = {
-    "markers_written": "written",
-    "markers_up_to_date": "unchanged",
-    "markers_waiting": "waiting",
-    "markers_skipped": "not_enabled",
-    "markers_none": "nothing_to_publish",
-    "failed": "failed",
-}
 
 
-def _editor_server_row(row: dict, *, saved: list[Any], duration_ms: int, enabled_ids: set[str]) -> dict:
-    """One publish row in the editor's words, with what this server can't show and its per-field notes.
-
-    Args:
-        row: The server's publish row (a job's row shape).
-        saved: The markers just saved.
-        duration_ms: The file's duration.
-        enabled_ids: The servers with Intro & Credits on for this file.
-    """
-    from ...markers.inspect import CAN_SHOW
-    from ...markers.models import MarkerType
-    from ...markers.outcomes import REPLACED_OWN, ServerStatus
-    from ...markers.publishers.emby import credits_note
-    from ...servers.base import ServerType
-
-    server_type = ServerType(row["server_type"])
-    can_show = CAN_SHOW.get(server_type, ())
-    result = _EDITOR_RESULTS.get(row["status"], row["status"])
-    # A job calls both "skipped": a server Intro & Credits is off for, and one it is on for that couldn't take the
-    # markers just now (down, plugin missing). Only the first is "off" -- telling the second to turn it on is wrong,
-    # and the user's times still have to reach it, which is what "failed" says.
-    if row["status"] == ServerStatus.SKIPPED.value and row["server_id"] in enabled_ids:
-        result = "failed"
-    notes = []
-    # A note describes what the server will do with the marker, so it is only true of a server that took it.
-    if server_type is ServerType.EMBY and result not in ("not_enabled", "nothing_to_publish"):
-        # D8: an edited credits END is accepted on Emby and published start-only — never silently dropped, so the
-        # editor says what Emby will do with it. `can_show` is type-level and can't carry this.
-        note = credits_note(saved, duration_ms)
-        if note:
-            notes.append({"type": MarkerType.CREDITS.value, "field": "end", "note": note})
-    return {
-        "server_id": row["server_id"],
-        "server_name": row["server_name"],
-        "server_type": row["server_type"],
-        "result": result,
-        "message": row["message"],
-        "can_show": list(can_show),
-        "cant_show": [m.type.value for m in saved if m.type.value not in can_show],
-        "notes": notes,
-        # The types whose own markers this server lost to the user's lock although it is set to keep its own;
-        # empty on every other server.
-        "replaced_own": list(row.get(REPLACED_OWN, ())),
-    }
 
 
 @api.route("/markers/item/markers", methods=["POST"])
 @api_token_required
 def marker_item_save():
-    """Save the user's own markers for one file, lock them, and publish to every owner inside this request.
+    """Save and lock legacy proposal markers without publishing to a server.
 
-    Body: ``path`` (or ``server_id`` + ``item_id``, and optionally ``version_file``), plus ``markers``: a list of
-    ``{"type", "start_ms", "end_ms"}``, one entry per type, ``end_ms`` null or missing meaning "runs to the end of the
-    file". Saving is locking — there is no adjusted-but-unlocked state — and the save lands before any
-    server is contacted, so a server that fails can't lose the edit.
-
-    Returns:
-        200 with ``markers`` (every stored marker for the file, the saved ones locked) and ``servers``: one row per
-        owning server with ``result`` (``written``, ``unchanged``, ``waiting``, ``failed``, ``not_enabled``,
-        or ``nothing_to_publish``), its ``message``, what it ``can_show``, the saved types it
-        ``cant_show``, per-field ``notes`` (Emby's credits end), and the types whose own markers the lock
-        ``replaced_own`` on a server set to keep its own, and ``queued_job_id``: the Intro &
-        Credits job that delivers the save to the servers whose row is ``waiting`` or ``failed`` (null when every
-        server took it). 400 for a body this can't be saved
-        from, a path outside every server library, or a type no enabled owner can show; 404 for an unknown server
-        or item; 409 when the server is off, no enabled owner has the file, or the file was never analysed or has
-        changed since; 503 when the config directory isn't writable.
+    Reprise review and publication are separate operations. These legacy rows
+    are retained for discovery and never authorize publication.
     """
-    from ...markers.pipeline import (
-        PUBLISH_NOW_SERVER_TIMEOUT_S,
-        FileChangedError,
-        FileNotAnalysedError,
-        identity_changed,
-        publish_now,
-    )
+    from ...markers.pipeline import identity_changed
     from ...markers.settings import get_global_settings
     from ...markers.store import get_marker_store
 
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         return jsonify({"error": "The request body must be a JSON object"}), 400
-    # One registry for the whole request: resolving the item already opens a session to the server the publish then
-    # reuses, and the shortened timeout is as right for the lookup as it is for the write.
-    registry = _registry(timeout_s=PUBLISH_NOW_SERVER_TIMEOUT_S)
+    # Bound server lookups made while resolving an item.
+    registry = _registry(timeout_s=8)
     path, refused = _resolve_item_path(data.get, registry)
     if refused is not None:
         return refused
@@ -663,66 +569,19 @@ def marker_item_save():
     saved, problem = _user_markers(data.get("markers"), rec.duration_ms)
     if saved is None:
         return jsonify({"error": problem}), 400
-    configs, enabled_ids = _owning_configs(safe, registry)
-    if not enabled_ids:
-        return jsonify(
-            {
-                "error": "No server with Intro & Credits turned on has this file",
-                "reason": "no_marker_owner",
-            }
-        ), 409
-    refusal = _unshowable_type(saved, configs, enabled_ids)
-    if refusal is not None:
-        return jsonify({"error": refusal}), 400
 
     store.save_user_markers(rec.id, saved, settings_fingerprint=get_global_settings().detection_fingerprint())
-    try:
-        rows = publish_now(safe, registry=registry)
-    except FileNotAnalysedError:
-        return jsonify(
-            {"error": "This file hasn't been analysed yet. Run Re-detect first.", "reason": "not_analysed"}
-        ), 409
-    except FileChangedError:
-        return jsonify(
-            {"error": "This file changed on disk since it was analysed; re-detect it first.", "reason": "file_changed"}
-        ), 409
-    server_rows = [
-        _editor_server_row(row, saved=saved, duration_ms=rec.duration_ms, enabled_ids=enabled_ids) for row in rows
-    ]
+    server_rows = []
     payload = {
         "canonical_path": safe,
         "duration_ms": rec.duration_ms,
         "markers": _stored_markers(store, rec.id),
         "servers": server_rows,
-        "queued_job_id": _queue_delivery(safe, server_rows),
+        "queued_job_id": None,
     }
     return jsonify(_without_secrets(payload, registry))
 
 
-def _queue_delivery(path: str, rows: list[dict]) -> str | None:
-    """Queue the job that delivers the save to every server the editor shows waiting or failed (``submit_publish_retry``).
-
-    Decided from the editor's words, so every row the user sees as not delivered gets the job: a server with Intro &
-    Credits on that couldn't take the markers (down, plugin missing) reads "failed" too. Off and nothing to publish
-    are nothing a job can deliver. Never raises: the save is stored and its answer stands whatever happens
-    here.
-
-    Args:
-        path: The file's local path.
-        rows: The editor's server rows (``_editor_server_row``).
-
-    Returns:
-        The queued (or reused) job's id; None when every server took it, or the job couldn't be queued.
-    """
-    if not any(row.get("result") in ("waiting", "failed") for row in rows):
-        return None
-    try:
-        from ...markers.triggers import submit_publish_retry
-
-        return submit_publish_retry(path)
-    except Exception:
-        logger.exception("Could not queue the job that delivers the saved markers of {}", path)
-        return None
 
 
 @api.route("/markers/item/markers", methods=["DELETE"])

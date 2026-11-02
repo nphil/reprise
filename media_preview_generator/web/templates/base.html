@@ -9,7 +9,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}Media Preview Generator{% endblock %}</title>
+    <title>{% block title %}Reprise{% endblock %}</title>
 
     <!-- Apply saved theme before CSS loads to avoid a flash of the wrong
          theme on page navigation.  Reads localStorage.theme ("dark" |
@@ -27,9 +27,8 @@
     </script>
 
     <!-- Favicon -->
-    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg') }}">
-    <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='images/favicon-32.png') }}">
-    <link rel="apple-touch-icon" href="{{ url_for('static', filename='images/icon.png') }}">
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/reprise.svg') }}">
+    <link rel="apple-touch-icon" href="{{ url_for('static', filename='icon-512.png') }}">
 
     <!-- Bootstrap 5 CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN" crossorigin="anonymous">
@@ -38,6 +37,7 @@
     <!-- Custom CSS -->
     <link href="{{ url_for('static', filename='css/style.css') }}" rel="stylesheet">
     <link href="{{ url_for('static', filename='css/overlays.css') }}" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/reprise-tokens.css') }}">
 
     <!-- CSRF token: csrf_fetch.js adds it to every state-changing fetch to this app -->
     <meta name="csrf-token" content="{{ csrf_token() }}">
@@ -46,14 +46,33 @@
     {% block head %}{% endblock %}
     <link rel="stylesheet" href="{{ url_for('static', filename='css/worker_groups.css') }}">
 </head>
-<body>
+<body{% if request.endpoint == 'main.reprise_page' %} class="rp-home"{% endif %}>
     <a class="skip-link" href="#main-content">Skip to main content</a>
+    {% if request.endpoint == 'main.reprise_page' %}
+    <aside class="rp-rail" aria-label="Reprise navigation">
+        <div class="rp-rail-head"><a href="{{ url_for('main.reprise_page') }}" class="rp-rail-brand"><img src="{{ url_for('static', filename='images/reprise.svg') }}" width="36" height="36" alt=""><span>Reprise<small>Skip the repeat. Keep the story.</small></span></a><button class="rp-rail-toggle" type="button" id="rpRailToggle" aria-expanded="false" aria-controls="rpRailLinks" aria-label="Open navigation"><i class="bi bi-list" aria-hidden="true"></i></button></div>
+        <nav id="rpRailLinks" class="rp-rail-links" aria-label="Main navigation">
+            <a href="{{ url_for('main.reprise_page') }}" aria-current="page"><i class="bi bi-collection-play" aria-hidden="true"></i> Library</a>
+            <a href="{{ url_for('main.dashboard_page') }}"><i class="bi bi-speedometer2" aria-hidden="true"></i> Jobs</a>
+            <a href="{{ url_for('main.servers_page') }}"><i class="bi bi-hdd-stack" aria-hidden="true"></i> Servers</a>
+            <a href="{{ url_for('main.automation_page') }}"><i class="bi bi-calendar-event" aria-hidden="true"></i> Automation</a>
+            <a href="{{ url_for('main.inspector') }}"><i class="bi bi-search" aria-hidden="true"></i> Inspector</a>
+            <a href="{{ url_for('main.library_health') }}"><i class="bi bi-clipboard2-pulse" aria-hidden="true"></i> Library health</a>
+            <a href="{{ url_for('main.logs_page') }}"><i class="bi bi-terminal" aria-hidden="true"></i> Logs</a>
+            <a href="{{ url_for('main.webhook_activity_page') }}"><i class="bi bi-clock-history" aria-hidden="true"></i> Webhook activity</a>
+            <a href="{{ url_for('main.settings') }}"><i class="bi bi-gear" aria-hidden="true"></i> Settings</a>
+            <a href="{{ url_for('main.nodes_page') }}"><i class="bi bi-pc-display" aria-hidden="true"></i> Nodes</a>
+            <button type="button" id="rpRailTheme"><i class="bi bi-circle-half" aria-hidden="true"></i> Toggle theme</button>
+            <form method="post" action="{{ url_for('main.logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button type="submit"><i class="bi bi-box-arrow-right" aria-hidden="true"></i> Sign out</button></form>
+        </nav>
+    </aside>
+    {% endif %}
     <!-- Navigation -->
     <nav class="navbar navbar-expand-xl border-bottom sticky-top">
         <div class="page-shell">
             <div class="navbar-brand-group">
                 <a class="navbar-brand" href="{{ url_for('main.index') }}">
-                    <img class="navbar-brand-mark me-2" src="{{ url_for('static', filename='images/icon.svg') }}" alt="" width="26" height="26">Media Preview Generator
+                    <img class="navbar-brand-mark me-2" src="{{ url_for('static', filename='images/reprise.svg') }}" alt="" width="26" height="26">Reprise
                 </a>
                 {# The running build, stacked under the wordmark so it costs the crowded bar no width. The dot
                    comes from the last cached update check: rendering never waits on GitHub. #}
@@ -88,16 +107,21 @@
             <div class="offcanvas offcanvas-end offcanvas-xl" tabindex="-1" id="navbarNav"
                  aria-labelledby="navbarOffcanvasLabel">
                 <div class="offcanvas-header border-bottom">
-                    <h5 class="offcanvas-title" id="navbarOffcanvasLabel">
-                        <img class="offcanvas-brand-mark me-2" src="{{ url_for('static', filename='images/icon.svg') }}" alt="" width="22" height="22">Menu
-                    </h5>
+                    <h2 class="offcanvas-title h5" id="navbarOffcanvasLabel">
+                        <img class="offcanvas-brand-mark me-2" src="{{ url_for('static', filename='images/reprise.svg') }}" alt="" width="22" height="22">Menu
+                    </h2>
                     <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Close menu"></button>
                 </div>
                 <div class="offcanvas-body">
                 <ul class="navbar-nav me-auto">
                     <li class="nav-item">
                         <a class="nav-link {% if request.endpoint == 'main.index' %}active{% endif %}" href="{{ url_for('main.index') }}"{% if request.endpoint == 'main.index' %} aria-current="page"{% endif %}>
-                            <i class="bi bi-speedometer2 me-1"></i>Dashboard
+                            <i class="bi bi-collection-play me-1"></i>Library
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.endpoint == 'main.dashboard_page' %}active{% endif %}" href="{{ url_for('main.dashboard_page') }}"{% if request.endpoint == 'main.dashboard_page' %} aria-current="page"{% endif %}>
+                            <i class="bi bi-speedometer2 me-1"></i>Jobs
                         </a>
                     </li>
                     <li class="nav-item">
@@ -130,13 +154,13 @@
                         {# The Settings page's sidebar sections, in its order (settings.html), plus the Nodes page under
                            Workers: nodes are where remote workers come from, and each one has its own checks. #}
                         <ul class="dropdown-menu" id="navSettingsMenu" aria-labelledby="navSettingsDropdown">
-                            <li><h6 class="dropdown-header">Processing</h6></li>
+                            <li><span class="dropdown-header">Processing</span></li>
                             <li>{{ menu_item(url_for('main.settings') ~ '#section-workers', 'cpu', 'Workers', 'Groups, job permissions and availability', anchor='section-workers', label='Workers: groups, job permissions and availability') }}</li>
                             <li>{{ menu_item(url_for('main.nodes_page'), 'pc-display-horizontal', 'Nodes', 'Other machines that lend a GPU, CPU or Plex database', label='Nodes: other machines that lend this app their GPU, CPU or Plex database', active=request.endpoint == 'main.nodes_page') }}</li>
                             <li>{{ menu_item(url_for('main.settings') ~ '#section-worker-quiet-hours', 'moon-stars', 'Global pause schedule', 'Times when all processing pauses', anchor='section-worker-quiet-hours', label='Global pause schedule: times when all processing pauses') }}</li>
                             <li>{{ menu_item(url_for('main.settings') ~ '#section-processing', 'speedometer2', 'Processing Options', 'Job limits, device tuning, thumbnails', anchor='section-processing', label='Processing Options: job limits, device tuning and thumbnails') }}</li>
                             <li>{{ menu_item(url_for('main.settings') ~ '#section-markers', 'skip-forward', 'Intro & Credits', 'Skip-intro and credits markers', anchor='section-markers', label='Intro & Credits: skip-intro and credits markers') }}</li>
-                            <li><h6 class="dropdown-header">System</h6></li>
+                            <li><span class="dropdown-header">System</span></li>
                             <li>{{ menu_item(url_for('main.settings') ~ '#section-logging', 'journal-text', 'Logging', 'Level, log files, job history', anchor='section-logging', label='Logging: log level, log files and job history') }}</li>
                             <li>{{ menu_item(url_for('main.settings') ~ '#section-auth', 'key', 'Authentication', 'The token that signs in to this app', anchor='section-auth', label='Authentication: the token that signs in to this web app') }}</li>
                             <li>{{ menu_item(url_for('main.settings') ~ '#section-backups', 'clock-history', 'Backups', 'Earlier copies of the config files', anchor='section-backups', label='Backups: earlier copies of the config files') }}</li>
@@ -289,9 +313,9 @@
                     <li class="nav-item">
                         {# "Star" opens the repo, where GitHub's own Star button is: no URL stars a repo. #}
                         <a class="nav-link btn btn-link d-flex align-items-center" id="navStarBtn"
-                           href="https://github.com/stevezau/media_preview_generator"
+                           href="https://github.com/nphil/reprise"
                            target="_blank" rel="noopener noreferrer"
-                           aria-label="Star Media Preview Generator on GitHub" title="Star Media Preview Generator on GitHub">
+                           aria-label="Star Reprise on GitHub" title="Star Reprise on GitHub">
                             <i class="bi bi-star-fill navbar-star" aria-hidden="true"></i>
                             <span class="navbar-star-word">Star</span>
                             <span class="d-xl-none ms-2">Star on GitHub</span>
@@ -345,7 +369,7 @@
                 <div class="modal-body ov-confirm-body">
                     <span class="ov-confirm-ic" id="appConfirmModalIconTile" data-variant="danger"><i class="bi bi-question-circle" id="appConfirmModalIcon" aria-hidden="true"></i></span>
                     <div>
-                        <h5 class="modal-title" id="appConfirmModalTitle"><span id="appConfirmModalTitleText">Confirm</span></h5>
+                        <h2 class="modal-title h5" id="appConfirmModalTitle"><span id="appConfirmModalTitleText">Confirm</span></h2>
                         <p id="appConfirmModalBody"></p>
                     </div>
                     <button type="button" class="btn-close ov-confirm-close" data-bs-dismiss="modal" aria-label="Close"></button>
@@ -375,10 +399,10 @@
         <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable modal-lg">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title d-flex align-items-center gap-2">
+                    <h2 class="modal-title h5 d-flex align-items-center gap-2">
                         <span class="ov-info-ic" aria-hidden="true"><i class="bi bi-info-circle-fill"></i></span>
                         <span id="globalInfoTitle">About this setting</span>
-                    </h5>
+                    </h2>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
@@ -415,9 +439,9 @@
         <div class="modal-dialog modal-lg modal-dialog-scrollable">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title" id="whatsNewModalTitle">
+                    <h2 class="modal-title h5" id="whatsNewModalTitle">
                         <i class="bi bi-megaphone me-2"></i>What's New
-                    </h5>
+                    </h2>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body" id="whatsNewBody">

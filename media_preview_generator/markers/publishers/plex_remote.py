@@ -1500,6 +1500,8 @@ class RemotePlexDb(PlexDatabase):
             PublishError: Nothing was written (the agent's own refusal, or the agent couldn't be used).
         """
         remaining = self._remaining(deadline)
+        from ...reprise.review import reject_legacy_publication
+        reject_legacy_publication()
         body = {"deadline_s": remaining, "write": write_request_to_json(request)}
         result = self._client.post("/v1/item/write", body, timeout=remaining + ANSWER_GRACE_S)
         try:

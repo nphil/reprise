@@ -15,7 +15,8 @@ from typing import Any
 JOB_KIND_PREVIEWS = "previews"
 JOB_KIND_INTRO_CREDITS = "intro_credits"
 JOB_KIND_LOUDNESS = "loudness"
-JOB_KINDS: tuple[str, ...] = (JOB_KIND_PREVIEWS, JOB_KIND_INTRO_CREDITS, JOB_KIND_LOUDNESS)
+JOB_KIND_REPRISE = "reprise"
+JOB_KINDS: tuple[str, ...] = (JOB_KIND_PREVIEWS, JOB_KIND_INTRO_CREDITS, JOB_KIND_LOUDNESS, JOB_KIND_REPRISE)
 # Kinds with their own runner and their own pause (a job pause of theirs is the user's, kept across Pause all and a
 # restart); preview jobs pause through the global flag.
 SELF_PAUSED_KINDS: frozenset[str] = frozenset({JOB_KIND_INTRO_CREDITS, JOB_KIND_LOUDNESS})

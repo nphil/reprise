@@ -2493,6 +2493,23 @@ class JobManager:
                 job.progress.marker_sources = counts
             return job
 
+    def commit_if_active(self, job_id: str, commit: Callable[[], None], *, complete: bool = False) -> bool:
+        """Commit a bounded result write atomically with the cancellation decision.
+
+        The callback must not wait for workers or perform media processing. On
+        the last result, complete the job under the same lock so cancellation
+        cannot land between publishing that result and terminal job state.
+        """
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if (job is None or job.status not in (JobStatus.PENDING, JobStatus.RUNNING)
+                    or self._cancellation_flags.get(job_id, False)):
+                return False
+            commit()
+            if complete:
+                self.complete_job(job_id)
+            return True
+
     def complete_job(
         self,
         job_id: str,

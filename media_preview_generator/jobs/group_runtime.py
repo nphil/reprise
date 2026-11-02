@@ -100,6 +100,8 @@ def capacity_for_groups(
 
 def runtime_capacity(kind: str, *, now: datetime | None = None) -> dict:
     """Read capacity before admission/enumeration without constructing a worker pool."""
+    if kind == "reprise":
+        kind = "previews"
     from ..web.settings_manager import peek_settings_manager
 
     settings = peek_settings_manager()

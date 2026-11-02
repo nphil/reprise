@@ -19,6 +19,18 @@ def index():
 
     if not get_settings_manager().is_setup_complete():
         return redirect(url_for("main.setup_wizard"))
+    return redirect(url_for("main.reprise_page"))
+
+
+@main.route("/reprise")
+@login_required
+def reprise_page():
+    return render_template("reprise.html")
+
+
+@main.route("/dashboard")
+@login_required
+def dashboard_page():
     return render_template("index.html")
 
 

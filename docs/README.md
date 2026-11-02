@@ -1,5 +1,7 @@
 # Documentation
 
+> **Reprise fork notice:** These preserved Media Preview Generator guides may describe automatic marker publication and installation instructions that do not apply to Reprise. Plex publication is off by default and requires separate review, preparation and apply steps. See the [current Reprise README](../README.md) and [playback API guide](reprise-api.md).
+
 > Media Preview Generator | [Main README](https://github.com/stevezau/media_preview_generator/blob/dev/README.md)
 
 Pick the right doc for what you're trying to do.

@@ -5,6 +5,8 @@ description: Install Media Preview Generator with Docker or Docker Compose, then
   Unraid, volume mounts and networking.
 ---
 
+> **Reprise fork notice:** These are preserved upstream Media Preview Generator instructions, not the Reprise installation or publication workflow. Reprise Plex publication is off by default and requires separate review, preparation and apply steps. See the [Reprise README](../README.md) and [playback API guide](reprise-api.md).
+
 <section class="setup-path" aria-labelledby="setup-path-title">
   <div class="setup-path__head">
     <p class="eyebrow">Start with your setup</p>

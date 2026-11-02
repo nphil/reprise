@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>Reprise</Name>
+  <Repository>ghcr.io/nphil/reprise:sha-REPLACE_WITH_FULL_COMMIT</Repository>
+  <Registry>https://github.com/nphil/reprise/pkgs/container/reprise</Registry>
+  <Network>bridge</Network>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/nphil/reprise/issues</Support>
+  <Project>https://github.com/nphil/reprise</Project>
+  <Overview>Self-hosted media analysis and review. In development: review results and keep production publishing disabled during evaluation. Select a published immutable sha tag or digest before use. Media is read-only; Plex database access is not mounted by default.</Overview>
+  <Category>MediaApp:Video</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <Icon>https://raw.githubusercontent.com/nphil/reprise/main/media_preview_generator/web/static/icon-512.png</Icon>
+  <Config Name="Web UI" Target="8080" Default="8080" Mode="tcp" Description="Web interface" Type="Port" Display="always" Required="true" Mask="false">8080</Config>
+  <Config Name="App data" Target="/config" Default="/mnt/user/appdata/reprise" Mode="rw" Description="Persistent configuration and results" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/reprise</Config>
+  <Config Name="Media" Target="/media" Default="" Mode="ro" Description="Read-only media library" Type="Path" Display="always" Required="true" Mask="false"></Config>
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="Unraid user ID" Type="Variable" Display="advanced" Required="true" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Unraid group ID" Type="Variable" Display="advanced" Required="true" Mask="false">100</Config>
+</Container>

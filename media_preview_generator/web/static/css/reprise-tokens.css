@@ -1,0 +1,3 @@
+@font-face{font-family:Manrope;src:url('../fonts/manrope-latin.woff2') format('woff2');font-style:normal;font-weight:200 800;font-display:swap}
+:root{--lu-canvas:#191724;--lu-sheet:#1f1d2e;--lu-glass:#26233a;--lu-edge:#ffffff33;--lu-ink:#f2eff6;--lu-ink-2:#d4cfdf;--lu-accent:#a79bf5;--lu-accent-ink:#17131f;--lu-positive:#9ccfd8;--lu-warning:#f6c177;--lu-danger:#eb6f92;--lu-radius-card:16px;--lu-radius-control:10px;--lu-space-2:8px;--lu-space-4:16px;--lu-space-6:24px;--lu-target:44px;--lu-font:Manrope,system-ui,sans-serif}
+:root[data-bs-theme=light]{--lu-canvas:#faf4ed;--lu-sheet:#fffaf3;--lu-glass:#f2e9e1;--lu-edge:#57527950;--lu-ink:#17131f;--lu-ink-2:#575279;--lu-accent:#907aa9;--lu-accent-ink:#fff;--lu-positive:#286983;--lu-warning:#865a11;--lu-danger:#9c3e5a}
