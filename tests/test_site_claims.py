@@ -8,7 +8,6 @@ from flask import Flask, request
 
 from media_preview_generator.web.webhook_router import _classify_payload
 
-
 # What each sender posts when set up as docs/guides.md and docs/multi-server.md describe, trimmed to
 # the fields the router looks at. Plex posts multipart form data; the rest post JSON.
 SENDER_BODIES: dict[str, dict] = {

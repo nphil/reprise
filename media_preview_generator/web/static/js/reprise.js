@@ -22,6 +22,18 @@
     function ms(value) { const n = Math.max(0, Math.floor(Number(value) || 0)); const h = Math.floor(n / 3600000), m = Math.floor(n / 60000) % 60, s = Math.floor(n / 1000) % 60; return `${h ? `${h}:` : ''}${String(m).padStart(h ? 2 : 1, '0')}:${String(s).padStart(2, '0')}.${String(n % 1000).padStart(3, '0')}`; }
     function option(value, label) { const n = el('option', label); n.value = value; return n; }
     function title(item) { return item.show_title ? `${item.show_title} · S${String(item.season ?? '?').padStart(2, '0')}E${String(item.episode ?? '?').padStart(2, '0')} · ${item.title || 'Episode'}` : (item.title || 'Untitled'); }
+    function versionLabel(item) {
+        const identities = Array.isArray(item.identities) ? item.identities : [];
+        if (!identities.length) return 'Playback identity unavailable';
+        const labels = identities.map(identity => {
+            const fields = [];
+            if (identities.length > 1) fields.push(`Plex ${identity.plex_machine_identifier}, item ${identity.rating_key}`);
+            fields.push(`Media ${identity.media_id}`, `part ${identity.part_id}`, `audio ${identity.audio_stream_id}`);
+            if (Number.isFinite(Number(identity.part_size_bytes)) && Number(identity.part_size_bytes) > 0) fields.push(`${(Number(identity.part_size_bytes) / 1000000).toFixed(2)} MB`);
+            return fields.join(' · ');
+        });
+        return [...new Set(labels)].sort().join('; ');
+    }
     function fileTime(video) { return Math.round((Number(video.dataset.origin) || 0) + (video.currentTime || 0) * 1000); }
     function playBounded(video, start, end) {
         video.dataset.desired = start; const origin = Number(video.dataset.origin) || 0;
@@ -76,15 +88,17 @@
         $('rpLibraryState').hidden = visible.length > 0; $('rpLibraryState').textContent = q || show || season ? 'No episodes match these filters.' : 'No episodes found. Refresh a configured library to begin.';
         for (const item of visible) {
             const row = el('div', null, 'rp-episode'), label = el('label');
-            const check = el('input'); check.type = 'checkbox'; check.checked = state.selected.has(item.id); check.setAttribute('aria-label', `Select ${title(item)} for analysis`); check.addEventListener('change', () => { check.checked ? state.selected.add(item.id) : state.selected.delete(item.id); $('rpAnalyze').disabled = !state.selected.size; });
+            const version = versionLabel(item);
+            const check = el('input'); check.type = 'checkbox'; check.checked = state.selected.has(item.id); check.setAttribute('aria-label', `Select ${title(item)}, ${version} for analysis`); check.addEventListener('change', () => { check.checked ? state.selected.add(item.id) : state.selected.delete(item.id); $('rpAnalyze').disabled = !state.selected.size; });
             const open = button('', () => openItem(item)); open.className = 'rp-episode-open';
             open.dataset.mediaId = item.id; if (state.item?.id === item.id) open.setAttribute('aria-current', 'true');
             const copy = el('span', null, 'rp-episode-copy'); copy.append(el('span', item.title || 'Untitled', 'rp-episode-name'));
             const episodeCode = item.season != null && item.episode != null ? `S${String(item.season).padStart(2, '0')}E${String(item.episode).padStart(2, '0')}` : '';
             const context = [item.show_title, episodeCode].filter(Boolean).join(' · ');
             if (context) copy.append(el('small', context, 'rp-episode-context'));
+            copy.append(el('small', version, 'rp-episode-context'));
             const status = analysisLabel(item.analysis_status) + (item.freshness === 'stale' ? ' · Stale' : '');
-            open.setAttribute('aria-label', `${title(item)} ${status}`); open.append(copy, el('span', status, 'rp-meta'));
+            open.setAttribute('aria-label', `${title(item)} ${version} ${status}`); open.append(copy, el('span', status, 'rp-meta'));
             label.append(check); row.append(label, open); target.append(row);
         }
         $('rpMore').hidden = !state.cursor; $('rpAnalyze').disabled = !state.selected.size;
@@ -94,7 +108,7 @@
         state.item = item; state.result = null; state.edits = []; state.dirty = false; state.changes = [];
         document.querySelectorAll('.rp-episode-open').forEach(row => { if (row.dataset.mediaId === item.id) row.setAttribute('aria-current', 'true'); else row.removeAttribute('aria-current'); });
         $('rpReferenceVideo').pause(); $('rpReferenceVideo').removeAttribute('src'); $('rpReferenceVideo').dataset.mediaId = ''; $('rpReferenceVideo').hidden = true; $('rpReferencePreview').hidden = true; $('rpReference').value = ''; $('rpReferenceAudio').replaceChildren(option('', 'Select audio')); $('rpReferenceState').textContent = 'Choose an episode to compare.';
-        $('rpReviewTitle').textContent = title(item); $('rpReviewSubtitle').textContent = 'Loading episode…'; $('rpReviewEmpty').hidden = true; $('rpReview').hidden = false;
+        $('rpReviewTitle').textContent = title(item); $('rpReviewVersion').textContent = versionLabel(item); $('rpReviewSubtitle').textContent = 'Loading episode…'; $('rpReviewEmpty').hidden = true; $('rpReview').hidden = false;
         $('rpVideo').dataset.mediaId = item.id; $('rpVideo').dataset.duration = item.duration_ms || '0'; $('rpVideo').dataset.origin = '0'; $('rpVideo').dataset.preview = 'false'; $('rpVideo').dataset.desired = '0'; $('rpVideoOrigin').textContent = ''; $('rpVideoPreview').hidden = true; $('rpVideo').src = '/api/reprise/media/' + encodeURIComponent(item.id) + '/stream'; $('rpVideoError').hidden = true; $('rpVideo').load();
         renderReferences(); clear($('rpRanges')); clear($('rpTimeline')); clear($('rpEvidence')); $('rpSave').disabled = true;
         try {
