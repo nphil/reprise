@@ -115,10 +115,6 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-          # Pip cache keyed on pyproject.toml — invalidated whenever a
-          # dep changes. Warm runs save ~60s of wheel downloads.
-          cache: pip
-          cache-dependency-path: pyproject.toml
 
       - name: Install mediainfo and verify production-base FFmpeg
         timeout-minutes: 5
@@ -136,7 +132,7 @@ jobs:
           rm /tmp/ci-ffv1.mkv
 
       - name: Install dependencies
-        run: pip install -e ".[test]"
+        run: python -m pip install -e ".[test]"
 
       - name: Run tests (shard ${{ matrix.shard }}/3)
         # Deliberately does NOT clear addopts (pyproject.toml) and re-specify everything
@@ -152,7 +148,7 @@ jobs:
         env:
           COVERAGE_FILE: .coverage.unit-${{ matrix.shard }}
         run: >-
-          pytest --shard-id=$((${{ matrix.shard }} - 1)) --num-shards=3
+          python -m pytest --shard-id=$((${{ matrix.shard }} - 1)) --num-shards=3
           --cov-fail-under=0
           --ignore-glob=tests/test_docs_*.py
           --ignore=tests/test_readmes.py
@@ -201,13 +197,12 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-          cache: pip
 
       - name: Install coverage
         # coverage combine/report/xml is all this job does — no need for the app's own
         # deps or an editable install. Python 3.11+'s stdlib tomllib lets coverage.py read
         # pyproject.toml's [tool.coverage.*] natively, so no [toml] extra either.
-        run: pip install coverage
+        run: python -m pip install coverage
 
       - name: Download shard coverage data
         uses: actions/download-artifact@v8
@@ -218,9 +213,9 @@ jobs:
       - name: Combine shard coverage and enforce the 70% floor
         # Unit and combine jobs use the same container workspace path.
         run: |
-          coverage combine .coverage.unit-1 .coverage.unit-2 .coverage.unit-3
-          coverage report --fail-under=70
-          coverage xml
+          python -m coverage combine .coverage.unit-1 .coverage.unit-2 .coverage.unit-3
+          python -m coverage report --fail-under=70
+          python -m coverage xml
 
 
   e2e:
