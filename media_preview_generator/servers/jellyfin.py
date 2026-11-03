@@ -32,7 +32,7 @@ from loguru import logger
 
 from ..config import resolve_frame_interval
 from ._embyish import NO_ANSWER_ERRORS, EmbyApiClient, is_video_library_folder, library_folder_id
-from .base import FlagTarget, HealthCheckIssue, ServerType, WebhookEvent
+from .base import FlagTarget, HealthCheckIssue, ServerType, WebhookEvent, previews_off_section
 from .ownership import apply_inverse_path_mappings
 
 # Floor on how often a single Jellyfin server may receive a full
@@ -925,6 +925,9 @@ class JellyfinServer(EmbyApiClient):
         — extending the audit means adding a tuple there; check + apply
         + UI explanation stay in sync automatically.
         """
+        # With preview thumbnails off nothing is written to this server, so these flags have nothing to advise.
+        if not self._config.preview_thumbnails_on:
+            return []
         try:
             response = self._request("GET", "/Library/VirtualFolders")
             response.raise_for_status()
@@ -1568,12 +1571,16 @@ class JellyfinServer(EmbyApiClient):
         # the plugin to adopt our tiles; without it, scrubbing previews
         # never render). The library-settings section below reuses the
         # same ``folders`` payload.
-        folders = self._fetch_library_folders()
+        # With preview thumbnails off for this server nothing is written into it, so what only a thumbnail
+        # pipeline needs (the plugin for tiles, scan-time extraction, trickplay geometry, the 3 AM task) is not
+        # advised; Intro & Credits keeps the plugin requirement it has of its own.
+        preview_thumbnails_off = not self._config.preview_thumbnails_on
+        folders = [] if preview_thumbnails_off else self._fetch_library_folders()
         mode_a_library_names = self._mode_a_library_names(folders)
         # Off-media mode requires the plugin unconditionally: the app writes
         # tiles into Jellyfin's data folder and the plugin is the only thing
         # that registers them there with the correct ThumbnailCount.
-        off_media = self._off_media()
+        off_media = self._off_media() and not preview_thumbnails_off
         # Intro & Credits needs the plugin too, and unconditionally: it is the only route markers have into
         # Jellyfin. So the switch being on makes this same row required, instead of adding a second plugin row
         # the install controls wouldn't key on Built from the facts the Intro & Credits
@@ -1593,23 +1600,27 @@ class JellyfinServer(EmbyApiClient):
         )
         sections.extend(plugin_sections)
 
-        # With preview thumbnails off for this server nothing is written into the config dir, so its mount can be
-        # read-only (or absent) without being a fault.
-        if off_media and self._config.preview_thumbnails_on:
+        # The config dir is only written when thumbnails are; with the switch off its mount can be read-only (or
+        # absent) without being a fault. ``off_media`` is already False then.
+        if off_media:
             sections.append(self._config_folder_section())
 
-        library_section, library_section_ok = self._library_settings_section(folders, plugin_installed)
-        sections.append(library_section)
+        library_section_ok = server_ok = sched_section_ok = True
+        if preview_thumbnails_off:
+            sections.append(previews_off_section("Jellyfin"))
+        else:
+            library_section, library_section_ok = self._library_settings_section(folders, plugin_installed)
+            sections.append(library_section)
 
-        server_section, server_ok = self._server_options_section()
-        sections.append(server_section)
+            server_section, server_ok = self._server_options_section()
+            sections.append(server_section)
 
-        sections.append(self._vendor_extraction_section(plugin_installed))
+            sections.append(self._vendor_extraction_section(plugin_installed))
 
-        scheduled_section = self._scheduled_trickplay_section(plugin_installed)
-        if scheduled_section is not None:
-            sections.append(scheduled_section)
-        sched_section_ok = scheduled_section is None or bool(scheduled_section["ok"])
+            scheduled_section = self._scheduled_trickplay_section(plugin_installed)
+            if scheduled_section is not None:
+                sections.append(scheduled_section)
+            sched_section_ok = scheduled_section is None or bool(scheduled_section["ok"])
 
         overall_ok = (
             connection_ok and version_ok and plugin_ok and library_section_ok and server_ok and sched_section_ok

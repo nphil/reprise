@@ -833,3 +833,49 @@ class ServerConfig:
         """Whether preview jobs write thumbnails for this server: ``output.preview_thumbnails``, on unless it is
         explicitly ``false`` (every server saved before the switch existed keeps writing)."""
         return self.output.get("preview_thumbnails") is not False
+
+
+def previews_off_section(server_label: str) -> dict[str, Any]:
+    """The one Setup Health section a server shows in place of its preview-thumbnail advice when its
+    ``output.preview_thumbnails`` switch is off.
+
+    Args:
+        server_label: The server's product name (``"Plex"``, ``"Jellyfin"``, ``"Emby"``) for the plain sentences.
+
+    Returns:
+        An ``ok`` / ``info`` section with a single check, in the shape every ``previews_readiness`` section has.
+    """
+    reason = (
+        f"Not needed: preview thumbnails are off for this server, so Reprise writes none and {server_label}'s own "
+        "preview settings are left alone."
+    )
+    return {
+        "id": "preview_thumbnails_off",
+        "title": "Preview thumbnails",
+        "docs_anchor": "library-settings",
+        "ok": True,
+        "severity": "info",
+        "checks": [
+            {
+                "id": "preview_thumbnails_off",
+                "label": "Preview thumbnails are off (review only)",
+                "docs_anchor": "library-settings",
+                "tooltip": "Nothing is written into this server, so there is nothing to tune",
+                "explanation": (
+                    "<p><strong>What this means:</strong> <em>Write preview thumbnails</em> is turned off for this "
+                    "server (Edit \u2192 Processing \u2192 Previews). Reprise only reads from it.</p>"
+                    f"<p><strong>Why nothing is advised:</strong> the usual recommendations (such as stopping "
+                    f"{server_label}'s own preview generation, or its scan and trickplay settings) exist to keep "
+                    "Reprise's thumbnails from being overwritten or missed. With none being written they would "
+                    "only do harm, so they are hidden. Turn the switch back on to see them again.</p>"
+                ),
+                "ok": True,
+                "severity": "info",
+                "current": "off",
+                "recommended": "off (review only)",
+                "actions": {},
+                "reason": reason,
+                "meta": {},
+            }
+        ],
+    }

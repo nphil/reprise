@@ -19,7 +19,7 @@ import requests
 from loguru import logger
 
 from ._embyish import EmbyApiClient, is_video_library_folder, library_folder_id
-from .base import FlagTarget, HealthCheckIssue, ServerType, WebhookEvent
+from .base import FlagTarget, HealthCheckIssue, ServerType, WebhookEvent, previews_off_section
 
 # Emby's /Packages answer is its whole public plugin catalog (about 1.4 MB), so whether it lists the Bridge plugin is
 # kept per catalog URL: reused for an hour, and for up to a day while the catalog can't be read.
@@ -519,6 +519,9 @@ class EmbyServer(EmbyApiClient):
         Empty list means all libraries are configured correctly.
         Flags are documented in :data:`_RECOMMENDED_SETTINGS`.
         """
+        # With preview thumbnails off nothing is written to this server, so these flags have nothing to advise.
+        if not self._config.preview_thumbnails_on:
+            return []
         try:
             response = self._request("GET", "/Library/VirtualFolders")
             response.raise_for_status()
@@ -757,13 +760,19 @@ class EmbyServer(EmbyApiClient):
         marker_sections, markers_section_ok = self._markers_sections()
         sections.extend(marker_sections)
 
-        sections.append(self._library_settings_section())
-        sections.append(self._vendor_extraction_section())
+        # With preview thumbnails off nothing is written to this server, so the sidecar and scan advice (library
+        # flags, Emby's own extraction, the scheduled task that registers sidecars) has nothing to say.
+        sched_section_ok = True
+        if self._config.preview_thumbnails_on:
+            sections.append(self._library_settings_section())
+            sections.append(self._vendor_extraction_section())
 
-        scheduled_section = self._scheduled_trickplay_section()
-        if scheduled_section is not None:
-            sections.append(scheduled_section)
-        sched_section_ok = scheduled_section is None or bool(scheduled_section["ok"])
+            scheduled_section = self._scheduled_trickplay_section()
+            if scheduled_section is not None:
+                sections.append(scheduled_section)
+            sched_section_ok = scheduled_section is None or bool(scheduled_section["ok"])
+        else:
+            sections.append(previews_off_section("Emby"))
 
         return {
             "vendor": "emby",

@@ -3823,3 +3823,73 @@ class TestJellyfinMarkersReadiness:
         assert all(row["severity"] in ("critical", "recommended") for row in rows)
         # With the feature on, the plugin row is required — never an info row the card would drop.
         assert self._plugin_section(payload)["checks"][0]["severity"] == "critical"
+
+
+class TestJellyfinPreviewThumbnailsSwitch:
+    """With ``output.preview_thumbnails`` false nothing is written to Jellyfin, so no previews-only advice is given."""
+
+    # Scan-time extraction on while the plugin is absent is right; extraction off with no plugin is wrong, and so is
+    # the real-time monitor being off.
+    BAD_FLAGS = {
+        "EnableTrickplayImageExtraction": False,
+        "SaveTrickplayWithMedia": False,
+        "ExtractTrickplayImagesDuringLibraryScan": False,
+        "EnableRealtimeMonitor": False,
+    }
+
+    def _run(self, output: dict):
+        jelly = JellyfinServer(_jelly_config(output=output))
+        requested: list[str] = []
+
+        def fake_request(method, url, **kwargs):
+            requested.append(url)
+            if url == "/MediaPreviewBridge/Ping":
+                return MagicMock(status_code=404, json=MagicMock(return_value={}))
+            bodies = {
+                "/System/Info": {"Version": "10.11.8"},
+                "/System/Configuration": {"TrickplayOptions": {"TileWidth": 5, "Interval": 1}},
+                "/Library/VirtualFolders": [{"Name": "Movies", "ItemId": "m", "LibraryOptions": self.BAD_FLAGS}],
+                "/ScheduledTasks": [],
+            }
+            return MagicMock(status_code=200, json=MagicMock(return_value=bodies[url]), raise_for_status=MagicMock())
+
+        with patch.object(JellyfinServer, "_request", side_effect=fake_request):
+            payload = jelly.previews_readiness()
+            issues = jelly.check_settings_health()
+        return payload, issues, requested
+
+    def test_advice_is_given_when_thumbnails_are_on(self):
+        payload, issues, _requested = self._run({})
+        ids = {s["id"] for s in payload["sections"]}
+        assert {"library_settings", "server_options", "vendor_extraction"} <= ids
+        assert "preview_thumbnails_off" not in ids
+        assert issues
+        assert payload["overall_ok"] is False
+
+    def test_advice_is_gone_when_thumbnails_are_off(self):
+        payload, issues, requested = self._run({"preview_thumbnails": False})
+        ids = {s["id"] for s in payload["sections"]}
+        assert {"connection", "version", "plugin", "preview_thumbnails_off"} <= ids
+        assert not ids & {"library_settings", "server_options", "vendor_extraction", "scheduled_trickplay"}
+        assert issues == []
+        # Jellyfin is not asked for library flags, trickplay geometry or the scheduled task.
+        assert "/Library/VirtualFolders" not in requested
+        assert "/System/Configuration" not in requested
+        assert "/ScheduledTasks" not in requested
+        # The optional plugin is not required without tiles to register, so nothing is left to fix.
+        assert all(check["ok"] for section in payload["sections"] for check in section["checks"])
+        assert payload["overall_ok"] is True
+
+    def test_intro_and_credits_still_requires_the_plugin_when_thumbnails_are_off(self):
+        """The plugin row is what markers reach Jellyfin through; the switch hides only what tiles need."""
+        harness = TestJellyfinMarkersReadiness()
+        jelly = JellyfinServer(_jelly_config(markers=harness.MARKERS_ON, output={"preview_thumbnails": False}))
+        payload = harness._readiness(
+            harness.MARKERS_ON, harness._capability("needs_plugin"), plugin_installed=False, server=jelly
+        )
+        ids = {s["id"] for s in payload["sections"]}
+        assert "preview_thumbnails_off" in ids
+        assert not ids & {"library_settings", "server_options", "vendor_extraction", "scheduled_trickplay"}
+        row = harness._plugin_section(payload)["checks"][0]
+        assert (row["ok"], row["severity"], row["current"]) == (False, "critical", "not installed")
+        assert payload["overall_ok"] is False

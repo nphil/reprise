@@ -37,6 +37,7 @@ from .base import (
     ServerConfig,
     ServerType,
     WebhookEvent,
+    previews_off_section,
 )
 
 if TYPE_CHECKING:
@@ -744,6 +745,10 @@ class PlexServer(MediaServer):
         ``library_id=None`` / ``library_name=""`` — the UI groups
         these as "Server settings" rather than under any one library.
         """
+        # With preview thumbnails off these scan preferences only matter to a thumbnail pipeline that is not
+        # running, so there is nothing to report.
+        if self._server_config is not None and not self._server_config.preview_thumbnails_on:
+            return []
         if not self._has_credentials():
             return []
 
@@ -1121,6 +1126,11 @@ class PlexServer(MediaServer):
             if marker_section is not None:
                 sections.append(marker_section)
 
+        # With preview thumbnails off for this server, this app writes no BIFs and no chapter thumbnails, so the
+        # rows below that only keep its thumbnail pipeline fed (Plex's scan prefs, held jobs, Plex's own BIF
+        # generation, chapter thumbnails) have nothing to advise.
+        preview_thumbnails_off = self._server_config is not None and not self._server_config.preview_thumbnails_on
+
         # --- Library settings (server-wide FSEvent prefs) -----------
         library_checks: list[dict[str, Any]] = []
         library_section_ok = True
@@ -1136,7 +1146,9 @@ class PlexServer(MediaServer):
 
         from .chapter_readiness import chapter_readiness_section
 
-        chapter_section = chapter_readiness_section(self, self._server_config, current_by_id)
+        chapter_section = (
+            None if preview_thumbnails_off else chapter_readiness_section(self, self._server_config, current_by_id)
+        )
         if chapter_section is not None:
             sections.append(chapter_section)
 
@@ -1146,14 +1158,16 @@ class PlexServer(MediaServer):
         if loudness_section is not None:
             sections.append(loudness_section)
 
-        hold_check = self._hold_previews_check(current_by_id)
+        hold_check = None if preview_thumbnails_off else self._hold_previews_check(current_by_id)
         if hold_check is not None:
             library_checks.append(hold_check)
             library_section_ok = False
             if library_severity != "critical":
                 library_severity = "recommended"
 
-        for pref_id, label, recommended, severity, rationale in self._PLEX_RECOMMENDED_PREFS:
+        for pref_id, label, recommended, severity, rationale in (
+            () if preview_thumbnails_off else self._PLEX_RECOMMENDED_PREFS
+        ):
             current = current_by_id.get(pref_id)
             row_ok = current == recommended
             if not row_ok:
@@ -1181,16 +1195,17 @@ class PlexServer(MediaServer):
                 }
             )
 
-        sections.append(
-            {
-                "id": "library_settings",
-                "title": "Library settings",
-                "docs_anchor": "library-settings",
-                "ok": library_section_ok,
-                "severity": library_severity,
-                "checks": library_checks,
-            }
-        )
+        if not preview_thumbnails_off:
+            sections.append(
+                {
+                    "id": "library_settings",
+                    "title": "Library settings",
+                    "docs_anchor": "library-settings",
+                    "ok": library_section_ok,
+                    "severity": library_severity,
+                    "checks": library_checks,
+                }
+            )
 
         # --- Plex config folder (filesystem writability) ------------
         # IMPORTANT: pure read-only probe. os.access only — never
@@ -1200,7 +1215,7 @@ class PlexServer(MediaServer):
         plex_config_folder = str(getattr(self._config, "plex_config_folder", "") or "").strip()
         # Preview thumbnails (BIF bundles, chapter thumbnails) are the only thing this app writes into the folder.
         # With the switch off the folder is only read, so a read-only mount is the right setup, not a fault.
-        writes_thumbnails = self._server_config is None or self._server_config.preview_thumbnails_on
+        writes_thumbnails = not preview_thumbnails_off
         folder_ok = True
         folder_current = "unset"
         folder_reason: str | None = None
@@ -1286,6 +1301,98 @@ class PlexServer(MediaServer):
             }
         )
 
+        # --- Vendor-side extraction ---------------------------------
+        # With preview thumbnails off this app writes none, so Plex generating its own is exactly what the owner
+        # wants: nothing to recommend, and no per-library probe to make.
+        if preview_thumbnails_off:
+            sections.append(previews_off_section("Plex"))
+        else:
+            sections.append(self._vendor_extraction_section())
+
+        # --- Path mappings (read-only diagnostic row) ---------------
+        mapping_rows = list(getattr(self._config, "path_mappings", None) or [])
+        broken: list[str] = []
+        for row in mapping_rows:
+            if not isinstance(row, dict):
+                continue
+            local_prefix = str(row.get("local_prefix") or "").strip()
+            if local_prefix and not _os.path.isdir(local_prefix):
+                broken.append(local_prefix)
+        mappings_ok = not broken
+        sections.append(
+            {
+                "id": "path_mappings",
+                "title": "Path mappings",
+                "docs_anchor": "path-mappings",
+                "ok": mappings_ok,
+                "severity": "recommended" if not mappings_ok else "info",
+                "checks": [
+                    {
+                        "id": "path_mappings_valid",
+                        "label": f"{len(mapping_rows)} path mapping{'s' if len(mapping_rows) != 1 else ''} configured",
+                        "docs_anchor": "path-mappings",
+                        "tooltip": "Configured mappings must point at paths that exist",
+                        "explanation": (
+                            "<p><strong>What it checks:</strong> for every configured path "
+                            "mapping (Plex server path → container-local path), the local "
+                            "prefix actually exists as a directory on this container.</p>"
+                            "<p><strong>Why it matters:</strong> path mappings translate between "
+                            "the paths Plex reports (e.g. <code>/data/Movies</code> on Plex's "
+                            "container) and the paths this app can read (e.g. "
+                            "<code>/mnt/media</code> inside ours). A broken local prefix means "
+                            "the translation silently no-ops — Plex tells us a file is at "
+                            "<code>/data/Movies/X.mkv</code>, we look at the missing "
+                            "<code>/mnt/media/Movies/X.mkv</code> that doesn't resolve, and the "
+                            "preview never gets generated.</p>"
+                            "<p><strong>Common causes when it fails:</strong> Docker volume "
+                            "removed or renamed, typo in the mapping, host filesystem "
+                            "unmounted. Read-only check — fix via the Path mappings tab in "
+                            "this modal.</p>"
+                        ),
+                        "ok": mappings_ok,
+                        "severity": "recommended" if not mappings_ok else "info",
+                        "current": len(mapping_rows) - len(broken),
+                        "recommended": len(mapping_rows),
+                        "actions": {},
+                        "reason": (
+                            f"{len(broken)} local_prefix path(s) missing on this container: " + ", ".join(broken)
+                        )
+                        if broken
+                        else None,
+                        "meta": {"broken": broken},
+                    }
+                ],
+            }
+        )
+
+        # ``overall_ok`` gates the big red "action needed" banner on
+        # the modal header. Only TRUE blockers should fail it: any
+        # check (in any section) with severity=critical AND ok=False.
+        # Recommended-severity failures (library_settings FSEvent prefs
+        # post-#237, vendor_extraction per-library rows, path mapping
+        # warnings) live in the amber Recommended bucket and must not
+        # promote the header to red.
+        #
+        # Pre-#237 this was hard-coded to AND together connection_ok /
+        # library_section_ok / folder_ok / mappings_ok. After demoting
+        # FSEventLibraryUpdatesEnabled from critical to recommended,
+        # library_section_ok could still be False on a row that's only
+        # advisory — which spuriously failed overall_ok. The general
+        # form here walks the emitted checks, so new severities added
+        # later self-resolve without revisiting this line.
+        overall_ok = not any(
+            (check.get("severity") == "critical" and check.get("ok") is False)
+            for section in sections
+            for check in (section.get("checks") or [])
+        )
+        return {
+            "vendor": "plex",
+            "overall_ok": overall_ok,
+            "sections": sections,
+        }
+
+    def _vendor_extraction_section(self) -> dict[str, Any]:
+        """The ``vendor_extraction`` section: one row per library for Plex's own BIF generation (probes Plex)."""
         # --- Vendor-side extraction ---------------------------------
         # Promote this from a single aggregate "stopped on N/M" info row
         # to one actionable row per library, mirroring how Emby and
@@ -1507,97 +1614,13 @@ class PlexServer(MediaServer):
         else:
             vendor_section_severity = "recommended"
 
-        sections.append(
-            {
-                "id": "vendor_extraction",
-                "title": "Vendor-side preview generation",
-                "docs_anchor": "vendor-extraction",
-                "ok": vendor_section_ok,
-                "severity": vendor_section_severity,
-                "checks": vendor_checks,
-            }
-        )
-
-        # --- Path mappings (read-only diagnostic row) ---------------
-        mapping_rows = list(getattr(self._config, "path_mappings", None) or [])
-        broken: list[str] = []
-        for row in mapping_rows:
-            if not isinstance(row, dict):
-                continue
-            local_prefix = str(row.get("local_prefix") or "").strip()
-            if local_prefix and not _os.path.isdir(local_prefix):
-                broken.append(local_prefix)
-        mappings_ok = not broken
-        sections.append(
-            {
-                "id": "path_mappings",
-                "title": "Path mappings",
-                "docs_anchor": "path-mappings",
-                "ok": mappings_ok,
-                "severity": "recommended" if not mappings_ok else "info",
-                "checks": [
-                    {
-                        "id": "path_mappings_valid",
-                        "label": f"{len(mapping_rows)} path mapping{'s' if len(mapping_rows) != 1 else ''} configured",
-                        "docs_anchor": "path-mappings",
-                        "tooltip": "Configured mappings must point at paths that exist",
-                        "explanation": (
-                            "<p><strong>What it checks:</strong> for every configured path "
-                            "mapping (Plex server path → container-local path), the local "
-                            "prefix actually exists as a directory on this container.</p>"
-                            "<p><strong>Why it matters:</strong> path mappings translate between "
-                            "the paths Plex reports (e.g. <code>/data/Movies</code> on Plex's "
-                            "container) and the paths this app can read (e.g. "
-                            "<code>/mnt/media</code> inside ours). A broken local prefix means "
-                            "the translation silently no-ops — Plex tells us a file is at "
-                            "<code>/data/Movies/X.mkv</code>, we look at the missing "
-                            "<code>/mnt/media/Movies/X.mkv</code> that doesn't resolve, and the "
-                            "preview never gets generated.</p>"
-                            "<p><strong>Common causes when it fails:</strong> Docker volume "
-                            "removed or renamed, typo in the mapping, host filesystem "
-                            "unmounted. Read-only check — fix via the Path mappings tab in "
-                            "this modal.</p>"
-                        ),
-                        "ok": mappings_ok,
-                        "severity": "recommended" if not mappings_ok else "info",
-                        "current": len(mapping_rows) - len(broken),
-                        "recommended": len(mapping_rows),
-                        "actions": {},
-                        "reason": (
-                            f"{len(broken)} local_prefix path(s) missing on this container: " + ", ".join(broken)
-                        )
-                        if broken
-                        else None,
-                        "meta": {"broken": broken},
-                    }
-                ],
-            }
-        )
-
-        # ``overall_ok`` gates the big red "action needed" banner on
-        # the modal header. Only TRUE blockers should fail it: any
-        # check (in any section) with severity=critical AND ok=False.
-        # Recommended-severity failures (library_settings FSEvent prefs
-        # post-#237, vendor_extraction per-library rows, path mapping
-        # warnings) live in the amber Recommended bucket and must not
-        # promote the header to red.
-        #
-        # Pre-#237 this was hard-coded to AND together connection_ok /
-        # library_section_ok / folder_ok / mappings_ok. After demoting
-        # FSEventLibraryUpdatesEnabled from critical to recommended,
-        # library_section_ok could still be False on a row that's only
-        # advisory — which spuriously failed overall_ok. The general
-        # form here walks the emitted checks, so new severities added
-        # later self-resolve without revisiting this line.
-        overall_ok = not any(
-            (check.get("severity") == "critical" and check.get("ok") is False)
-            for section in sections
-            for check in (section.get("checks") or [])
-        )
         return {
-            "vendor": "plex",
-            "overall_ok": overall_ok,
-            "sections": sections,
+            "id": "vendor_extraction",
+            "title": "Vendor-side preview generation",
+            "docs_anchor": "vendor-extraction",
+            "ok": vendor_section_ok,
+            "severity": vendor_section_severity,
+            "checks": vendor_checks,
         }
 
     def list_items(self, library_id: str, *, sort_by: str | None = None) -> Iterator[MediaItem]:

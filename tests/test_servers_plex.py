@@ -1594,6 +1594,77 @@ class TestPlexPreviewsReadiness:
         assert "does not exist" in row["reason"]
         assert section["severity"] == "critical"
 
+    def _advice(self, tmp_path, output: dict):
+        """Readiness payload + audit for a Plex server whose own prefs are all wrong and whose libraries still have
+        Plex's own BIF generation on, so every previews-only recommendation would fire. Also returns whether the
+        per-library extraction probe was made."""
+        from media_preview_generator.servers.base import ServerConfig
+
+        (tmp_path / "plex" / "Media" / "localhost").mkdir(parents=True)
+        server = PlexServer(
+            ServerConfig(
+                id="plex-1",
+                type=ServerType.PLEX,
+                name="Plex",
+                enabled=True,
+                url="http://plex:32400",
+                auth={"token": "t"},
+                output={"plex_config_folder": str(tmp_path / "plex"), **output},
+            )
+        )
+        wrong_prefs = {
+            "FSEventLibraryUpdatesEnabled": False,
+            "FSEventLibraryPartialScanEnabled": False,
+            "ScheduledLibraryUpdatesEnabled": False,
+        }
+        extracting = {
+            "extracting_count": 1,
+            "stopped_count": 0,
+            "skipped_count": 0,
+            "total": 1,
+            "libraries": [{"key": "1", "name": "Movies", "state": "extracting"}],
+        }
+        with (
+            patch.object(PlexServer, "test_connection") as tc,
+            patch("media_preview_generator.servers.plex.requests.get") as prefs_get,
+            patch.object(PlexServer, "get_vendor_extraction_status", return_value=extracting) as probe,
+        ):
+            tc.return_value = ConnectionResult(ok=True, message="Connected")
+            prefs_get.return_value = self._prefs_response(**wrong_prefs)
+            payload = server.previews_readiness()
+            issues = server.check_settings_health()
+        return payload, issues, probe.called
+
+    def test_previews_only_advice_is_shown_when_thumbnails_are_on(self, tmp_path):
+        payload, issues, probed = self._advice(tmp_path, {})
+        sections = {s["id"]: s for s in payload["sections"]}
+        assert "preview_thumbnails_off" not in sections
+        library_rows = {c["id"]: c for c in sections["library_settings"]["checks"]}
+        assert library_rows["fsevent_updates"]["ok"] is False
+        assert sections["vendor_extraction"]["ok"] is False
+        assert [c["id"] for c in sections["vendor_extraction"]["checks"]] == ["vendor_extraction:1"]
+        assert probed is True
+        assert {i.flag for i in issues} == {
+            "FSEventLibraryUpdatesEnabled",
+            "FSEventLibraryPartialScanEnabled",
+            "ScheduledLibraryUpdatesEnabled",
+        }
+
+    def test_previews_only_advice_is_gone_when_thumbnails_are_off(self, tmp_path):
+        payload, issues, probed = self._advice(tmp_path, {"preview_thumbnails": False})
+        sections = {s["id"]: s for s in payload["sections"]}
+        # Nothing recommends changing Plex's own preview generation or scan prefs, and Plex is not even asked.
+        assert "library_settings" not in sections
+        assert "vendor_extraction" not in sections
+        assert probed is False
+        assert issues == []
+        row = sections["preview_thumbnails_off"]["checks"][0]
+        assert (row["ok"], row["severity"]) == (True, "info")
+        assert row["reason"].startswith("Not needed: preview thumbnails are off")
+        # Every remaining check passes, so no recommendation or error is left for this server.
+        assert all(check["ok"] for section in payload["sections"] for check in section["checks"])
+        assert payload["overall_ok"] is True
+
     def test_misset_prefs_emit_actionable_rows(self, plex_wrapper, tmp_path):
         """Matrix coverage: walk the ok=False branch. When an FSEvent
         pref is mis-set, the row's `actions.enable.args` must carry

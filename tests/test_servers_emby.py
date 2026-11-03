@@ -2466,3 +2466,54 @@ class TestSetVendorExtraction:
         posted = req.call_args_list[1].kwargs["json_body"]
         assert posted["Id"] == "m1"
         assert posted["LibraryOptions"] == {"ExtractChapterImagesDuringLibraryScan": False}
+
+
+class TestEmbyPreviewThumbnailsSwitch:
+    """With ``output.preview_thumbnails`` false nothing is written to Emby, so no previews-only advice is given."""
+
+    BAD_FLAGS = {
+        "ExtractTrickplayImagesDuringLibraryScan": True,
+        "ExtractChapterImagesDuringLibraryScan": True,
+        "EnableRealtimeMonitor": False,
+    }
+
+    def _run(self, output: dict):
+        emby = EmbyServer(_emby_config())
+        emby._config.output.update(output)
+        requested: list[str] = []
+
+        def fake_request(method, url, **kwargs):
+            requested.append(url)
+            bodies = {
+                "/System/Info": {"Version": "4.8.0.0"},
+                "/Library/VirtualFolders": [{"Name": "Movies", "ItemId": "m", "LibraryOptions": self.BAD_FLAGS}],
+                # The scheduled task is disabled: with thumbnails on, that is a critical "nothing registers" row.
+                "/ScheduledTasks": [
+                    {"Name": "Generate Trickplay Images", "Key": "RefreshTrickplayImages", "Id": "t", "Triggers": []}
+                ],
+            }
+            return MagicMock(status_code=200, json=MagicMock(return_value=bodies[url]), raise_for_status=MagicMock())
+
+        with patch.object(EmbyServer, "_request", side_effect=fake_request):
+            payload = emby.previews_readiness()
+            issues = emby.check_settings_health()
+        return payload, issues, requested
+
+    def test_advice_is_given_when_thumbnails_are_on(self):
+        payload, issues, requested = self._run({})
+        ids = {s["id"] for s in payload["sections"]}
+        assert {"library_settings", "vendor_extraction"} <= ids
+        assert "preview_thumbnails_off" not in ids
+        assert {i.flag for i in issues} == set(self.BAD_FLAGS)
+        assert "/Library/VirtualFolders" in requested
+
+    def test_advice_is_gone_when_thumbnails_are_off(self):
+        payload, issues, requested = self._run({"preview_thumbnails": False})
+        ids = {s["id"] for s in payload["sections"]}
+        assert {"connection", "version", "preview_thumbnails_off"} <= ids
+        assert not ids & {"library_settings", "vendor_extraction", "scheduled_trickplay"}
+        assert issues == []
+        # Emby is only asked who it is: no library, extraction or scheduled-task probe.
+        assert requested == ["/System/Info"]
+        assert all(check["ok"] for section in payload["sections"] for check in section["checks"])
+        assert payload["overall_ok"] is True
