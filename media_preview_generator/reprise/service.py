@@ -530,7 +530,7 @@ class RepriseService:
             pos = page.get("next_cursor")
             if not pos:
                 break
-        items = []
+        matched = []
         seen = set()
         shows = sorted({str(row["metadata"].get("show_title")) for row in rows if row["metadata"].get("show_title")})
         seasons = sorted(
@@ -556,6 +556,12 @@ class RepriseService:
                 not in (str(meta.get("title", "")) + " " + str(meta.get("show_title", ""))).lower()
             ):
                 continue
+            matched.append(row)
+        start = int(cursor or 0)
+        limit = min(max(int(limit), 1), 100)
+        items = []
+        for row in matched[start : start + limit]:
+            version, meta = row["media_version"], row["metadata"]
             bindings = self._bindings(version["id"])
             current = self.lookup(bindings[0][0]) if bindings else None
             items.append(
@@ -572,11 +578,9 @@ class RepriseService:
                     "identities": [asdict(b[0]) for b in bindings],
                 }
             )
-        start = int(cursor or 0)
-        limit = min(max(int(limit), 1), 100)
         return {
-            "items": items[start : start + limit],
-            "next_cursor": str(start + limit) if start + limit < len(items) else None,
+            "items": items,
+            "next_cursor": str(start + limit) if start + limit < len(matched) else None,
             "shows": shows,
             "seasons": seasons,
         }

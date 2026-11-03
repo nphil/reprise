@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fixed populated-library timeouts by checking playback identity and freshness only for the requested page, after filtering and deduplication.
 - Introduced Reprise's library-first workflow for indexing Plex libraries, reviewing evidence and editing, approving or locking keep and skip ranges. Keep ranges veto overlapping skips; eligible skips remain disjoint. Detection proposes decisions, not approvals, and uncertain or changed evidence requires review.
 - Added queued CPU-supported analysis, comparison previews and library refresh, with pause, resume and cancellation. Refresh and saved-result lookups do not implicitly start analysis. Conservative audio and video verification requires no GPU or language model.
 - Adopted review-first, codec-tolerant native signal matching with mandatory owner approval. Tiny visual edits and quiet or brief changes may be missed; the interface and playback API documentation explain this limit. Changing the verification profile invalidates old approvals while retaining owner keeps and locks.
