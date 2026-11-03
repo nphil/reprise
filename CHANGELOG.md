@@ -10,5 +10,6 @@
 - Added a playback API using exact media and selected-audio identity, named scoped client credentials and stored credential hashes. It returns eligible skips only for current, approved results. The API can support a future Marquee integration; no Marquee client or TV deployment is included.
 - Added guarded Plex publication: writes default off, review is separate from prepare and apply, incompatible projections are refused, interrupted writes are reconciled rather than blindly repeated, and undo refuses conflicting external changes.
 - Retained Media Preview Generator and Recurring Content Detector attribution and license notices. Two upstream detector fixture videos with unverified redistribution rights were filtered from the imported history.
+- Restored the Unraid icon URL with a 512×512 PNG rendered from the existing Reprise artwork.
 
 Generated-media checks do not establish representative real-library accuracy, narrative safety or production-write safety. Plex writes remain off by default. See the [README](README.md) and [playback API guide](docs/reprise-api.md) for current behavior and limitations.
