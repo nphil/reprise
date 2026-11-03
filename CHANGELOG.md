@@ -11,5 +11,6 @@
 - Added guarded Plex publication: writes default off, review is separate from prepare and apply, incompatible projections are refused, interrupted writes are reconciled rather than blindly repeated, and undo refuses conflicting external changes.
 - Retained Media Preview Generator and Recurring Content Detector attribution and license notices. Two upstream detector fixture videos with unverified redistribution rights were filtered from the imported history.
 - Restored the Unraid icon URL with a 512×512 PNG rendered from the existing Reprise artwork.
+- Added editable optional NVIDIA variables to the Unraid template and documented Intel device/group mapping, container recovery and the distinction between GPU visibility and the current CPU-only analysis/FFmpeg paths. Corrected the deployment documentation to match the accepted image already pinned by the examples.
 
 Generated-media checks do not establish representative real-library accuracy, narrative safety or production-write safety. Plex writes remain off by default. See the [README](README.md) and [playback API guide](docs/reprise-api.md) for current behavior and limitations.

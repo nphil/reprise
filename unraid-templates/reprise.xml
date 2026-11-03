@@ -17,4 +17,6 @@
   <Config Name="Media" Target="/media" Default="" Mode="ro" Description="Read-only media library" Type="Path" Display="always" Required="true" Mask="false"></Config>
   <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="Unraid user ID" Type="Variable" Display="advanced" Required="true" Mask="false">99</Config>
   <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Unraid group ID" Type="Variable" Display="advanced" Required="true" Mask="false">100</Config>
+  <Config Name="NVIDIA GPU UUID (optional)" Target="NVIDIA_VISIBLE_DEVICES" Default="void" Mode="" Description="Optional device visibility: set the GPU UUID and add --runtime=nvidia to Extra Parameters. The current image still uses CPU analysis." Type="Variable" Display="advanced" Required="false" Mask="false">void</Config>
+  <Config Name="NVIDIA driver capabilities" Target="NVIDIA_DRIVER_CAPABILITIES" Default="compute,video,utility" Mode="" Description="NVIDIA runtime capabilities. Keep this in the variable field, not as a bare Extra Parameters assignment. GPU access does not enable GPU analysis." Type="Variable" Display="advanced" Required="false" Mask="false">compute,video,utility</Config>
 </Container>

@@ -19,7 +19,7 @@ The detector compares native decoded video and every selected audio channel at f
 
 ## Quick start
 
-An unsigned image is published on GitHub Container Registry. The examples pin the image built from commit `2e6e9c183e886283d5539f4fc423a98bdb074605`; they do not update automatically. There is no versioned release or `latest` tag.
+An unsigned image is published on GitHub Container Registry. The examples pin the accepted image built from commit `170b633b8e6adeefadf5201106fbfce51a19e8e5`; they do not update automatically. There is no versioned release or `latest` tag.
 
 1. Replace the host paths in `docker-compose.example.yml`. For production, set `IMAGE` to the independently accepted image digest described below.
 2. Run `docker compose -f docker-compose.example.yml up -d`.
@@ -27,17 +27,27 @@ An unsigned image is published on GitHub Container Registry. The examples pin th
 
 Do not expose the interface publicly without appropriate authentication and transport security.
 
-The image stores settings and results in `/config`, reads media from `/media`, and listens on TCP 8080 by default. The example runs on CPU, mounts media read-only and does not mount Plex's database. Other inherited features can write to server APIs or paths if configured: a read-only media mount is not an authorization boundary for a connected server. A writable Plex database mount is **not** a default; grant one only for an explicitly authorized publishing operation, after backups and validation. New builds from this source use CPU-focused FFmpeg 8.1.2 and matching ffprobe on PATH, with a separate patched loudness binary. GPU acceleration and Dolby Vision Profile 5 colour accuracy are not established for the new build. The previously published pinned image predates this change.
+The image stores settings and results in `/config`, reads media from `/media`, and listens on TCP 8080 by default. The example runs on CPU, mounts media read-only and does not mount Plex's database. Other inherited features can write to server APIs or paths if configured: a read-only media mount is not an authorization boundary for a connected server. A writable Plex database mount is **not** a default; grant one only for an explicitly authorized publishing operation, after backups and validation. The pinned image uses CPU-focused FFmpeg 8.1.2 and matching ffprobe on PATH, with a separate patched loudness binary. Its FFmpeg has no enabled GPU backends. Dolby Vision Profile 5 colour accuracy is not established.
 
 The container media mount target must match the local path in the configured path mapping so Reprise can find the files. When installing with the Unraid template, you can override the media mount Target to match that mapping.
 
-The Unraid template in `unraid-templates/reprise.xml` uses the same older pin. For production, replace it with the independently accepted image digest. Configure an internal reverse proxy separately.
+The Unraid template in `unraid-templates/reprise.xml` pins the same accepted image digest as Compose. Configure an internal reverse proxy separately.
+
+## Optional GPU access on Unraid
+
+GPU visibility is separate from GPU acceleration. The accepted image detects NVIDIA and Intel devices, but its FFmpeg reports no hardware accelerators. The inherited preview pipeline has CUDA/VAAPI selection code; it cannot use those backends with this binary. Native intro/credits analysis currently uses software decoding and CPU comparisons, independently of preview worker selections. Passing GPUs through does not change that. Leave GPU workers disabled until a GPU-capable image and the relevant processing path have been verified.
+
+For optional device access, preserve the existing resource/security flags and add `--runtime=nvidia` to Extra Parameters. Set `NVIDIA_VISIBLE_DEVICES` to the chosen GPU UUID and `NVIDIA_DRIVER_CAPABILITIES` to `compute,video,utility` using the dedicated environment-variable fields. The public template defaults to `void` (no NVIDIA device). Never enter a bare `NVIDIA_DRIVER_CAPABILITIES=...` assignment in Extra Parameters: it is not a Docker option.
+
+Add the actual Intel card and render nodes as Device fields after identifying their PCI device on the host. Do not assume `renderD128` is Intel: on the verified dual-GPU host, NVIDIA owns that node and Intel uses `card1`/`renderD129`. Add the nodes' numeric group using `--group-add=<device-group-id>` and verify access as the actual application user, including its supplementary groups. Do not use privileged mode or change host device permissions.
+
+Verify both device discovery and actual FFmpeg hardware decoding separately. Restoring a missing asset/runtime/device mapping cannot add missing FFmpeg capabilities. Accelerating native analysis requires a GPU-enabled FFmpeg build plus an explicit analysis decoding path and end-to-end timing/preservation checks; it does not require an LLM.
 
 ## Image delivery and acceptance
 
 The image workflow makes one cold candidate build, pushes it by digest, and checks the bundled source and license artifacts, FFmpeg configuration, and startup health before publishing a full source-commit tag. A tag identifies the source revision; use the immutable image digest to ensure the image deployed is exactly the one independently tested and accepted. These automated checks do not establish legal compliance or replace independent acceptance.
 
-The candidate built from source `170b633b8e6adeefadf5201106fbfce51a19e8e5` with digest `sha256:cfd007e23417dbb8c4dab8ce7e1e5c46b81acb1102bfdd30d4424175a1b2ec79` passed the independent holdout and was accepted on that basis. Full CI remains a launch gate. Production must use that exact digest, not a fresh rebuild or a tag alone. The examples remain on their older pin.
+The candidate built from source `170b633b8e6adeefadf5201106fbfce51a19e8e5` with digest `sha256:cfd007e23417dbb8c4dab8ce7e1e5c46b81acb1102bfdd30d4424175a1b2ec79` passed the independent holdout and was accepted on that basis. Full CI remains a launch gate. Production must use that exact digest, not a fresh rebuild or a tag alone. Both deployment examples pin this accepted digest.
 
 An earlier two-cold-build comparison of revision `ac40` found matching runtime configuration and uncompressed layer inventories; source, license and startup checks passed. That comparison concerned a different revision and does not establish that current rebuilds are identical.
 
