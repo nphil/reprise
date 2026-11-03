@@ -21,7 +21,7 @@ The one exception to protecting unconfirmed content is Plex's own intro or credi
 
 ## Quick start
 
-An unsigned image is published on GitHub Container Registry. The examples pin the accepted image built from commit `e1b07f6be36bdcb98f4a20911b50afd8e0c1e1f9`; they do not update automatically. There is no versioned release or `latest` tag.
+An unsigned image is published on GitHub Container Registry. The examples pin the accepted image built from commit `d951fa09e87aeaa0fe1c795895cbf5145e434d3a`; they do not update automatically. There is no versioned release or `latest` tag.
 
 1. Replace the host paths in `docker-compose.example.yml`. For production, set `IMAGE` to the independently accepted image digest described below.
 2. Run `docker compose -f docker-compose.example.yml up -d`.
@@ -98,9 +98,9 @@ Intel decoding needs the container's media driver to match its libva; images bui
 
 The image workflow makes one cold candidate build, pushes it by digest, and checks the bundled source and license artifacts, FFmpeg configuration, and startup health before publishing a full source-commit tag. A tag identifies the source revision; use the immutable image digest to ensure the image deployed is exactly the one independently tested and accepted. These automated checks do not establish legal compliance or replace independent acceptance.
 
-The current image, built from source `e1b07f6be36bdcb98f4a20911b50afd8e0c1e1f9`, is `ghcr.io/nphil/reprise@sha256:c36abb6b90b7f08e8631699e845091dd3d1fe56abad391a0e0f767bb63cebd65`. It passed the candidate image checks and [full CI](https://github.com/nphil/reprise/actions/runs/41559166820). After deployment, an authenticated 50-item Library page from the 4,239-version catalogue returned in 0.84 seconds, and visible Library loading and pagination were checked. Both deployment examples pin this exact image; use the digest rather than rebuilding or relying on a tag alone.
+The current image, built from source `d951fa09e87aeaa0fe1c795895cbf5145e434d3a`, is `ghcr.io/nphil/reprise@sha256:bb01a595ff291fba46c89f1568c48452d75c4e9263e239169e611af92c844b41`. It passed the candidate image checks and [full CI](https://github.com/nphil/reprise/actions/runs/41704647937). After deployment on the reference Unraid host it started healthy, migrated the old sign-in token unchanged to the webhook secret, opened first-run account setup, and its startup checks matched NVIDIA Tesla P40 (NVDEC) and Intel UHD 630 (VAAPI) decoding frame for frame against the CPU on the reference clips. Both deployment examples pin this exact image; use the digest rather than rebuilding or relying on a tag alone.
 
-The earlier detector candidate from source `170b633b8e6adeefadf5201106fbfce51a19e8e5` passed the independent native-engine holdout. That holdout was not repeated for this Library-pagination fix; the current image was checked with full CI and the changed live read path.
+The earlier detector candidate from source `170b633b8e6adeefadf5201106fbfce51a19e8e5` passed the independent native-engine holdout. This image changes the verification profile (audio timestamp tolerance, 3 nearest references, Plex suggestions), and that holdout has not been repeated for it.
 
 An earlier two-cold-build comparison of revision `ac40` found matching runtime configuration and uncompressed layer inventories; source, license and startup checks passed. That comparison concerned a different revision and does not establish that current rebuilds are identical.
 
