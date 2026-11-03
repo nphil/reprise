@@ -5,6 +5,9 @@ description: Add a Sonarr or Radarr webhook for import and upgrade. Previews are
   while the server indexes the file.
 ---
 
+> [!IMPORTANT]
+> This is the inherited **preview-thumbnail** workflow, not native Reprise intro/credits analysis. Enabling these hooks can write Plex BIF thumbnails (or Emby/Jellyfin preview output); it does not enqueue native Reprise analysis. For review-only setup, save and test the connections but leave import/upgrade events off. Use Reprise Library to refresh and explicitly analyze episodes, or separately opt into a native Reprise analysis schedule. Plex preview generation needs write access to its `Media/localhost` cache subtree; API connections and native indexing do not need a Plex database mount.
+
 In Sonarr or Radarr, add a **Webhook** connection that points at Media Preview Generator. Enable the import and upgrade events. When a file lands, the app waits for a quiet period (60 seconds by default), then makes previews for just those files. It publishes them to every Plex, Emby or Jellyfin server that has the file. If a server hasn't added the file to its library yet, the app retries automatically.
 
 ## Set it up

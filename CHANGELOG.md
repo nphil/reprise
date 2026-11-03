@@ -12,5 +12,7 @@
 - Retained Media Preview Generator and Recurring Content Detector attribution and license notices. Two upstream detector fixture videos with unverified redistribution rights were filtered from the imported history.
 - Restored the Unraid icon URL with a 512×512 PNG rendered from the existing Reprise artwork.
 - Added editable optional NVIDIA variables to the Unraid template and documented Intel device/group mapping, container recovery and the distinction between GPU visibility and the current CPU-only analysis/FFmpeg paths. Corrected the deployment documentation to match the accepted image already pinned by the examples.
+- Documented complete review-only Plex and arr connection setup, case-sensitive Plex folder configuration and read-only cache/media mappings; distinguished tested webhook connectivity from thumbnail automation and native Reprise analysis. Added the optional Plex folder environment field to the Unraid template and linked the tracked GPU/UI work.
+- Moved configured processing scratch defaults to `/config/tmp` on the appdata volume, avoiding the small `/tmp` tmpfs and its failed minimum-free-space validation; documented the separate Python `TMPDIR` setting and startup-directory requirement.
 
 Generated-media checks do not establish representative real-library accuracy, narrative safety or production-write safety. Plex writes remain off by default. See the [README](README.md) and [playback API guide](docs/reprise-api.md) for current behavior and limitations.

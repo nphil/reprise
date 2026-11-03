@@ -16,6 +16,7 @@ services:
     environment:
       PUID: "99"
       PGID: "100"
+      TMP_FOLDER: "/config/tmp"
     volumes:
       - /path/to/reprise/config:/config:rw
       - /path/to/media:/media:ro

@@ -33,6 +33,18 @@ The container media mount target must match the local path in the configured pat
 
 The Unraid template in `unraid-templates/reprise.xml` pins the same accepted image digest as Compose. Configure an internal reverse proxy separately.
 
+## Plex and Sonarr/Radarr setup
+
+For review-only use, configure the Plex API connection, enable the intended libraries and map each Plex media prefix to a read-only mount inside Reprise. Refresh the TV library from Library to index episodes; this does not start analysis. Choose episodes explicitly and review the proposed ranges before approval. Keep Plex publication disabled unless separately authorized.
+
+The inherited Plex configuration validator also expects `PLEX_CONFIG_FOLDER` to name an existing container directory containing `Media/localhost`. Linux paths are case-sensitive: `/Plex` and `/plex` differ. For example, set the environment variable and the Plex server output folder to `/plex`, and expose only the real Plex `Media/localhost` subtree at `/plex/Media/localhost` read-only. A Plex database mount is not needed for API connections or native indexing. Generating legacy Plex preview thumbnails is different: it writes BIF files into that subtree and requires separately authorized write access.
+
+Sonarr/Radarr integration uses authenticated webhooks, not stored arr API clients in Reprise. Save connections to the canonical HTTPS Reprise `/api/webhooks/sonarr` and `/api/webhooks/radarr` endpoints, authenticate through the password/header field and test from each arr app. Configure the webhook path prefixes alongside the media path mappings. In review-only mode leave import/upgrade events and automatic analysis schedules off. A successful Test confirms connectivity but does not enable automation. These inherited import hooks do not trigger native Reprise analysis; see the [thumbnail workflow guide](docs/sonarr-radarr-preview-thumbnails.md) before enabling them.
+
+Use storage-backed scratch space with at least 1 GiB free: `TMP_FOLDER=/config/tmp` avoids the example's deliberately small `/tmp` tmpfs. Configuration validation creates the configured folder if needed. Python temporary files use the separate `TMPDIR` setting; to redirect those too, create the writable config-volume `tmp` directory with the application user's ownership before starting the container, then set `TMPDIR=/config/tmp`. Do not rely on changing this variable after Python has already selected its temporary directory.
+
+Known follow-on work is tracked separately: [GPU-assisted analysis](https://github.com/nphil/reprise/issues/1) and [consistent Reprise navigation across retained pages](https://github.com/nphil/reprise/issues/2). Neither is claimed as implemented.
+
 ## Optional GPU access on Unraid
 
 GPU visibility is separate from GPU acceleration. The accepted image detects NVIDIA and Intel devices, but its FFmpeg reports no hardware accelerators. The inherited preview pipeline has CUDA/VAAPI selection code; it cannot use those backends with this binary. Native intro/credits analysis currently uses software decoding and CPU comparisons, independently of preview worker selections. Passing GPUs through does not change that. Leave GPU workers disabled until a GPU-capable image and the relevant processing path have been verified.
