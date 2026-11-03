@@ -1198,50 +1198,73 @@ class PlexServer(MediaServer):
         # might contain hundreds of GB of bundles; we must NEVER risk
         # a stray write that misbehaves.
         plex_config_folder = str(getattr(self._config, "plex_config_folder", "") or "").strip()
+        # Preview thumbnails (BIF bundles, chapter thumbnails) are the only thing this app writes into the folder.
+        # With the switch off the folder is only read, so a read-only mount is the right setup, not a fault.
+        writes_thumbnails = self._server_config is None or self._server_config.preview_thumbnails_on
         folder_ok = True
         folder_current = "unset"
         folder_reason: str | None = None
         if plex_config_folder:
             exists = _os.path.isdir(plex_config_folder)
-            writable = exists and _os.access(plex_config_folder, _os.W_OK)
+            # Bundles land under Media/localhost, which is often its own (read-only) mount inside a folder that
+            # isn't one; probe where the files would go.
+            bundles_dir = _os.path.join(plex_config_folder, "Media", "localhost")
+            probe_dir = bundles_dir if _os.path.isdir(bundles_dir) else plex_config_folder
+            writable = exists and _os.access(probe_dir, _os.W_OK)
             if not exists:
                 folder_ok = False
                 folder_current = "missing"
                 folder_reason = f"{plex_config_folder!r} does not exist on this container. Verify the mount is correct."
             elif not writable:
-                folder_ok = False
                 folder_current = "read-only"
-                folder_reason = (
-                    f"{plex_config_folder!r} is not writable by this process. "
-                    "Check Docker mount (not :ro) and PUID/PGID permissions."
-                )
+                if writes_thumbnails:
+                    folder_ok = False
+                    folder_reason = (
+                        f"{probe_dir!r} is not writable by this process. "
+                        "Check Docker mount (not :ro) and PUID/PGID permissions."
+                    )
+                else:
+                    folder_reason = (
+                        "Read-only is correct: Reprise only reads here unless preview thumbnails are turned on."
+                    )
             else:
                 folder_current = "writable"
-        else:
+        elif writes_thumbnails:
             folder_ok = False
             folder_reason = "Plex config folder is not configured."
+        else:
+            folder_reason = "Not needed: Reprise only reads here unless preview thumbnails are turned on."
+        folder_severity = "critical" if not folder_ok else "info"
         sections.append(
             {
                 "id": "plex_config_folder",
                 "title": "Plex config folder",
                 "docs_anchor": "plex-config-folder",
                 "ok": folder_ok,
-                "severity": "critical" if not folder_ok else "info",
+                "severity": folder_severity,
                 "checks": [
                     {
                         "id": "config_folder_writable",
-                        "label": "Plex config folder is writable",
+                        "label": "Plex config folder is writable" if writes_thumbnails else "Plex config folder access",
                         "docs_anchor": "plex-config-folder",
-                        "tooltip": "Writable path where BIF bundles land",
+                        "tooltip": (
+                            "Writable path where BIF bundles land"
+                            if writes_thumbnails
+                            else "Read-only is fine: no preview thumbnails are written"
+                        ),
                         "explanation": (
                             "<p><strong>What it checks:</strong> the <em>Plex config folder</em> "
-                            "configured in the General tab exists on this container's filesystem "
-                            "AND is writable by the user this app runs as.</p>"
+                            "configured in the General tab exists on this container's filesystem. "
+                            "When this server writes preview thumbnails it must also be writable by "
+                            "the user this app runs as.</p>"
                             "<p><strong>Why it matters:</strong> BIF bundles (the preview files "
                             "Plex reads) land under <code>&lt;config&gt;/Media/localhost/...</code>. "
-                            "If the folder is missing, read-only, or mis-mounted, every publish "
-                            "fails silently — this app generates the previews but can't write "
-                            "them to disk.</p>"
+                            "If the folder is missing, read-only, or mis-mounted while preview "
+                            "thumbnails are on, every publish fails — this app generates the previews "
+                            "but can't write them to disk.</p>"
+                            "<p><strong>Review only:</strong> with <em>Write preview thumbnails into "
+                            "Plex</em> turned off for this server, nothing is written here. A read-only "
+                            "mount is then the recommended setup and shows as OK.</p>"
                             "<p><strong>How we probe:</strong> <code>os.access(folder, W_OK)</code> "
                             "only — pure read-only check; we never create, modify, or delete "
                             "anything under your Plex config folder.</p>"
@@ -1252,12 +1275,12 @@ class PlexServer(MediaServer):
                             "check here — fix via the Docker compose file or General tab.</p>"
                         ),
                         "ok": folder_ok,
-                        "severity": "critical" if not folder_ok else "info",
+                        "severity": folder_severity,
                         "current": folder_current,
-                        "recommended": "writable",
+                        "recommended": "writable" if writes_thumbnails else "read-only (review only)",
                         "actions": {},
                         "reason": folder_reason,
-                        "meta": {"path": plex_config_folder},
+                        "meta": {"path": plex_config_folder, "writes_thumbnails": writes_thumbnails},
                     }
                 ],
             }

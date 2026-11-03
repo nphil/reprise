@@ -1593,7 +1593,9 @@ class JellyfinServer(EmbyApiClient):
         )
         sections.extend(plugin_sections)
 
-        if off_media:
+        # With preview thumbnails off for this server nothing is written into the config dir, so its mount can be
+        # read-only (or absent) without being a fault.
+        if off_media and self._config.preview_thumbnails_on:
             sections.append(self._config_folder_section())
 
         library_section, library_section_ok = self._library_settings_section(folders, plugin_installed)

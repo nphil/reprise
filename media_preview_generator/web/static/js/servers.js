@@ -1774,6 +1774,9 @@
             || ['Follows this server’s configuration', 'Preview output follows this server’s configuration.'];
         previewOutput.textContent = previewText[0];
         previewOutput.title = previewText[1];
+        // Per-server switch: off = review only, nothing is written into the server (absent means on).
+        $('#editPreviewThumbnails').checked = (server.output || {}).preview_thumbnails !== false;
+        $('#editPreviewThumbnailsTarget').textContent = {plex: 'Plex', emby: 'Emby', jellyfin: 'Jellyfin'}[(server.type || '').toLowerCase()] || 'the server';
 
         // Jellyfin-only: "store trickplay off the media drive" toggle + the
         // config-folder field it reveals. Mirrors the Plex config-folder block.
@@ -2202,6 +2205,14 @@
                 save_with_media: !offMedia,
                 jellyfin_config_folder: ($('#editJellyfinConfigFolder').value || '').trim(),
             };
+        }
+
+        // Preview thumbnails switch: stored only when off, so servers saved before it existed stay on.
+        {
+            const output = {...(payload.output || server.output || {})};
+            if ($('#editPreviewThumbnails').checked) delete output.preview_thumbnails;
+            else output.preview_thumbnails = false;
+            payload.output = output;
         }
 
         // Plex: turning Intro & Credits on needs the database-write confirmation (asked when the switch was

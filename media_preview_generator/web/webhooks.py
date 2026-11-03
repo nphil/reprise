@@ -357,7 +357,8 @@ def _webhook_servers(path: str, pin: str | None) -> tuple[list, list[str]]:
 
 
 def _previews_wanted(path: str, pin: str | None) -> bool:
-    """Whether a webhook's file gets a preview job: Previews is on for a library that holds it.
+    """Whether a webhook's file gets a preview job: Previews is on for a library that holds it, on a server that
+    writes preview thumbnails.
 
     Args:
         path: The file path the webhook reported.
@@ -366,6 +367,7 @@ def _previews_wanted(path: str, pin: str | None) -> bool:
     from ..servers.ownership import find_owning_servers
 
     servers, candidates = _webhook_servers(path, pin)
+    servers = [cfg for cfg in servers if cfg.preview_thumbnails_on]
     return any(find_owning_servers(candidate, servers) for candidate in candidates)
 
 
@@ -376,6 +378,12 @@ def _why_no_job(path: str, pin: str | None) -> str:
 
     servers, candidates = _webhook_servers(path, pin)
     if any(find_library_matches(candidate, servers) for candidate in candidates):
+        if any(
+            not cfg.preview_thumbnails_on and find_library_matches(candidate, [cfg])
+            for cfg in servers
+            for candidate in candidates
+        ):
+            return "Preview thumbnails are off for its server, and Intro & Credits and loudness are off for its library"
         return "Previews, Intro & Credits and loudness are all off for its library"
     hint = _build_path_mapping_mismatch_hints([path], servers).get(path)
     return f"no library on your servers holds {path}" + (f". {hint}" if hint else "")

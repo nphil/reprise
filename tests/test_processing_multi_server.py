@@ -212,6 +212,64 @@ class TestPerServerExcludePaths:
         assert result.status is MultiServerStatus.NO_OWNERS
 
 
+class TestPreviewThumbnailsSwitch:
+    """``output.preview_thumbnails`` false: a server keeps its libraries but nothing is written to it."""
+
+    @staticmethod
+    def _plex(tmp_path, output_extra: dict) -> dict:
+        (tmp_path / "plex" / "Media" / "localhost").mkdir(parents=True)
+        return _server_config(
+            server_id="plex-1",
+            server_type=ServerType.PLEX,
+            libraries=[Library(id="1", name="Movies", remote_paths=(str(tmp_path / "movies"),), enabled=True)],
+            output={"adapter": "plex_bundle", "plex_config_folder": str(tmp_path / "plex"), **output_extra},
+        )
+
+    def test_a_file_only_a_switched_off_server_holds_is_skipped_without_generating_frames(
+        self, mock_config_for_processing, tmp_path, caplog
+    ):
+        media_file = _seed_canonical_file(tmp_path / "movies" / "Foo (2024)")
+        registry = ServerRegistry.from_settings([self._plex(tmp_path, {"preview_thumbnails": False})])
+
+        with patch("media_preview_generator.processing.multi_server.generate_images") as generate:
+            result = process_canonical_path(
+                canonical_path=str(media_file), registry=registry, config=mock_config_for_processing
+            )
+
+        generate.assert_not_called()
+        assert result.status is MultiServerStatus.NO_OWNERS
+        assert result.publishers == []
+        assert result.message == "Preview thumbnails are off for this server ('plex-1')"
+        assert not any((tmp_path / "plex").rglob("*.bif"))
+
+    def test_the_same_server_publishes_when_the_switch_is_absent(self, mock_config_for_processing, tmp_path):
+        media_file = _seed_canonical_file(tmp_path / "movies" / "Foo (2024)")
+        registry = ServerRegistry.from_settings([self._plex(tmp_path, {})])
+
+        from media_preview_generator.processing.multi_server import _resolve_publishers
+
+        publishers = _resolve_publishers(str(media_file), registry)
+        assert [(server.id, adapter.name) for server, adapter, _hint in publishers] == [("plex-1", "plex_bundle")]
+
+    def test_other_servers_still_publish_beside_a_switched_off_one(self, mock_config_for_processing, tmp_path):
+        media_file = _seed_canonical_file(tmp_path / "movies" / "Foo (2024)")
+        registry = ServerRegistry.from_settings(
+            [
+                self._plex(tmp_path, {"preview_thumbnails": False}),
+                _server_config(
+                    server_id="jellyfin-1",
+                    server_type=ServerType.JELLYFIN,
+                    libraries=[Library(id="2", name="Movies", remote_paths=(str(tmp_path / "movies"),), enabled=True)],
+                ),
+            ]
+        )
+
+        from media_preview_generator.processing.multi_server import _resolve_publishers
+
+        publishers = _resolve_publishers(str(media_file), registry)
+        assert [server.id for server, _adapter, _hint in publishers] == ["jellyfin-1"]
+
+
 class TestSiblingMountProbe:
     """D35: when Plex's indexed path is stale (file moved to a sibling
     disk after a post-import script), probe the other configured local

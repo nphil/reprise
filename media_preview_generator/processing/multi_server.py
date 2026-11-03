@@ -590,6 +590,26 @@ def _safe_remove(path: Path) -> bool:
         return False
 
 
+def _previews_off_note(canonical_path: str, registry: ServerRegistry, pin: str | Collection[str] | None) -> str | None:
+    """Plain sentence for a file that no server publishes because the servers holding it have preview thumbnails
+    off, or None when that is not why (no enabled library holds it, or one that does has them on).
+
+    Args:
+        canonical_path: The file being dispatched.
+        registry: The live server registry.
+        pin: The job's server pin (``server_id_filter``), or falsy for every server.
+    """
+    holders = [
+        cfg
+        for cfg in registry.configs()
+        if cfg.enabled and _pin_includes(pin, cfg.id) and find_library_matches(canonical_path, [cfg])
+    ]
+    if not holders or any(cfg.preview_thumbnails_on for cfg in holders):
+        return None
+    names = ", ".join(repr(cfg.name) for cfg in holders)
+    return f"Preview thumbnails are off for this server ({names})"
+
+
 def _resolve_publishers(
     canonical_path: str,
     registry: ServerRegistry,
@@ -662,6 +682,12 @@ def _resolve_publishers(
                 cfg.name,
                 cfg.id,
             )
+            continue
+
+        # The server's owner switched preview thumbnails off: it keeps its libraries (Intro & Credits, loudness and
+        # Reprise's catalogue use them) but nothing is written to it, chapter thumbnails included.
+        if not cfg.preview_thumbnails_on:
+            logger.debug("Preview thumbnails are off for {!r} ({}) — not writing any there", cfg.name, cfg.id)
             continue
 
         if emby_sizes is None:
@@ -1779,6 +1805,14 @@ def _process_canonical_path_previews(
                 message=f"Pinned server(s) {_pin_label(server_id_filter)} don't own this path",
             )
     if not publishers:
+        off_note = _previews_off_note(canonical_path, registry, server_id_filter)
+        if off_note:
+            logger.info("{} — nothing to write for {}.", off_note, canonical_path)
+            return MultiServerResult(
+                canonical_path=canonical_path,
+                status=MultiServerStatus.NO_OWNERS,
+                message=off_note,
+            )
         logger.info(
             "No owners: no configured server's enabled libraries cover {} — "
             "skipping (this is permanent until you add/enable a library)",

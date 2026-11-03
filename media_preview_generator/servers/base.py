@@ -827,3 +827,9 @@ class ServerConfig:
     markers: dict[str, Any] = field(default_factory=dict)
     # Plex loudness per-server block; validated by loudness.settings.validate_server_loudness.
     loudness: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def preview_thumbnails_on(self) -> bool:
+        """Whether preview jobs write thumbnails for this server: ``output.preview_thumbnails``, on unless it is
+        explicitly ``false`` (every server saved before the switch existed keeps writing)."""
+        return self.output.get("preview_thumbnails") is not False

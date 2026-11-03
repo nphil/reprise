@@ -189,7 +189,7 @@ class TestSubmitWebhookJobs:
             assert triggers.submit_webhook_jobs(paths=["/a.mkv"], source="sonarr", pin=None) == ["ld-1"]
 
 
-def _library_server(sid, *, previews, remote="/data/tv"):
+def _library_server(sid, *, previews, remote="/data/tv", output=None):
     return {
         "id": sid,
         "type": "jellyfin",
@@ -198,6 +198,7 @@ def _library_server(sid, *, previews, remote="/data/tv"):
         "url": "http://x",
         "auth": {"method": "api_key", "api_key": "k"},
         "libraries": [{"id": "1", "name": "TV", "remote_paths": [remote], "enabled": previews}],
+        "output": output or {},
     }
 
 
@@ -216,8 +217,30 @@ class TestPreviewsWanted:
             # No library holds the file: no preview job.
             ([_library_server("a", previews=True, remote="/other")], None, False),
             ([], None, False),
+            # The server's own preview-thumbnails switch: off means no preview job even with Previews on.
+            ([_library_server("a", previews=True, output={"preview_thumbnails": False})], None, False),
+            (
+                [
+                    _library_server("a", previews=True, output={"preview_thumbnails": False}),
+                    _library_server("b", previews=True),
+                ],
+                None,
+                True,
+            ),
+            ([_library_server("a", previews=True, output={"preview_thumbnails": True})], None, True),
         ],
-        ids=["on", "off", "off-and-on", "pinned-off", "pinned-on", "unknown-library", "no-servers"],
+        ids=[
+            "on",
+            "off",
+            "off-and-on",
+            "pinned-off",
+            "pinned-on",
+            "unknown-library",
+            "no-servers",
+            "thumbnails-off",
+            "thumbnails-off-beside-on",
+            "thumbnails-explicitly-on",
+        ],
     )
     def test_previews_wanted(self, servers, pin, wanted):
         from media_preview_generator.web.settings_manager import get_settings_manager
@@ -234,6 +257,15 @@ class TestWhyNoJob:
 
         get_settings_manager().set("media_servers", [_library_server("a", previews=False)])
         assert wh._why_no_job(self.PATH, None) == "Previews, Intro & Credits and loudness are all off for its library"
+
+    def test_a_server_with_preview_thumbnails_off_says_so(self):
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        get_settings_manager().set(
+            "media_servers", [_library_server("a", previews=False, output={"preview_thumbnails": False})]
+        )
+        reason = wh._why_no_job(self.PATH, None)
+        assert reason.startswith("Preview thumbnails are off for its server")
 
     def test_no_library_holds_the_file_and_the_path_mapping_hint_follows(self):
         from media_preview_generator.web.settings_manager import get_settings_manager

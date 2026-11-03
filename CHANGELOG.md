@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added a per-server "Write preview thumbnails" switch (`output.preview_thumbnails`, on unless set to `false`). With it off, preview jobs and webhooks skip that server with a plain note and the Plex health check shows a read-only config folder as correct ("read-only (review only)") instead of a critical "not writable" error; with it on, a read-only or missing folder is still critical. The check now probes `Media/localhost`, where the bundles land, when it exists, and Jellyfin's off-media config-folder check is skipped when the switch is off.
 - Fixed populated-library timeouts by checking playback identity and freshness only for the requested page, after filtering and deduplication.
 - Introduced Reprise's library-first workflow for indexing Plex libraries, reviewing evidence and editing, approving or locking keep and skip ranges. Keep ranges veto overlapping skips; eligible skips remain disjoint. Detection proposes decisions, not approvals, and uncertain or changed evidence requires review.
 - Added queued CPU-supported analysis, comparison previews and library refresh, with pause, resume and cancellation. Refresh and saved-result lookups do not implicitly start analysis. Conservative audio and video verification requires no GPU or language model.

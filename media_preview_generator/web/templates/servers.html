@@ -790,6 +790,15 @@
                             <h3 id="processingPreviewsTitle" class="sm-ph" tabindex="-1">Previews</h3>
                             <div class="sm-card"><div class="sm-card-b">
                                 <div class="sm-dl-row"><span class="sm-dl-k">Written to</span><span class="sm-dl-v" id="processingPreviewOutput"></span></div>
+                                <div class="sm-line">
+                                    <div>
+                                        <label class="sm-lab" for="editPreviewThumbnails">Write preview thumbnails into <span id="editPreviewThumbnailsTarget">Plex</span></label>
+                                        <div class="sm-hint" id="editPreviewThumbnailsHelp">Turn off for review only: nothing is written there, so a read-only mount is fine.</div>
+                                    </div>
+                                    <div class="form-check form-switch markers-switch mb-0">
+                                        <input class="form-check-input" type="checkbox" role="switch" id="editPreviewThumbnails" aria-describedby="editPreviewThumbnailsHelp">
+                                    </div>
+                                </div>
                                 <div class="sm-hint">Selected libraries receive scrubber previews. <a href="#edit-tab-libraries" class="processing-section-link" data-section="libraries">Choose libraries</a>. <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Where to choose libraries and edit quality." data-explain-title="Previews" data-explain-template="infoEditPreviewsTpl"><i class="bi bi-info-circle"></i></button>
 <template id="infoEditPreviewsTpl">
     <p>Selected libraries receive scrubber previews. <a href="#edit-tab-libraries" class="processing-section-link" data-section="libraries">Choose libraries</a> or <a href="{{ url_for('main.settings') }}#section-processing">edit shared quality and processing settings</a>.</p>

@@ -534,6 +534,12 @@ def _validate_server_payload(
     err = _validate_exclude_paths(exclude_paths or [])
     if err:
         return None, err
+    if (
+        isinstance(output, dict)
+        and "preview_thumbnails" in output
+        and not isinstance(output["preview_thumbnails"], bool)
+    ):
+        return None, "output.preview_thumbnails must be a boolean"
     if type_value == "plex":
         err = _validate_plex_output(output or {})
         if err:

@@ -8,6 +8,7 @@ delegate correctly and convert results to the new dataclass types.
 from __future__ import annotations
 
 import json
+import os
 import re
 from unittest.mock import MagicMock, patch
 
@@ -1509,6 +1510,89 @@ class TestPlexPreviewsReadiness:
         row = folder_section["checks"][0]
         assert "does not exist" in (row["reason"] or "")
         assert payload["overall_ok"] is False
+
+    def _folder_row(self, tmp_path, *, output: dict, read_only: bool = False, mkdirs: bool = True):
+        """Run the readiness check for a Plex entry whose config folder is ``tmp_path/plex``.
+
+        ``read_only`` makes ``Media/localhost`` unwritable the way a ``:ro`` bind mount does (we run as root here,
+        so ``chmod`` would not stop ``os.access``): ``os.access(dir, W_OK)`` answers False for exactly that path.
+        """
+        from media_preview_generator.servers.base import ServerConfig
+
+        folder = tmp_path / "plex"
+        if mkdirs:
+            (folder / "Media" / "localhost").mkdir(parents=True)
+        cfg = ServerConfig(
+            id="plex-1",
+            type=ServerType.PLEX,
+            name="Plex",
+            enabled=True,
+            url="http://plex:32400",
+            auth={"token": "t"},
+            output={"plex_config_folder": str(folder), **output},
+        )
+        server = PlexServer(cfg)
+        real_access = os.access
+        bundles = str(folder / "Media" / "localhost")
+
+        def access(path, mode, *args, **kwargs):
+            if read_only and str(path) == bundles and mode == os.W_OK:
+                return False
+            return real_access(path, mode, *args, **kwargs)
+
+        with (
+            patch.object(PlexServer, "test_connection") as tc,
+            patch("media_preview_generator.servers.plex.requests.get") as prefs_get,
+            patch.object(PlexServer, "get_vendor_extraction_status") as vs,
+            patch("os.access", side_effect=access),
+        ):
+            tc.return_value = ConnectionResult(ok=True, message="Connected")
+            prefs_get.return_value = self._prefs_response()
+            vs.return_value = {"extracting_count": 0, "stopped_count": 0, "skipped_count": 0, "total": 0}
+            payload = server.previews_readiness()
+        section = next(s for s in payload["sections"] if s["id"] == "plex_config_folder")
+        return section, section["checks"][0]
+
+    def test_read_only_folder_is_fine_when_preview_thumbnails_are_off(self, tmp_path):
+        """Review-only setup: nothing is written into the Plex folder, so a read-only mount is the right one."""
+        section, row = self._folder_row(tmp_path, output={"preview_thumbnails": False}, read_only=True)
+        assert row["id"] == "config_folder_writable"
+        assert (row["ok"], row["severity"], row["current"]) == (True, "info", "read-only")
+        assert row["recommended"] == "read-only (review only)"
+        assert row["reason"] == "Read-only is correct: Reprise only reads here unless preview thumbnails are turned on."
+        assert (section["ok"], section["severity"]) == (True, "info")
+
+    def test_read_only_folder_stays_critical_when_preview_thumbnails_are_on(self, tmp_path):
+        """The switch absent means on (every server saved before it existed): a read-only mount fails publishing."""
+        for name, output in (("absent", {}), ("explicit", {"preview_thumbnails": True})):
+            section, row = self._folder_row(tmp_path / name, output=output, read_only=True)
+            assert (row["ok"], row["severity"], row["current"]) == (False, "critical", "read-only")
+            assert row["recommended"] == "writable"
+            assert "is not writable by this process" in row["reason"]
+            assert (section["ok"], section["severity"]) == (False, "critical")
+
+    def test_read_only_bundles_mount_inside_a_writable_folder_is_caught_when_thumbnails_are_on(self, tmp_path):
+        """Bundles land in Media/localhost; a writable parent does not help when that mount is read-only."""
+        bundles = tmp_path / "plex" / "Media" / "localhost"
+        _section, row = self._folder_row(tmp_path, output={}, read_only=True)
+        assert row["ok"] is False
+        assert row["meta"]["path"] == str(tmp_path / "plex")
+        assert str(bundles) in row["reason"]
+
+    def test_writable_folder_is_ok_with_thumbnails_on(self, tmp_path):
+        _section, row = self._folder_row(tmp_path, output={})
+        assert (row["ok"], row["severity"], row["current"], row["recommended"]) == (
+            True,
+            "info",
+            "writable",
+            "writable",
+        )
+
+    def test_missing_folder_is_critical_even_with_thumbnails_off(self, tmp_path):
+        section, row = self._folder_row(tmp_path, output={"preview_thumbnails": False}, mkdirs=False)
+        assert (row["ok"], row["severity"], row["current"]) == (False, "critical", "missing")
+        assert "does not exist" in row["reason"]
+        assert section["severity"] == "critical"
 
     def test_misset_prefs_emit_actionable_rows(self, plex_wrapper, tmp_path):
         """Matrix coverage: walk the ok=False branch. When an FSEvent

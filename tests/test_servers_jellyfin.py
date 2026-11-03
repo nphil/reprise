@@ -2844,6 +2844,23 @@ class TestOffMediaReadiness:
         assert check["ok"] is True
         assert check["current"] == "writable"
 
+    def test_missing_config_folder_is_not_a_fault_when_preview_thumbnails_are_off(self, tmp_path):
+        """Nothing is written into Jellyfin's config dir with the switch off, so its mount can be absent."""
+        missing = tmp_path / "not-mounted"
+        output = {"save_with_media": False, "jellyfin_config_folder": str(missing)}
+        results = {}
+        for label, extra in (("off", {"preview_thumbnails": False}), ("on", {})):
+            jelly = JellyfinServer(_jelly_config(output={**output, **extra}))
+            with patch.object(
+                JellyfinServer, "_request", side_effect=self._wire(config_folder=str(missing), plugin_ok=True)
+            ):
+                payload = jelly.previews_readiness()
+            results[label] = self._find_check(payload, "config_folder_writable")[1]
+        assert results["off"] is None
+        assert results["on"] is not None
+        assert results["on"]["ok"] is False
+        assert results["on"]["current"] == "missing"
+
     def test_config_folder_wrong_folder_is_critical(self, tmp_path):
         """Exists + writable but NOT a Jellyfin config dir (no data/, plugins/,
         config/) — e.g. the user pointed it at a media folder or one level too

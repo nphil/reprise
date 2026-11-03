@@ -75,6 +75,57 @@ class TestChapterThumbnailSettings:
         assert _read_media_servers()[0]["output"].get("chapter_thumbnails", False) is False
 
 
+class TestPreviewThumbnailsSetting:
+    def _seed(self):
+        _seed_media_servers(
+            [
+                {
+                    "id": "plex-review",
+                    "type": "plex",
+                    "name": "Plex",
+                    "enabled": True,
+                    "url": "http://plex:32400",
+                    "auth": {"token": "test-token"},
+                    "output": {"frame_interval": 10},
+                }
+            ]
+        )
+
+    def test_switching_off_round_trips_and_leaves_other_output_alone(self, client, auth_headers):
+        self._seed()
+
+        response = client.put(
+            "/api/servers/plex-review",
+            headers=auth_headers,
+            json={"output": {"frame_interval": 10, "preview_thumbnails": False}},
+        )
+
+        assert response.status_code == 200
+        assert _read_media_servers()[0]["output"] == {"frame_interval": 10, "preview_thumbnails": False}
+        public = client.get("/api/servers", headers=auth_headers).get_json()["servers"][0]
+        assert public["output"]["preview_thumbnails"] is False
+
+    @pytest.mark.parametrize("invalid", ["false", 0, 1, None, [], {}])
+    def test_non_boolean_is_rejected(self, client, auth_headers, invalid):
+        self._seed()
+
+        response = client.put(
+            "/api/servers/plex-review", headers=auth_headers, json={"output": {"preview_thumbnails": invalid}}
+        )
+
+        assert response.status_code == 400
+        assert response.get_json()["error"] == "output.preview_thumbnails must be a boolean"
+        assert "preview_thumbnails" not in _read_media_servers()[0]["output"]
+
+    def test_an_unrelated_save_keeps_a_server_without_the_key_on(self, client, auth_headers):
+        self._seed()
+
+        response = client.put("/api/servers/plex-review", headers=auth_headers, json={"name": "Renamed"})
+
+        assert response.status_code == 200
+        assert "preview_thumbnails" not in _read_media_servers()[0]["output"]
+
+
 class TestListServers:
     def test_empty_when_no_servers_configured(self, client, auth_headers):
         response = client.get("/api/servers", headers=auth_headers)
