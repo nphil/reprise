@@ -12,7 +12,7 @@ from media_preview_generator.markers.store import MarkerStore
 from media_preview_generator.reprise import service as service_module
 from media_preview_generator.reprise.admission import admit_references
 from media_preview_generator.reprise.analysis import NO_OTHER_EPISODES, OTHER_EPISODES_NOT_READY, UNCOMPARABLE_MEDIA
-from media_preview_generator.reprise.identity import media_version
+from media_preview_generator.reprise.identity import is_current, media_version
 from media_preview_generator.reprise.models import (
     AnalysisDraft,
     AnalysisRefused,
@@ -575,6 +575,24 @@ def test_refreshing_after_a_permission_change_keeps_the_same_version_and_its_res
     service.store.register_media(again, identity, server_id="server", metadata=metadata)  # what a refresh does
     assert service.store.get_result(target.id) == before
     assert service.lookup(identity)["freshness"] == "current"
+
+
+def test_a_new_device_number_or_inode_does_not_make_an_episode_stale_but_a_new_size_or_time_does(lifecycle):
+    """What a reboot of the user-share mount (device) or a mover pass (inode) leaves behind in the stored identity."""
+    service, register = lifecycle
+    target, identity = register("target", "episode-1")
+    queued_analysis(service, target)
+    before = service.store.get_result(target.id)
+    drifted = replace(target, device=target.device + 1, inode=target.inode + 1)
+    metadata = service.store.get_bindings(target.id)[0][2]
+    service.store.register_media(drifted, identity, server_id="server", metadata=metadata)  # what a refresh does
+    assert media_version(target.canonical_path, target.duration_ms, target.stream_signature).id == target.id
+    assert service.store.get_result(target.id) == before
+    assert service.lookup(identity)["freshness"] == "current"
+    service.open_stream(target.id)[0].close()
+    assert is_current(replace(target, device=None, inode=None))
+    assert not is_current(replace(target, size_bytes=target.size_bytes + 1))
+    assert not is_current(replace(target, mtime_ns=target.mtime_ns + 1))
 
 
 PLEX_MARKERS = [

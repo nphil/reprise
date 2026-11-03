@@ -44,8 +44,9 @@ def _id():
 
 
 def _generation(version_data):
-    """What makes a version the version its ID names: everything but the change time, which moves without the content."""
-    return {key: value for key, value in version_data.items() if key != "ctime_ns"}
+    """What makes a version the version its ID names: everything but the change time, device number and inode,
+    which move without the content (a permissions or mover pass, a reboot of the user-share mount)."""
+    return {key: value for key, value in version_data.items() if key not in ("ctime_ns", "device", "inode")}
 
 
 def _range(data):

@@ -1,9 +1,11 @@
 """File generation identity. Stat identity is explicitly not a content digest.
 
-The change time (ctime) is recorded but is not part of a generation. Permission changes, hard links, a
-mover pass or deleting the seeding copy of a hard-linked file all move it without touching the content,
-and with it in the identity one such pass could turn nearly a whole library "stale". A real replacement
-changes the size, modification time or inode, and those still start a new generation.
+A generation is the file's path, size, modification time, duration and stream layout. The change time
+(ctime), device number and inode are recorded but are not part of it: a permissions, hard-link or mover
+pass moves the change time, Unraid's user-share mount comes back from a reboot with a new device number
+(every file in one library read as "changed" after one), and its mover gives a file moved between the
+cache and the array a new inode, all without touching the content. A real replacement or edit changes
+the size or the modification time, and those still start a new generation.
 """
 
 import hashlib
@@ -23,8 +25,6 @@ def media_version(path: str, duration_ms: int, stream_signature: str, *, digest:
         path,
         st.st_size,
         st.st_mtime_ns,
-        st.st_dev,
-        st.st_ino,
         duration_ms,
         stream_signature,
         ["sha256", digest] if digest else ["stat-only", None],
@@ -48,12 +48,18 @@ def media_version(path: str, duration_ms: int, stream_signature: str, *, digest:
 def is_current(version: MediaVersion) -> bool:
     try:
         st = os.stat(version.canonical_path)
-        return (
-            version.device is not None
-            and version.inode is not None
-            and os.path.realpath(version.canonical_path) == version.canonical_path
-            and (st.st_size, st.st_mtime_ns, st.st_dev, st.st_ino)
-            == (version.size_bytes, version.mtime_ns, version.device, version.inode)
-        )
+        return os.path.realpath(version.canonical_path) == version.canonical_path and (
+            st.st_size,
+            st.st_mtime_ns,
+        ) == (version.size_bytes, version.mtime_ns)
+    except OSError:
+        return False
+
+
+def same_file(left: MediaVersion, right: MediaVersion) -> bool:
+    """Whether two current versions are one file on disk right now (a hard link, or the same path twice): the live
+    device and inode, compared at the same moment, since the recorded ones may predate a reboot or a mover pass."""
+    try:
+        return os.path.samefile(left.canonical_path, right.canonical_path)
     except OSError:
         return False

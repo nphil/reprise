@@ -279,7 +279,7 @@ def test_actual_vfr_video_preserves_short_visual_change(tmp_path, catalog):
     assert not overlaps(2420, 2640, skips(result))  # actual VFR presentation support of changed frames
 
 
-def test_inode_mismatch_rejected(tmp_path):
+def test_only_a_new_size_or_modification_time_makes_a_version_stale(tmp_path):
     from dataclasses import replace
 
     from media_preview_generator.reprise.media import DecodeError, check_current
@@ -288,8 +288,13 @@ def test_inode_mismatch_rejected(tmp_path):
     path.write_bytes(b"example")
     version = media_version(str(path), 1000, "{}")
     check_current(version)
-    with pytest.raises(DecodeError):
-        check_current(replace(version, inode=version.inode + 1))
+    check_current(replace(version, inode=version.inode + 1, device=version.device + 1))  # a mover pass, a reboot
+    for changed in (
+        replace(version, size_bytes=version.size_bytes + 1),
+        replace(version, mtime_ns=version.mtime_ns + 1),
+    ):
+        with pytest.raises(DecodeError):
+            check_current(changed)
 
 
 def test_duplicate_candidates_have_unique_store_keys(tmp_path, catalog):

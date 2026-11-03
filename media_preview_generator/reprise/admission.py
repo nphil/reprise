@@ -6,7 +6,7 @@ import hashlib
 import json
 from dataclasses import asdict
 
-from .identity import is_current
+from .identity import is_current, same_file
 from .verification_profile import ADMISSION_REVISION as _ADMISSION_REVISION
 from .verification_profile import PROFILE_SPEC
 
@@ -38,12 +38,7 @@ def _episode(bindings):
 
 def pair_provenance(target, target_bindings, reference, reference_bindings):
     """Hash all active provenance only when the two current files prove different episodes."""
-    if (
-        target.id == reference.id
-        or not is_current(target)
-        or not is_current(reference)
-        or (target.device, target.inode) == (reference.device, reference.inode)
-    ):
+    if target.id == reference.id or not is_current(target) or not is_current(reference) or same_file(target, reference):
         return None
     left, right = _episode(target_bindings), _episode(reference_bindings)
     if not left or not right or left[:3] != right[:3] or left[3] == right[3]:
