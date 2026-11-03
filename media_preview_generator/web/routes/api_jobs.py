@@ -7,20 +7,13 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
 
-from flask import Response, current_app, jsonify, request, session
+from flask import Response, current_app, jsonify, request
 from loguru import logger
 
 from ...config import MAX_CPU_THREADS
 from ...job_kinds import JOB_KIND_INTRO_CREDITS, JOB_KINDS
 from ...scan_filters import FILTER_CONFIG_KEYS, normalize_scan_filter_config
-from ..auth import (
-    api_token_required,
-    get_auth_method,
-    is_authenticated,
-    regenerate_token,
-    start_signed_in_session,
-    validate_token,
-)
+from ..auth import api_token_required
 from ..jobs import (
     PAUSED_BY_SCHEDULE,
     PRIORITY_NORMAL,
@@ -188,96 +181,6 @@ def _infer_server_from_library_ids(
         if sid != first[0]:
             return None, None, None
     return first
-
-
-@api.route("/auth/status")
-def auth_status():
-    """Check authentication status and auth method."""
-    return jsonify(
-        {
-            "authenticated": is_authenticated(),
-            "auth_method": get_auth_method(),
-        }
-    )
-
-
-@api.route("/auth/login", methods=["POST"])
-@limiter.limit("10 per minute")
-def api_login():
-    """API login endpoint. Rate limited to 10 requests per minute."""
-    data = _json_object()
-    token = data.get("token", "")
-
-    if isinstance(token, str) and validate_token(token):
-        start_signed_in_session()
-        return jsonify({"success": True})
-
-    return jsonify({"success": False, "error": "Invalid token"}), 401
-
-
-@api.route("/auth/logout", methods=["POST"])
-def api_logout():
-    """API logout endpoint."""
-    session.clear()
-    return jsonify({"success": True})
-
-
-@api.route("/token/regenerate", methods=["POST"])
-@api_token_required
-def api_regenerate_token():
-    """Regenerate authentication token."""
-    new_token = regenerate_token()
-    session.clear()
-    masked = "****" + new_token[-4:] if len(new_token) > 4 else "****"
-    return jsonify({"success": True, "token": masked})
-
-
-@api.route("/token/set", methods=["POST"])
-@api_token_required
-def api_set_token():
-    """Set a custom authentication token (post-setup).
-
-    Requires the existing valid token in ``X-Auth-Token`` (enforced by
-    ``@api_token_required``) so a passive observer can't take over the app
-    by hitting this endpoint. Body shape mirrors the setup endpoint:
-    ``{token, confirm_token}``. Validates length >=8 and rejects when
-    ``WEB_AUTH_TOKEN`` env var is set (env always wins; tell the user to
-    remove it first).
-
-    On success the session is cleared so all open browser tabs land on the
-    login page and have to re-enter the new token — same behaviour as
-    /api/token/regenerate.
-    """
-    from ..auth import is_token_env_controlled, set_auth_token
-
-    if is_token_env_controlled():
-        return jsonify(
-            {
-                "success": False,
-                "error": (
-                    "The token is currently set by the WEB_AUTH_TOKEN environment variable. "
-                    "Remove that variable from your docker-compose / docker run command and restart "
-                    "the container before setting a custom token from the UI."
-                ),
-            }
-        ), 409
-
-    data = _json_object()
-    new_token = str(data.get("token") or "").strip()
-    confirm_token = str(data.get("confirm_token") or "").strip()
-
-    if not new_token:
-        return jsonify({"success": False, "error": "Token is required."}), 400
-    if new_token != confirm_token:
-        return jsonify({"success": False, "error": "Tokens do not match."}), 400
-
-    result = set_auth_token(new_token)
-    if not result.get("success"):
-        return jsonify(result), 400
-
-    session.clear()
-    masked = "****" + new_token[-4:] if len(new_token) > 4 else "****"
-    return jsonify({"success": True, "token": masked})
 
 
 # ============================================================================

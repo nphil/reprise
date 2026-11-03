@@ -1,0 +1,62 @@
+/* The first-run tour. Tokens: reprise-tokens.css; buttons, chips, timeline and legend: reprise.css (the diagrams are the
+   Library page's own parts, with example values). */
+.tour{box-sizing:border-box;width:min(620px,calc(100vw - 24px));max-width:none;max-height:calc(100dvh - 24px);margin:auto;padding:0;overflow:hidden;
+  background:var(--lu-sheet);color:var(--lu-ink);border:1px solid var(--lu-edge);border-radius:var(--lu-radius-card)}
+.tour[open]{display:flex;animation:tour-in .2s cubic-bezier(.22,1,.36,1)}
+.tour::backdrop{background:var(--lu-scrim);animation:tour-fade .2s ease-out}
+html:has(.tour[open]){overflow:hidden}
+.tour ::selection{background:var(--lu-accent);color:var(--lu-accent-ink)}
+.tour input[type=checkbox]{accent-color:var(--lu-accent)}
+.tour .tour-frame{display:flex;flex-direction:column;width:100%;max-width:none;min-height:0;margin:0;padding:0}
+
+.tour-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 12px 0 24px}
+.tour-progress{display:grid;gap:8px;min-width:0}
+.reprise .tour-count{color:var(--lu-ink-2);font-size:13.5px;font-weight:700;font-variant-numeric:tabular-nums}
+.tour-dots{display:flex;gap:6px;margin:0;padding:0;list-style:none}
+.tour-dots li{width:28px;height:4px;border-radius:var(--lu-radius-pill);background:var(--lu-edge-soft);transition:background-color .2s ease-out}
+.tour-dots li.done{background:color-mix(in srgb,var(--lu-accent) 55%,transparent)}
+.tour-dots li.now{background:var(--lu-accent)}
+
+/* One minimum height for every step, so the card does not jump in size as you move between them. */
+.tour-body{flex:1 1 auto;min-height:min(330px,46dvh);overflow-y:auto;overscroll-behavior:contain;padding:20px 24px 12px}
+.tour-step{display:grid;gap:14px;animation:tour-step .2s ease-out}
+.reprise .tour-title{font-size:26px;font-weight:800;letter-spacing:-.02em;line-height:1.15;text-wrap:balance}
+.tour-step p{max-width:62ch;text-wrap:pretty}
+.reprise .tour-step p:not(.rp-note){color:var(--lu-ink);font-size:16px;line-height:1.55}
+.tour-step b{font-weight:750}
+.tour-aside{font-size:14px}
+.tour-figure{display:grid;gap:10px;margin:2px 0 0}
+.tour-figure .rp-timeline{margin:0}
+.tour-figure figcaption{margin:0}
+.tour-demo{grid-auto-flow:column;justify-content:start;align-items:center;gap:14px;padding:16px;background:var(--lu-canvas);border:1px solid var(--lu-edge-soft);border-radius:var(--lu-radius-control)}
+.tour-demo .rp-btn{cursor:default}
+.tour-demo .rp-toggle{cursor:default;min-height:0}
+
+/* Example sections: name, time, decision */
+.tour-ranges{display:grid;margin:0;padding:0;list-style:none;border-top:1px solid var(--lu-edge-soft)}
+.tour-ranges li{display:flex;flex-wrap:wrap;align-items:center;gap:4px 14px;min-height:var(--lu-target);padding:8px 2px;border-bottom:1px solid var(--lu-edge-soft)}
+.tour-range-name{font-weight:750}
+.tour-range-time{color:var(--lu-ink-2);font-size:14px;font-variant-numeric:tabular-nums}
+.tour-ranges .rp-chip{margin-left:auto}
+
+.reprise .tour-error{margin:0 24px 8px;padding:10px 14px;border:1px solid var(--lu-danger);border-radius:var(--lu-radius-control);color:var(--lu-danger);font-size:14px}
+.tour-foot{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 12px;padding:12px 12px 16px 12px;border-top:1px solid var(--lu-edge-soft)}
+.tour-foot .rp-actions{flex-wrap:nowrap;margin-left:auto}
+
+@keyframes tour-in{from{opacity:0;transform:translateY(10px) scale(.985)}}
+@keyframes tour-fade{from{opacity:0}}
+@keyframes tour-step{from{opacity:0;transform:translateY(6px)}}
+
+@media (max-width:575.98px){
+  .tour{width:calc(100vw - 16px);max-height:calc(100dvh - 16px)}
+  .tour-head{padding:8px 8px 0 18px}
+  .tour-body{padding:16px 18px 8px}
+  .reprise .tour-title{font-size:23px}
+  .reprise .tour-error{margin:0 18px 8px}
+  .tour-foot{padding:10px 8px 12px}
+  .tour-demo{grid-auto-flow:row;justify-items:start}
+}
+@media (prefers-reduced-motion:reduce){
+  .tour[open],.tour::backdrop,.tour-step{animation:none}
+  .tour-dots li{transition:none}
+}

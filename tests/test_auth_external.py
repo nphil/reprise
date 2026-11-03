@@ -11,6 +11,7 @@ from media_preview_generator.web.auth import (
     is_auth_external,
 )
 from media_preview_generator.web.settings_manager import get_settings_manager
+from tests.auth_helpers import ensure_owner_account, sign_in
 
 
 class TestGetAuthMethod:
@@ -100,12 +101,13 @@ class TestExternalAuthRouteBehavior:
         assert response.status_code == 200
 
     def test_api_auth_status_reports_external(self, client):
-        """GET /api/auth/status should report auth_method='external'."""
+        """GET /api/auth/status should report auth_method='external' and never ask for a first-run account."""
         response = client.get("/api/auth/status")
         assert response.status_code == 200
         data = response.get_json()
         assert data["authenticated"] is True
         assert data["auth_method"] == "external"
+        assert data["setup_required"] is False
 
     def test_login_page_redirects_to_dashboard(self, client):
         """GET /login should redirect to dashboard when external auth is active."""
@@ -118,26 +120,34 @@ class TestExternalAuthRouteBehavior:
 
 
 class TestInternalAuthUnchanged:
-    """Verify default (internal) auth still requires tokens."""
+    """Verify default (internal) auth still requires a signed-in browser or the webhook secret."""
 
     @pytest.fixture(autouse=True)
     def _set_internal(self, monkeypatch):
         monkeypatch.setenv("AUTH_METHOD", "internal")
 
     def test_api_jobs_requires_auth(self, client):
-        """GET /api/jobs should return 401 without token."""
+        """GET /api/jobs should return 401 without credentials."""
         settings = get_settings_manager()
         settings.set("setup_complete", True)
 
         response = client.get("/api/jobs")
         assert response.status_code == 401
 
-    def test_api_jobs_with_token_succeeds(self, client, auth_headers):
-        """GET /api/jobs should succeed with valid token."""
+    def test_api_jobs_with_the_webhook_secret_succeeds(self, client, auth_headers):
+        """GET /api/jobs should succeed with the webhook secret as the script header."""
         settings = get_settings_manager()
         settings.set("setup_complete", True)
 
         response = client.get("/api/jobs", headers=auth_headers)
+        assert response.status_code == 200
+
+    def test_api_jobs_with_a_signed_in_browser_succeeds(self, client):
+        """GET /api/jobs should succeed for a browser signed in as the owner."""
+        settings = get_settings_manager()
+        settings.set("setup_complete", True)
+
+        response = sign_in(client).get("/api/jobs")
         assert response.status_code == 200
 
     def test_api_auth_status_reports_internal(self, client):
@@ -145,6 +155,14 @@ class TestInternalAuthUnchanged:
         response = client.get("/api/auth/status")
         data = response.get_json()
         assert data["auth_method"] == "internal"
+
+    def test_api_auth_status_says_setup_is_required_until_the_owner_account_exists(self, client):
+        """No account yet: the first-run page is still ahead. Once the account exists it is closed."""
+        assert client.get("/api/auth/status").get_json()["setup_required"] is True
+
+        ensure_owner_account()
+
+        assert client.get("/api/auth/status").get_json()["setup_required"] is False
 
 
 class TestWebhookAuthNotBypassed:
@@ -154,8 +172,8 @@ class TestWebhookAuthNotBypassed:
     def _set_external(self, monkeypatch):
         monkeypatch.setenv("AUTH_METHOD", "external")
 
-    def test_radarr_webhook_requires_token(self, client):
-        """POST /api/webhooks/radarr still requires webhook token when external."""
+    def test_radarr_webhook_requires_the_webhook_secret(self, client):
+        """POST /api/webhooks/radarr still requires the webhook secret when external."""
         response = client.post(
             "/api/webhooks/radarr",
             data=json.dumps({"eventType": "Test"}),
@@ -163,8 +181,8 @@ class TestWebhookAuthNotBypassed:
         )
         assert response.status_code == 401
 
-    def test_sonarr_webhook_requires_token(self, client):
-        """POST /api/webhooks/sonarr still requires webhook token when external."""
+    def test_sonarr_webhook_requires_the_webhook_secret(self, client):
+        """POST /api/webhooks/sonarr still requires the webhook secret when external."""
         response = client.post(
             "/api/webhooks/sonarr",
             data=json.dumps({"eventType": "Test"}),
@@ -196,8 +214,8 @@ class TestWebhookAuthNotBypassed:
             f"got {response.status_code} (a 500 indicates a crash, not a security boundary)"
         )
 
-    def test_radarr_webhook_succeeds_with_valid_token(self, client, auth_headers):
-        """POST /api/webhooks/radarr succeeds with valid token even when external."""
+    def test_radarr_webhook_succeeds_with_the_webhook_secret(self, client, auth_headers):
+        """POST /api/webhooks/radarr succeeds with the webhook secret even when external."""
         response = client.post(
             "/api/webhooks/radarr",
             data=json.dumps({"eventType": "Test"}),
@@ -211,7 +229,7 @@ class TestExternalAuthReenableInternal:
     """Test that unsetting AUTH_METHOD re-enables internal auth."""
 
     def test_switch_from_external_to_internal(self, client, monkeypatch):
-        """Removing AUTH_METHOD should require tokens again."""
+        """Removing AUTH_METHOD should require credentials again."""
         settings = get_settings_manager()
         settings.set("setup_complete", True)
 
@@ -223,20 +241,16 @@ class TestExternalAuthReenableInternal:
         response = client.get("/api/jobs")
         assert response.status_code == 401
 
+    def test_switch_from_external_to_internal_with_no_account_asks_for_one(self, client, monkeypatch):
+        """No account was ever made behind the proxy: the pages go to the first-run page, not a sign-in page."""
+        settings = get_settings_manager()
+        settings.set("setup_complete", True)
 
-class TestTokenInfoIncludesAuthMethod:
-    """Test that get_token_info() includes auth_method field."""
-
-    def test_token_info_internal(self, mock_auth_config, monkeypatch):
-        monkeypatch.setenv("AUTH_METHOD", "internal")
-        from media_preview_generator.web.auth import get_token_info
-
-        info = get_token_info()
-        assert info["auth_method"] == "internal"
-
-    def test_token_info_external(self, mock_auth_config, monkeypatch):
         monkeypatch.setenv("AUTH_METHOD", "external")
-        from media_preview_generator.web.auth import get_token_info
+        assert client.get("/reprise").status_code == 200
 
-        info = get_token_info()
-        assert info["auth_method"] == "external"
+        monkeypatch.setenv("AUTH_METHOD", "internal")
+        response = client.get("/reprise", follow_redirects=False)
+
+        assert response.status_code == 302
+        assert response.headers["Location"].endswith("/welcome")

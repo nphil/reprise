@@ -10,11 +10,25 @@ from dataclasses import asdict, replace
 
 from .admission import pair_provenance
 from .identity import is_current
-from .models import AnalysisResult, ClientPrincipal, DecisionRange, Evidence, MediaVersion, PlaybackIdentity
+from .models import (
+    ORIGIN_PLEX,
+    AnalysisResult,
+    ClientPrincipal,
+    DecisionRange,
+    Evidence,
+    MediaVersion,
+    PlaybackIdentity,
+    ReviewRefused,
+)
 from .verification_profile import POLICY_VERSION, is_current_profile
 
 DEFAULT_SCOPES = ("results:read", "jobs:read")
 ALLOWED_SCOPES = frozenset((*DEFAULT_SCOPES, "analysis:request"))
+# A review key, not stored: the client's deliberate "yes" to approving a range Plex suggested and Reprise did not confirm.
+PLEX_ACKNOWLEDGMENT = "acknowledge_plex_suggestion"
+PLEX_NEEDS_ACKNOWLEDGMENT = (
+    "A range Plex suggested needs a deliberate approval: send acknowledge_plex_suggestion: true with that range."
+)
 
 
 class RevisionConflict(Exception):
@@ -29,6 +43,11 @@ def _id():
     return uuid.uuid4().hex
 
 
+def _generation(version_data):
+    """What makes a version the version its ID names: everything but the change time, which moves without the content."""
+    return {key: value for key, value in version_data.items() if key != "ctime_ns"}
+
+
 def _range(data):
     data = dict(data)
     data["evidence_ids"] = tuple(data["evidence_ids"])
@@ -41,7 +60,7 @@ def _validate_range(r, duration):
         r.kind not in ("intro", "credits", "recap", "preview")
         or r.action not in ("skip", "keep")
         or r.review_status not in ("proposed", "approved", "rejected")
-        or r.origin not in ("manual", "detector")
+        or r.origin not in ("manual", "detector", ORIGIN_PLEX)
         or type(r.start_ms) is not int
         or type(r.end_ms) is not int
         or not 0 <= r.start_ms < r.end_ms <= duration
@@ -119,7 +138,7 @@ class RepriseStore:
         binding = (identity.plex_machine_identifier, identity.rating_key, identity.media_id, identity.part_id)
         with self.transaction() as c:
             old = c.execute("SELECT data FROM reprise_media_versions WHERE id=?", (version.id,)).fetchone()
-            if old and old["data"] != _json(asdict(version)):
+            if old and _generation(json.loads(old["data"])) != _generation(asdict(version)):
                 raise ValueError("media version IDs are immutable")
             c.execute("INSERT OR IGNORE INTO reprise_media_versions VALUES (?,?)", (version.id, _json(asdict(version))))
             prior = c.execute(
@@ -353,8 +372,8 @@ class RepriseStore:
                 )
         return run
 
-    def finish_analysis(self, analysis_id, evidence, ranges, expected_media_version):
-        evidence, ranges = tuple(evidence), tuple(ranges)
+    def finish_analysis(self, analysis_id, evidence, ranges, expected_media_version, reasons=()):
+        evidence, ranges, reasons = tuple(evidence), tuple(ranges), list(reasons)
         with self.transaction() as c:
             run = c.execute("SELECT * FROM reprise_analysis_runs WHERE id=?", (analysis_id,)).fetchone()
             if not run or run["status"] != "running" or run["version_id"] != expected_media_version:
@@ -384,7 +403,7 @@ class RepriseStore:
                     raise ValueError("invalid evidence range")
             for r in ranges:
                 _validate_range(r, duration)
-                if r.review_status != "proposed" or r.origin != "detector" or r.locked:
+                if r.review_status != "proposed" or r.origin not in ("detector", ORIGIN_PLEX) or r.locked:
                     raise ValueError("analysis produces proposals only")
             previous = self._result(c, expected_media_version)
             if not previous or previous.analysis_id != analysis_id or previous.analysis_status != "running":
@@ -403,7 +422,7 @@ class RepriseStore:
                         }
                     )
                     for r in items
-                    if r.origin == "detector"
+                    if r.origin in ("detector", ORIGIN_PLEX)
                 )
 
             baseline = tuple(
@@ -424,7 +443,7 @@ class RepriseStore:
             if same:
                 c.execute(
                     "UPDATE reprise_decision_results SET status=?,analysis_id=?,reasons=? WHERE version_id=?",
-                    ("complete", analysis_id, "[]", expected_media_version),
+                    ("complete", analysis_id, _json(reasons), expected_media_version),
                 )
             else:
                 override_ids = {
@@ -465,19 +484,32 @@ class RepriseStore:
                 revision = (previous.result_revision if previous else 0) + 1
                 c.execute(
                     "UPDATE reprise_decision_results SET analysis_id=?,revision=?,signature=?,policy_version=?,status=?,reasons=? WHERE version_id=?",
-                    (analysis_id, revision, run["signature"], POLICY_VERSION, "complete", "[]", expected_media_version),
+                    (
+                        analysis_id,
+                        revision,
+                        run["signature"],
+                        POLICY_VERSION,
+                        "complete",
+                        _json(reasons),
+                        expected_media_version,
+                    ),
                 )
             c.execute("UPDATE reprise_analysis_runs SET status=? WHERE id=?", ("complete", analysis_id))
             return self._result(c, expected_media_version)
 
     def fail_analysis(self, analysis_id, status, reason):
+        """Record why an analysis ended without a result: one sentence, or a headline followed by its details."""
         if status not in ("failed", "cancelled", "unsupported"):
             raise ValueError("invalid failure status")
+        reasons = [reason] if isinstance(reason, str) else list(reason)
         with self.transaction() as c:
             run = c.execute("SELECT * FROM reprise_analysis_runs WHERE id=?", (analysis_id,)).fetchone()
             if not run or run["status"] != "running":
                 raise RevisionConflict("analysis is no longer running")
-            c.execute("UPDATE reprise_analysis_runs SET status=?,reason=? WHERE id=?", (status, reason, analysis_id))
+            c.execute(
+                "UPDATE reprise_analysis_runs SET status=?,reason=? WHERE id=?",
+                (status, " | ".join(reasons), analysis_id),
+            )
             current = self._result(c, run["version_id"])
             if current and current.analysis_id == analysis_id:
                 for item in current.ranges:
@@ -488,7 +520,7 @@ class RepriseStore:
                         )
                 c.execute(
                     "UPDATE reprise_decision_results SET status=?,analysis_id=?,reasons=?,revision=revision+1 WHERE version_id=?",
-                    (status, analysis_id, _json([reason]), run["version_id"]),
+                    (status, analysis_id, _json(reasons), run["version_id"]),
                 )
 
     def save_review(self, media_version_id, expected_revision, edits, actor):
@@ -520,6 +552,7 @@ class RepriseStore:
             for edit in edits:
                 edit = dict(edit)
                 supplied_id = edit.pop("range_id", None)
+                acknowledged = edit.pop(PLEX_ACKNOWLEDGMENT, None)
                 if supplied_id is not None and supplied_id not in current:
                     raise RevisionConflict("range no longer exists")
                 if supplied_id is None and edit.get("action", "keep") != "keep":
@@ -551,6 +584,16 @@ class RepriseStore:
                         edit[key] = tuple(edit[key])
                 updated = replace(original, **edit)
                 _validate_range(updated, version.duration_ms)
+                if (
+                    updated.origin == ORIGIN_PLEX
+                    and updated.action == "skip"
+                    and updated.review_status == "approved"
+                    and (original.review_status != "approved" or updated != original)
+                    and acknowledged is not True
+                ):
+                    # Approving a range, or changing one already approved, is the owner's deliberate act for that
+                    # range: nothing Reprise confirmed backs it, so a bulk or older client cannot do it by accident.
+                    raise ReviewRefused(PLEX_NEEDS_ACKNOWLEDGMENT)
                 if existing and original.action == "keep" and updated.action != "keep":
                     raise ValueError("a protected keep cannot be implicitly removed")
                 current[rid] = updated

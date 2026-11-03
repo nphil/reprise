@@ -7,6 +7,7 @@ import re
 import pytest
 
 from media_preview_generator.web.settings_manager import get_settings_manager
+from tests.auth_helpers import sign_in
 
 
 @pytest.fixture
@@ -17,14 +18,13 @@ def dashboard_html(tmp_path, monkeypatch) -> str:
 
     reset_settings_manager()
     from media_preview_generator.web.app import create_app
-    from media_preview_generator.web.auth import get_auth_token
 
     app = create_app(config_dir=str(tmp_path))
     app.config["TESTING"] = True
     app.config["WTF_CSRF_ENABLED"] = False
     get_settings_manager().set("setup_complete", True)
     client = app.test_client()
-    client.post("/login", data={"token": get_auth_token()}, follow_redirects=False)
+    sign_in(client)
     response = client.get("/dashboard")
     assert response.status_code == 200
     return response.get_data(as_text=True)

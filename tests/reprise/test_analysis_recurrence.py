@@ -13,7 +13,7 @@ from media_preview_generator.reprise.models import CandidateWindow, PlaybackIden
 from media_preview_generator.reprise.store import RepriseStore
 
 
-def make_video(path: Path, picture=None, changed_audio=False, filters=None):
+def make_video(path: Path, picture=None, changed_audio=False, filters=None, audio_filters=None):
     vf = filters or (
         "null"
         if picture is None
@@ -53,6 +53,7 @@ def make_video(path: Path, picture=None, changed_audio=False, filters=None):
             "ffv1",
             "-chroma_sample_location",
             "left",
+            *(["-af", audio_filters] if audio_filters else []),
             "-c:a",
             "flac",
             "-channel_layout",
@@ -338,3 +339,82 @@ def test_aac_sample_trim_keeps_the_complete_requested_window(tmp_path):
     item = media_version(str(path), 16000, "{}")
     data = audio_pcm(item, ("audio", 0, 48000, 1), 5000, 14000, origin, lambda: False, lambda: False, 1)
     assert len(data) == 9 * 48000 * 4
+
+
+def analyze_windows(target, windows, catalog, references=()):
+    return analyze(
+        target,
+        windows,
+        list(references),
+        store=catalog(target, *references),
+        cancel_check=lambda: False,
+        pause_check=lambda: False,
+        progress_callback=None,
+        ffmpeg_threads=1,
+    )
+
+
+def test_a_plex_marker_nothing_confirmed_is_a_suggestion_while_other_windows_stay_protected(tmp_path, catalog):
+    target = make_video(tmp_path / "target.mkv")
+    windows = [CandidateWindow("intro", 1000, 6000, "plex"), CandidateWindow("credits", 6000, 7000, "ending-window")]
+    result = analyze_windows(target, windows, catalog)
+    assert result.status == "complete", result.reasons
+    (suggestion,) = [r for r in result.ranges if r.origin == "plex"]
+    assert (suggestion.kind, suggestion.action, suggestion.start_ms, suggestion.end_ms) == ("intro", "skip", 1000, 6000)
+    assert (suggestion.review_status, suggestion.locked, suggestion.audio_stream_ids) == ("proposed", False, ("123",))
+    assert suggestion.reason_code == "plex_suggestion" and suggestion.reason.startswith("Suggested by Plex")
+    # the window Plex has no marker for keeps its ordinary protection
+    assert [(r.kind, r.action) for r in result.ranges if r.origin == "detector"] == [("credits", "keep")]
+    assert any("Plex suggested the intro (from 0:01 to 0:06)" in reason for reason in result.reasons)
+
+
+def test_a_plex_marker_that_a_comparison_confirms_is_an_ordinary_proposal(tmp_path, catalog):
+    reference = make_video(tmp_path / "reference.mkv")
+    target = make_video(tmp_path / "target.mkv")
+    result = analyze_windows(target, [CandidateWindow("intro", 1000, 6000, "plex")], catalog, [reference])
+    assert result.status == "complete", result.reasons
+    assert overlaps(3000, 4000, skips(result)), result.reasons
+    assert not [r for r in result.ranges if r.origin == "plex"]
+
+
+def test_a_plex_marker_is_fitted_to_the_file_and_one_that_does_not_fit_is_ignored(tmp_path, catalog):
+    target = make_video(tmp_path / "target.mkv")
+    windows = [CandidateWindow("intro", 6000, 7001, "plex"), CandidateWindow("credits", 3000, 9000, "plex")]
+    result = analyze_windows(target, windows, catalog)
+    assert result.status == "complete", result.reasons
+    assert [(r.kind, r.start_ms, r.end_ms) for r in result.ranges] == [("intro", 6000, 7000)]
+    assert "Plex's credits marker does not fit this file, so it was ignored." in result.reasons
+
+
+def test_only_a_plex_marker_may_be_too_long_to_compare(tmp_path, catalog):
+    from dataclasses import replace
+
+    target = replace(make_video(tmp_path / "target.mkv"), duration_ms=400000)
+    long_marker = analyze_windows(target, [CandidateWindow("credits", 1000, 250000, "plex")], catalog)
+    assert long_marker.status == "complete", long_marker.reasons
+    (suggestion,) = long_marker.ranges
+    assert (suggestion.origin, suggestion.start_ms, suggestion.end_ms) == ("plex", 1000, 250000)
+    assert any("longer than the 3 minutes Reprise can compare" in reason for reason in long_marker.reasons)
+    long_guess = analyze_windows(target, [CandidateWindow("intro", 0, 250000, "opening-window")], catalog)
+    assert long_guess.status == "failed"
+
+
+def test_a_plex_marker_is_still_offered_when_the_episode_cannot_be_compared(tmp_path, catalog):
+    reference = make_video(tmp_path / "reference.mkv")
+    # a 200 ms hole in the sound's timeline: no exact comparison is possible, whatever Plex says about the intro
+    target = make_video(tmp_path / "target.mkv", audio_filters="asetpts='PTS+if(gte(T,2),0.2/TB,0)'")
+    marker = [CandidateWindow("intro", 1000, 6000, "plex")]
+    result = analyze_windows(target, marker, catalog, [reference])
+    assert result.status == "complete", result.reasons
+    (suggestion,) = result.ranges
+    assert (suggestion.origin, suggestion.action, suggestion.start_ms, suggestion.end_ms) == (
+        "plex",
+        "skip",
+        1000,
+        6000,
+    )
+    assert result.reasons[0] == "This episode can't be compared exactly with the others, so nothing could be confirmed."
+    assert any("discontinuous" in reason for reason in result.reasons)  # the technical detail comes last
+    # with no Plex marker the same failure is still a failure: there is nothing to offer instead
+    guess = [CandidateWindow("intro", 1000, 6000, "opening-window")]
+    assert analyze_windows(target, guess, catalog, [reference]).status == "failed"

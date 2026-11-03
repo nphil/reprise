@@ -339,7 +339,7 @@ These are not migrated to settings.json and remain in effect:
 | `CORS_ORIGINS` | `*` | Allowed CORS origins (comma-separated) |
 | `HTTPS` | `false` | Mark session cookies secure. Set to `true` when the app is served over HTTPS. |
 | `DEV_RELOAD` | `false` | Start gunicorn with live reload (development) |
-| `WEB_AUTH_TOKEN` | Auto-generated | Fixed authentication token (overrides wizard-set token) |
+| `WEB_AUTH_TOKEN` | *(not used)* | No longer signs anyone in. You choose a username and password on the first-run welcome page. If it is set when you upgrade from the old token login, its value is copied once into the webhook secret so Sonarr, Radarr, Plex and scripts keep working; remove the variable afterwards. See [Upgrading from the token login](#upgrading-from-the-token-login). |
 | `AUTH_METHOD` | `internal` | Set to `external` to disable built-in auth when using a reverse proxy or VPN (see below) |
 | `FLASK_SECRET_KEY` | Auto-generated | Override the Flask session signing key. Auto-generated and persisted to `/config/flask_secret.key` if not set. Set this only when you need a fixed key across rebuilds. |
 | `LOG_FORMAT` | `pretty` | Log output format. `json` writes one JSON object per log line, for log shippers such as Loki or Datadog. |
@@ -362,7 +362,7 @@ Not for deployment. These override paths used in development and the accuracy ha
 
 ### External Authentication (AUTH_METHOD)
 
-If you secure access via a reverse proxy (Authelia, Authentik, Caddy Security, nginx basic auth, etc.) or a VPN (Tailscale, WireGuard), you can disable the built-in login screen:
+If you secure access via a reverse proxy (Authelia, Authentik, Caddy Security, nginx basic auth, etc.) or a VPN (Tailscale, WireGuard), you can disable the built-in sign-in:
 
 ```yaml
 environment:
@@ -371,15 +371,21 @@ environment:
 
 When set to `external`:
 
-- The login page is bypassed; all browser and API requests are treated as authenticated.
-- Webhook authentication (`webhook_secret` / Bearer token) is not affected: Radarr, Sonarr and other callers still need the shared secret.
+- Built-in sign-in is switched off: there is no account and no welcome page, and all browser and API requests are treated as authenticated. The proxy or VPN is trusted.
+- Webhook authentication (the webhook secret) is not affected: Radarr, Sonarr and other callers still need the shared secret.
 - A browser's `POST`/`PUT`/`PATCH`/`DELETE` still needs the page's CSRF token (the app's pages send it). Scripts
-  should send the API token (`X-Auth-Token` or `Authorization: Bearer`); see [REST API → Authentication](#authentication).
+  should send the webhook secret (`X-Auth-Token` or `Authorization: Bearer`); see [REST API → Authentication](#authentication).
 - The setup wizard still runs on first boot.
 - Removing the variable (or setting it back to `internal`) instantly re-enables built-in auth.
 
 > [!CAUTION]
 > Only use `AUTH_METHOD=external` when you are certain that network-level access control is in place. Without it, anyone who can reach the web UI has full access.
+
+### Upgrading from the token login
+
+Older versions signed you in with one random "authentication token" (the `WEB_AUTH_TOKEN` variable, or the token in `auth.json`). That login is gone. You now choose a username and password on the first-run welcome page, and `WEB_AUTH_TOKEN` signs no one in.
+
+On the first start after you upgrade, the old token (`WEB_AUTH_TOKEN` if it was set, otherwise the token in `auth.json`) is copied once, unchanged, into the new **webhook secret**. Sonarr, Radarr, Plex and any script that used it keep working, with nothing to change on their side. The app then shows the welcome page so you can create your account. You can remove `WEB_AUTH_TOKEN` afterwards (the log says so). Fresh installs get a random webhook secret. See [Sign in and your account](getting-started.md#sign-in-and-your-account) for the account itself.
 
 ### Deprecated (no longer used)
 
@@ -415,19 +421,35 @@ The web UI is served by [gunicorn](https://gunicorn.org/) with thread workers. D
 
 ## Webhook Settings
 
-Settings for automatic preview generation when media is imported or added. Manage them on the **Automation** page (Triggers tab).
+Settings for automatic preview generation when media is imported or added. Manage them on the **Automation** page (Triggers tab). The webhook secret is managed in **Settings → Connections**.
 
 | Setting | Default | Web UI | Description |
 |---------|---------|--------|-------------|
 | `webhook_enabled` | `true` | Yes | Master enable/disable for webhook processing |
 | `webhook_delay` | `60` | Yes | Default initial delay for all webhook ingestion URLs (UI slider: 10–300; runtime bounds: 1–3600). Universal/per-server routes wait per job; source-specific routes reset their batch timer on new files, capped by a maximum batch age of the greater of 10 minutes and its longest accepted delay. An optional `delay` URL parameter overrides this value for that request; see [Webhook delay parameter](#webhook-delay-parameter). |
-| `webhook_secret` | *(empty)* | Yes | Dedicated secret for webhook auth (falls back to API token) |
+| `webhook_secret` | *(made on first start)* | Yes | The shared secret for webhooks and for scripts calling the REST API. Manage it in **Settings → Connections** (see [Webhook secret](#webhook-secret)) |
 | `webhook_retry_count` | `5` | Processing → Retry policy | Retry attempts for files a server hasn't indexed yet. See [Other Processing Settings](#other-processing-settings). |
 | `webhook_retry_delay` | `30` | Processing → Retry policy | Base retry delay in seconds. |
 
 The Plex direct webhook (`/api/webhooks/plex`, needs Plex Pass on the server-owner account) is set up per Plex server. Its public URL is stored in that server's `output.webhook_public_url` and is set by `POST /api/settings/plex_webhook/register`.
 
 Webhook processing respects each server's enabled libraries. Paths outside them are ignored.
+
+#### Webhook secret
+
+The webhook secret is the shared password for every caller that has no browser session: Sonarr, Radarr, Plex, Emby, Jellyfin, Tdarr, FileFlows and your own scripts. It is made automatically on first start (random on a fresh install; the old token on an upgrade, see [Upgrading from the token login](#upgrading-from-the-token-login)). There is no separate API token and no fallback to one.
+
+Find it in **Settings → Connections**, on the **Webhook secret** card at the bottom. It is shown masked, with **Show**, **Copy** and **Regenerate** buttons. The full secret is only fetched when you press **Show** or **Copy**. The old **Webhook Secret** field on **Automation → Triggers → Settings** is gone; that page links to **Settings → Connections**.
+
+| Sender | How it sends the secret |
+|--------|-------------------------|
+| Sonarr / Radarr | Leave **Username** empty and put the secret in **Password**, or send the `X-Auth-Token` header |
+| Emby / Jellyfin plugin | `X-Auth-Token` header |
+| Plex | The registered webhook URL carries it as `?token=` |
+| Custom scripts, Tdarr, FileFlows | `X-Auth-Token` or `Authorization: Bearer` |
+| Scripts calling the REST API | `X-Auth-Token` or `Authorization: Bearer`, in the same place the old token went |
+
+**Regenerate** makes the old value stop working everywhere until you update each sender. Plex's webhook is registered again for you automatically.
 
 The **Recently Added scanner** is a schedule type, not a settings key (see [Schedules Endpoints](#schedules-endpoints)). Create one on the Automation page (Schedules tab) with **Files → Recently added**.
 
@@ -705,7 +727,7 @@ per type (the rest add up under "other").
 | POST | `/api/markers/reconcile` | Queue Intro & Credits · Check servers |
 
 All of them require the same `X-Auth-Token` / `Authorization: Bearer` auth (or a logged-in session) as the rest of the
-API. A script sending the API token can call any of the `POST` routes directly; from a signed-in browser they also
+API. A script sending the webhook secret can call any of the `POST` routes directly; from a signed-in browser they also
 need the page's CSRF token, like every other state-changing route (see [Authentication](#authentication)).
 
 #### POST /api/markers/jobs
@@ -1068,40 +1090,55 @@ Add one row per path or pattern. Excluded items are not queued for full-library 
 
 ## REST API
 
-All API endpoints require authentication except `/api/health` and `/api/setup/status`. Until the setup wizard is finished, the setup, settings, Plex-OAuth, server and worker-group routes also answer without a token.
+All API endpoints require authentication except `/api/health` and `/api/setup/status`. Until the setup wizard is finished, the setup, settings, Plex-OAuth, server and worker-group routes also answer without credentials.
 
 ### Authentication
 
-Include the authentication token in requests using one of these methods:
+All API calls from a script carry the webhook secret (**Settings → Connections**, see [Webhook secret](#webhook-secret)) in one of these headers:
 
 ```bash
 # X-Auth-Token header
-curl -H "X-Auth-Token: YOUR_TOKEN" http://localhost:8080/api/jobs
+curl -H "X-Auth-Token: YOUR_WEBHOOK_SECRET" http://localhost:8080/api/jobs
 
 # Authorization Bearer header
-curl -H "Authorization: Bearer YOUR_TOKEN" http://localhost:8080/api/jobs
+curl -H "Authorization: Bearer YOUR_WEBHOOK_SECRET" http://localhost:8080/api/jobs
 ```
 
-Get your token from [Authentication Token](getting-started.md#authentication-token), or set a fixed token with `WEB_AUTH_TOKEN`.
-
-**Scripts: always send the API token in one of these headers.** A request with a valid API token needs nothing
+**Scripts: always send the webhook secret in one of these headers.** A request with a valid secret needs nothing
 else. A wrong one gets `401 {"error": "Authentication required"}`.
 
-**CSRF token (browser sessions).** A request that relies on the signed-in browser session instead of the API token
+**Removed endpoints.** There is no separate API token any more. `POST /api/token/regenerate`, `POST /api/token/set`,
+`GET /api/setup/token-info` and `POST /api/setup/set-token` no longer exist. Use the webhook secret instead.
+
+**Sign-in (browser).** `POST /api/auth/login` takes JSON `{"username": "...", "password": "...", "remember": true}`
+(`remember` is optional and defaults to `true`). On failure it answers `401 {"success": false, "error": "Wrong username or password"}`.
+`GET /api/auth/status` also returns `setup_required`, which is `true` while no account exists and `AUTH_METHOD` is not
+`external`. Before an account exists, every browser page redirects to `/welcome`. API routes answer for themselves:
+webhooks keep working because they carry their own secret, and routes that need a session answer `401`.
+
+**Account endpoints (browser session only).** A webhook secret in a header is **not** accepted on these:
+
+- `POST /api/account/password` with `{"current_password": "...", "new_password": "..."}` answers `200 {"success": true}` or `400 {"success": false, "error": "..."}`. 5 per minute. Other browsers are signed out; this one stays signed in.
+- `GET /api/account/onboarding` returns `{"state": "pending"}`, `"dismissed"` or `"completed"` (the first-run tour).
+- `POST /api/account/onboarding` with `{"state": "dismissed"}` or `{"state": "completed"}`.
+- `POST /api/webhook-secret/reveal` returns `{"secret": "..."}`.
+- `POST /api/webhook-secret/regenerate` returns `{"success": true, "secret": "...", "masked": "..."}`.
+
+**CSRF token (browser sessions).** A request that relies on the signed-in browser session instead of the webhook secret
 must also send the page's CSRF token on every `POST`, `PUT`, `PATCH` and `DELETE`. This stops a page on another site
 from using your signed-in browser to change settings or start jobs. The app's own pages do it for you: every page
-carries the token in `<meta name="csrf-token">` and sends it as the `X-CSRFToken` header, and the login form sends it
-as a hidden `csrf_token` field. Without it (or with a stale one) the request is refused with `400`:
+carries the token in `<meta name="csrf-token">` and sends it as the `X-CSRFToken` header, and the sign-in form and the
+welcome form send it as a hidden `csrf_token` field. Without it (or with a stale one) the request is refused with `400`:
 
 ```json
-{"error": "This page's security token is missing or out of date. Reload the page and try again. Scripts: send the API token in an Authorization: Bearer or X-Auth-Token header instead."}
+{"error": "This page's security token is missing or out of date. Reload the page and try again. Scripts: send the webhook secret in an Authorization: Bearer or X-Auth-Token header instead."}
 ```
 
 - `GET` requests never need it.
 - The webhook receivers (`POST /api/webhooks/radarr`, `/sonarr`, `/sportarr`, `/custom`, `/plex`, `/incoming` and
   `/server/{server_id}`) never need it: they check their own webhook secret on every call.
 - The setup wizard sends it too, including before setup is finished when its routes need no sign-in.
-- With `AUTH_METHOD=external`, browser requests still need it; scripts behind the proxy should send the API token.
+- With `AUTH_METHOD=external`, browser requests still need it; scripts behind the proxy should send the webhook secret.
 - A browser request that says it came from another origin (the browser-set `Sec-Fetch-Site` header is anything but
   `same-origin` or `none`) is refused even with a valid token: another app on the same host, on a different port,
   counts as the same site for cookies. Requests without the header (older browsers, scripts) rely on the token alone.
@@ -1109,12 +1146,11 @@ as a hidden `csrf_token` field. Without it (or with a stale one) the request is 
   new session, so nothing from before it (a token another page may have read) stays valid. With
   `AUTH_METHOD=external` this app never sees a sign-in, so the `Sec-Fetch-Site` check above is what refuses such a
   token; its **Logout** only clears this app's session (sign out at your proxy or VPN).
-- Signing out (`POST /logout`, the nav's **Logout**; opening `/logout` only asks), or changing the API token, ends
-  **this browser's** session, and a tab still open from before has to be reloaded. Other browsers stay signed in:
-  each session lives in a signed cookie in its browser, and the app keeps no list of sessions to end, even when the
-  API token changes. To sign every browser out, delete `flask_secret.key` from the config folder (or change
+- Signing out (`POST /logout`, the nav's **Logout**; opening `/logout` only asks) ends **this browser's** session, and a
+  tab still open from before has to be reloaded. Changing the password ends the **other** browsers' sessions and keeps
+  this one signed in. To sign every browser out, delete `flask_secret.key` from the config folder (or change
   `FLASK_SECRET_KEY`, if you set it) and restart the container: every session cookie stops being valid, and each
-  browser signs in again with the current token.
+  browser signs in again with its username and password.
 
 ### Setup & Settings Endpoints
 
@@ -1190,45 +1226,6 @@ segments and NUL characters are rejected; the normal 1 MiB request-body limit ap
 #### POST /api/setup/complete
 
 Mark setup as complete. Returns `{"success": true, "redirect": "/"}`.
-
-#### GET /api/setup/token-info
-
-Get information about the current authentication token (used by Step 5 of the setup wizard).
-
-```json
-{
-  "env_controlled": false,
-  "token": "abc123xyz...",
-  "token_length": 43,
-  "source": "config"
-}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `env_controlled` | boolean | Whether token is set via `WEB_AUTH_TOKEN` env var |
-| `token` | string | The current authentication token |
-| `token_length` | number | Length of the token |
-| `source` | string | Either `"environment"` or `"config"` |
-
-#### POST /api/setup/set-token
-
-Set a custom authentication token during setup.
-
-**Request:**
-
-```json
-{
-  "token": "my-custom-password",
-  "confirm_token": "my-custom-password"
-}
-```
-
-Returns `{"success": true}` on success, or `{"success": false, "error": "..."}` with details:
-
-- `"Tokens do not match."`
-- `"Token must be at least 8 characters long."`
-- `"Token is controlled by WEB_AUTH_TOKEN environment variable and cannot be changed."`
 
 #### GET /api/settings
 
@@ -1416,7 +1413,7 @@ schedule or global holds. Ordinary interrupted running jobs continue to follow t
 
 ### Nodes Endpoints
 
-API token or session, like every other route. A `NODE_ROW` is a node's `id`, `name`, `url`, `enabled`, `state` and
+webhook secret or session, like every other route. A `NODE_ROW` is a node's `id`, `name`, `url`, `enabled`, `state` and
 plain `reason`, `version`, `roles`, `legacy` (an older Plex database node that only answers `/v1/ping`), `platform`,
 `gpus`, `cpu`, `busy`, `last_seen`, `checking` (a check is running or queued), `path_mappings`, `used_by`
 (`{"groups": [...], "servers": [...]}`), `to_fix` (`{"must_fix": n, "recommended": n}`, its Setup Health counts) and
@@ -1729,7 +1726,7 @@ the writer is unavailable.
 
 The Inspector page (`/inspector`, [guide](guides.md#inspector)) searches with `GET /api/media/search`, reads a file's
 Intro & Credits with `GET /api/markers/item`, and draws preview frames with `GET /api/bif/frame` and
-`GET /api/bif/trickplay/frame`. These routes add what it needs beyond them. All take the usual API token or a signed-in
+`GET /api/bif/trickplay/frame`. These routes add what it needs beyond them. All take the usual webhook secret or a signed-in
 session (the `POST` routes also the page's CSRF token from a browser).
 
 | Method | Endpoint | Description |
@@ -1826,7 +1823,7 @@ know; `502` when ffmpeg can't read the frames; `503` when both reads were busy f
 
 ### Webhook Endpoints
 
-Inbound webhook endpoints for Radarr, Sonarr, Plex, Emby, Jellyfin and custom integrations. Each call must carry the API token or the `webhook_secret`, sent as an `X-Auth-Token` header, an `Authorization: Bearer` header, the password of HTTP Basic auth, or a `?token=` query parameter (for senders that can't set headers). They never need a CSRF token.
+Inbound webhook endpoints for Radarr, Sonarr, Plex, Emby, Jellyfin and custom integrations. Each call must carry the webhook secret, sent as an `X-Auth-Token` header, an `Authorization: Bearer` header, the password of HTTP Basic auth, or a `?token=` query parameter (for senders that can't set headers). They never need a CSRF token.
 
 > [!TIP]
 > The **universal webhook URL** at `POST /api/webhooks/incoming` auto-detects the vendor (Plex / Emby / Jellyfin / Sonarr / Radarr / templated path) so you only need one URL across every server. Falls back to per-server URLs at `POST /api/webhooks/server/<server_id>` for ambiguous setups (rare). See [Multi-Media-Server — Webhook configuration](multi-server.md#webhook-configuration-per-vendor) for details.
@@ -1835,7 +1832,7 @@ Inbound webhook endpoints for Radarr, Sonarr, Plex, Emby, Jellyfin and custom in
 
 All ingestion routes — `POST /api/webhooks/radarr`, `/sonarr`, `/sportarr`, `/custom`, `/plex`, `/incoming`, and `/server/<server_id>` — accept optional `delay=<seconds>` in the URL query string. The value must be a whole number from **1 to 3600** (up to one hour); invalid values return **400**. Omission uses the current `webhook_delay` setting.
 
-Examples: `/api/webhooks/radarr?delay=30`, `/api/webhooks/sonarr?delay=300`, `/api/webhooks/incoming?token=YOUR_TOKEN&delay=30`, or `/api/webhooks/server/plex-main?delay=30`. Use `&delay=30` when another query parameter is already present.
+Examples: `/api/webhooks/radarr?delay=30`, `/api/webhooks/sonarr?delay=300`, `/api/webhooks/incoming?token=YOUR_WEBHOOK_SECRET&delay=30`, or `/api/webhooks/server/plex-main?delay=30`. Use `&delay=30` when another query parameter is already present.
 
 On `/radarr`, `/sonarr`, `/sportarr`, `/custom`, and legacy `/plex`, each accepted new file resets its source/server batch deadline using that request's effective delay. The latest request sets the timer if values differ within one batch, subject to a maximum batch age equal to the greater of 600 seconds and the longest delay accepted into that batch. The age is measured from its first file, so late arrivals can receive less than the full delay; arrivals after the limit open a new batch. Ignored duplicates do not reset the deadline. The batch age limit is persisted with the job.
 
@@ -1949,7 +1946,7 @@ The endpoint also accepts a synthetic `test.ping` event, which it records in the
 
 When `Media[].Part[].file` is missing from the payload (Plex doesn't always include it), the app fetches the item by `ratingKey` via the Plex API to recover the file paths.
 
-**Authentication:** same as the other webhook endpoints. Plex can only send a `?token=` query parameter, so the registered URL carries the webhook secret (or the API token when no secret is set).
+**Authentication:** same as the other webhook endpoints. Plex can only send a `?token=` query parameter, so the registered URL carries the webhook secret.
 
 > [!IMPORTANT]
 > Plex's `library.new` webhook is wired through the same code path as mobile push notifications. If push notifications are disabled on your Plex server, library events are silently dropped — enable them under Plex Web → Settings → General (toggle *Enable mobile push notifications*). See the [Auto-trigger from Plex guide](guides.md#auto-trigger-from-plex-no-sonarrradarr) for full details.
@@ -2043,7 +2040,7 @@ Errors return a JSON object with an `error` message. Some add fields such as `re
 | HTTP status | Meaning |
 |-------------|---------|
 | `400` | Invalid request data, or a missing or stale CSRF token on a browser request |
-| `401` | Missing or invalid token: `{"error": "Authentication required"}` |
+| `401` | Missing or invalid credentials: `{"error": "Authentication required"}` |
 | `404` | Unknown job, schedule, server or other resource |
 | `409` | The request conflicts with the current state (for example a stale worker-group `revision`) |
 | `429` | Rate limit hit (see [Rate Limiting](#rate-limiting)) |
@@ -2111,15 +2108,17 @@ documented here so you can drive them from scripts if you want. All require
 the same `X-Auth-Token` / `Authorization: Bearer` auth as the rest of the API
 unless noted.
 
-### Auth & token management
+### Sign-in, account and webhook secret
 
 | Method | Endpoint | Description |
 |---|---|---|
 | GET | `/api/auth/status` | Session auth state — used by the UI on page load |
-| POST | `/api/auth/login` · `/api/auth/logout` | Session login/logout (cookie-based, for the browser: needs the page's CSRF token; scripts send the API token instead) |
+| POST | `/api/auth/login` · `/api/auth/logout` | Session login/logout (cookie-based, for the browser: needs the page's CSRF token; scripts send the webhook secret instead). Body `{"username", "password", "remember"}`; see [Authentication](#authentication) |
 | POST | `/logout` | Sign this browser out (the nav's **Logout**, with the page's CSRF token). `GET /logout` only shows a "Sign out?" page |
-| POST | `/api/token/regenerate` | Rotate the stored API token (disabled when `WEB_AUTH_TOKEN` is set) |
-| POST | `/api/token/set` | Set a custom token — min 8 chars; returns `{success: false, error: ...}` on validation failure |
+| POST | `/api/account/password` | Change the password: `{"current_password", "new_password"}`. Browser session only. 5 per minute |
+| GET · POST | `/api/account/onboarding` | Read or set the first-run tour state (`pending`, `dismissed`, `completed`). Browser session only |
+| POST | `/api/webhook-secret/reveal` | Return the full webhook secret `{secret}`. Browser session only |
+| POST | `/api/webhook-secret/regenerate` | Make a new webhook secret `{success, secret, masked}`. Browser session only |
 
 ### Jobs (beyond the basics in [Jobs Endpoints](#jobs-endpoints))
 
@@ -2201,8 +2200,8 @@ The `path` must end in `.bif` and sit in the Plex config folder or a server's li
 | GET | `/api/system/version` | App version + commit SHA + build date |
 | GET | `/api/system/browse` | Folder picker: lists sub-directories of `?path=` (default `/`). `?include_files=1` also returns video files (each entry has `is_dir`); `?show_hidden=1` includes dot-entries. System dirs (`/proc`, `/sys`, …) are denied. |
 | GET | `/api/system/notifications` | In-app notification list (health checks, deprecations, warnings) |
-| POST | `/api/system/notifications/{id}/dismiss` | Dismiss until the next restart. Needs login or an API token; `400` for an id the app doesn't show |
-| POST | `/api/system/notifications/{id}/dismiss-permanent` | Dismiss for good (stored in settings). Needs login or an API token. `400` for an unknown id, and for `media_mount_unhealthy` (a media folder that looks empty or unmounted) and `gpu_keeps_failing_<device>` (a GPU whose last 5 files ran on the CPU), which can only be dismissed until the next restart. A dismissed **Settings migrated** notice comes back after the next upgrade that changes the settings format |
+| POST | `/api/system/notifications/{id}/dismiss` | Dismiss until the next restart. Needs login or the webhook secret; `400` for an id the app doesn't show |
+| POST | `/api/system/notifications/{id}/dismiss-permanent` | Dismiss for good (stored in settings). Needs login or the webhook secret. `400` for an unknown id, and for `media_mount_unhealthy` (a media folder that looks empty or unmounted) and `gpu_keeps_failing_<device>` (a GPU whose last 5 files ran on the CPU), which can only be dismissed until the next restart. A dismissed **Settings migrated** notice comes back after the next upgrade that changes the settings format |
 | POST | `/api/system/notifications/reset-dismissed` | Clear all permanent dismissals |
 | GET | `/api/system/whats-new` | Release-notes viewer payload (version + changes since last-seen) |
 | POST | `/api/system/whats-new/dismiss` | Mark the current version's notes as seen |
@@ -2218,6 +2217,7 @@ Only these endpoints are limited, per client address:
 |----------|-------|
 | `POST /login` | 5 per minute |
 | `POST /api/auth/login` | 10 per minute |
+| `POST /api/account/password` | 5 per minute |
 | `POST /api/inspector/status`, `GET /api/inspector/frames` | 120 per minute |
 | `POST /api/inspector/show` | 60 per minute |
 | `GET /api/media/search` | 20 per minute |

@@ -45,6 +45,12 @@ class Evidence:
     metrics: dict
 
 
+# A range's origin when it is Plex's own intro/credits marker, offered as a suggestion that no comparison of episodes
+# confirmed. It is never eligible to skip until the owner approves that exact range.
+ORIGIN_PLEX = "plex"
+REASON_PLEX_SUGGESTION = "plex_suggestion"
+
+
 @dataclass(frozen=True)
 class DecisionRange:
     id: str
@@ -97,3 +103,11 @@ class ClientPrincipal:
     id: str
     name: str
     scopes: tuple[str, ...]
+
+
+class AnalysisRefused(ValueError):
+    """A request the owner can put right; the message is a plain sentence that is safe to show as is."""
+
+
+class ReviewRefused(ValueError):
+    """A review the client can put right; the message is a plain sentence that is safe to show as is."""

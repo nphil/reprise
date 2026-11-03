@@ -122,7 +122,7 @@ def test_unfinished_default_keeps_paused_and_retries_with_accessible_history(que
     expect(page.locator("#job-row-running-preview")).to_be_visible()
     page.locator(".card").filter(has=page.locator("#jobQueue")).screenshot(
         path=str(tmp_path / f"queue-initial-{width}.png"),
-        style=".navbar, .skip-link { visibility: hidden !important; }",
+        style=".rp-rail, .rp-subnav, .skip-link { visibility: hidden !important; }",
     )
     expect(page.locator("#jobStatusFilter")).to_have_value("active")
     expect(page.locator("#jobQueue [id^='job-row-']")).to_have_count(5)

@@ -1,10 +1,11 @@
-"""Smoke test for the /nodes HTML page and its place in the navbar."""
+"""Smoke test for the /nodes HTML page and its place in the Settings tabs."""
 
 from __future__ import annotations
 
 import pytest
 
 from media_preview_generator.web.settings_manager import get_settings_manager
+from tests.auth_helpers import ensure_owner_account, sign_in
 
 
 @pytest.fixture
@@ -37,17 +38,15 @@ def client(flask_app):
 
 @pytest.fixture
 def authenticated_client(flask_app):
-    from media_preview_generator.web.auth import get_auth_token
-
-    token = get_auth_token()
     get_settings_manager().set("setup_complete", True)
     client = flask_app.test_client()
-    client.post("/login", data={"token": token}, follow_redirects=False)
+    sign_in(client)
     return client
 
 
 class TestNodesPage:
     def test_unauthenticated_redirects_to_login(self, client):
+        ensure_owner_account()  # without an account every page sends you to /welcome instead
         response = client.get("/nodes", follow_redirects=False)
         assert response.status_code == 302
         assert "/login" in response.headers.get("Location", "")
@@ -56,7 +55,7 @@ class TestNodesPage:
         response = authenticated_client.get("/nodes")
         assert response.status_code == 200
         body = response.get_data(as_text=True)
-        assert "<title>Nodes · Media Preview Generator</title>" in body
+        assert "<title>Nodes · Reprise</title>" in body
         for landmark in (
             'id="nodeList"',
             'id="nodesCheckNow"',
@@ -73,18 +72,3 @@ class TestNodesPage:
             assert landmark in body, landmark
         # The key field never shows what was typed.
         assert 'type="password" class="form-control" id="addNodeKey"' in body
-
-    def test_settings_menu_links_to_the_page_and_marks_it_current(self, authenticated_client):
-        body = authenticated_client.get("/nodes").get_data(as_text=True)
-        assert (
-            'href="/nodes" aria-label="Nodes: other machines that lend this app their GPU, CPU or Plex database"'
-            in (body.replace(' aria-current="page"', "").replace(" active", ""))
-        )
-        assert 'class="dropdown-item active" href="/nodes"' in body
-        settings_toggle = body.split('id="navSettingsDropdown"')[0].rsplit("<a ", 1)[1]
-        assert "active" in settings_toggle
-
-    def test_other_pages_do_not_mark_nodes_current(self, authenticated_client):
-        body = authenticated_client.get("/servers").get_data(as_text=True)
-        assert 'href="/nodes"' in body
-        assert 'class="dropdown-item active" href="/nodes"' not in body

@@ -67,7 +67,7 @@ For Docker Compose, Unraid and permission problems with `/dev/dri`, see:
 - **Path mappings** if Plex and the container see the media at different paths. See [Path Mappings](reference.md#path-mappings).
 - **Plex's own generation off.** Set **Settings → Library → Generate video preview thumbnails** to **Never**, so Plex doesn't redo the work.
 
-Then open `http://YOUR_IP:8080`, log in with the token saved in `auth.json` in your app config folder (or your own, set with `WEB_AUTH_TOKEN`), and sign in to Plex in the setup wizard.
+Then open `http://YOUR_IP:8080`, create your account on the **Welcome to Reprise** page (choose a username and a password; see [Sign in and your account](getting-started.md#sign-in-and-your-account)), and sign in to Plex in the setup wizard.
 
 ## Check the GPU is being used
 

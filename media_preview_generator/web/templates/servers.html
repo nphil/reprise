@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}Servers · Media Preview Generator{% endblock %}
+{% block title %}Connections · Reprise{% endblock %}
 
 {% block head %}
 <link href="{{ url_for('static', filename='css/processing_jobs.css') }}" rel="stylesheet">
@@ -12,12 +12,12 @@
 <div class="servers-page">
     <header class="page-header">
         <div>
-            <h1 class="page-title"><i class="bi bi-hdd-stack me-2"></i>Media Servers</h1>
-            <p class="page-subtitle mb-0">Plex, Emby and Jellyfin servers that get previews and analysis.</p>
+            <h1 class="page-title">Connections</h1>
+            <p class="page-subtitle mb-0">The Plex, Emby and Jellyfin servers Reprise reads your library from.</p>
         </div>
         <div class="page-actions">
             <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addServerModal">
-                <i class="bi bi-plus-lg me-1"></i>Add Server
+                <i class="bi bi-plus-lg me-1"></i>Add server
             </button>
         </div>
     </header>
@@ -30,6 +30,8 @@
             <div class="mt-2">Loading servers…</div>
         </div>
     </div>
+
+    {% include "_webhook_secret_panel.html" %}
 
 </div>
 
@@ -671,7 +673,7 @@
                                     <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Where to find the webhook secret and why a header is safer." data-explain-title="Webhook auth header" data-explain-template="infoEditWebhookTokenTpl" aria-label="About the auth header"><i class="bi bi-info-circle"></i></button>
 <template id="infoEditWebhookTokenTpl">
     <p>In your plugin's <strong>Headers</strong> / <strong>Request Headers</strong> section, add a custom header: Name <code>X-Auth-Token</code>, Value your webhook secret.</p>
-    <p>Set or generate the webhook secret under <a href="/automation#section-webhooks-settings">Automation → Triggers → Settings</a>. Sending it as a header keeps it out of access logs, screenshots, and clipboard history.</p>
+    <p>Copy the webhook secret from the <strong>Webhook secret</strong> card at the bottom of this Connections page (press Show, then Copy). Sending it as a header keeps it out of access logs, screenshots, and clipboard history.</p>
 </template>
                                 </div>
                                 <div id="editVendorWebhookPluginHint" class="sm-hint"></div>

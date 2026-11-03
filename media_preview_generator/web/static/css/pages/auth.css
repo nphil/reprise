@@ -1,0 +1,53 @@
+/* Sign-in and first-run pages: standalone, no sidebar. Tokens: reprise-tokens.css; fields, buttons, messages: reprise.css. */
+html{min-height:100%}
+body.auth-page{margin:0;min-height:100vh;min-height:100dvh;background:var(--lu-canvas);color:var(--lu-ink);font-family:var(--lu-font)}
+.auth-page ::selection{background:var(--lu-accent);color:var(--lu-accent-ink)}
+.auth-page a{color:var(--lu-accent-text)}
+.auth-shell.reprise{display:grid;place-items:center;min-height:100vh;min-height:100dvh;max-width:none;margin:0;padding:24px 16px}
+.auth-page input[type=checkbox]{accent-color:var(--lu-accent)}
+/* One card; elevation is the border alone. */
+.auth-card{width:min(100%,440px);padding:32px;background:var(--lu-sheet);border:1px solid var(--lu-edge-soft);border-radius:var(--lu-radius-card)}
+.auth-brand{display:grid;justify-items:start;gap:6px;margin-bottom:24px}
+.auth-brand img{margin-bottom:10px}
+.reprise .auth-brand h1{font-size:28px;text-wrap:balance}
+.reprise .auth-brand p{max-width:34ch;text-wrap:pretty}
+
+.auth-form{display:grid;gap:16px}
+.auth-form>label,.auth-form .auth-hint{margin:0}
+.auth-form .auth-hint{margin-top:-8px}
+.auth-card .rp-message{margin:0 0 16px}
+.auth-card .auth-form .rp-message{margin:0}
+
+/* Password fields: a plain text button at the field's right edge, not an icon that may not load. */
+.auth-secret{position:relative;display:block;margin-top:5px}
+.reprise .auth-secret input{margin-top:0;padding-right:76px}
+.auth-reveal{position:absolute;top:0;right:0;bottom:0;min-width:var(--lu-target);padding:0 14px;border:0;border-radius:0 var(--lu-radius-control) var(--lu-radius-control) 0;background:transparent;
+  color:var(--lu-accent-text);font:inherit;font-size:14px;font-weight:700;cursor:pointer}
+.auth-reveal:hover{background:var(--lu-hover-wash)}
+.reprise .auth-reveal:focus-visible{outline-offset:-3px}
+.reprise input[aria-invalid=true]{border-color:var(--lu-danger)}
+
+.auth-submit{width:100%;margin-top:4px}
+.reprise .auth-foot{margin-top:20px;font-size:13.5px;text-wrap:pretty}
+
+/* Forgot your password */
+.auth-help{margin-top:24px;padding-top:16px;border-top:1px solid var(--lu-edge-soft)}
+.auth-help>summary{display:flex;align-items:center;gap:8px;min-height:var(--lu-target);cursor:pointer;color:var(--lu-ink-2);font-weight:650;list-style:none}
+.auth-help>summary::-webkit-details-marker{display:none}
+.auth-help>summary::after{content:"";width:8px;height:8px;margin:0 4px 3px auto;border-right:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(45deg);transition:transform .15s ease-out}
+.auth-help[open]>summary::after{transform:rotate(-135deg);margin-bottom:-3px}
+.auth-help>summary:hover{color:var(--lu-ink)}
+.auth-help-body{display:grid;gap:10px;padding:4px 0 8px;font-size:14px}
+.auth-help-body p{color:var(--lu-ink-2)}
+.auth-help-body b{color:var(--lu-ink)}
+.auth-code-label{margin-top:4px;color:var(--lu-ink)!important;font-weight:650}
+.auth-code{margin:0;padding:12px 14px;background:var(--lu-canvas);border:1px solid var(--lu-edge-soft);border-radius:var(--lu-radius-control);color:var(--lu-ink);
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}
+.auth-code code{color:inherit;font:inherit}
+.auth-help-body :not(pre)>code{padding:1px 5px;border-radius:6px;background:var(--lu-canvas);color:var(--lu-ink);font-size:12.5px}
+
+@media (max-width:575.98px){
+  .auth-shell.reprise{align-items:start;padding:16px 12px}
+  .auth-card{padding:24px 20px}
+}
+@media (prefers-reduced-motion:reduce){.auth-help>summary::after{transition:none}}

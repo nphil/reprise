@@ -1,4 +1,4 @@
-"""The amber Resume button keeps dark text and a dark icon, also on hover."""
+"""The accent-filled Resume button keeps dark text and a dark icon, also on hover."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from .test_inspector_behaviours import _SOCKET_STUB
 
 pytestmark = pytest.mark.e2e
 
-_ACCENT_INK = "rgb(26, 18, 3)"
+_ACCENT_INK = "rgb(23, 19, 31)"
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -27,7 +27,7 @@ def _resume_colors(page: Page) -> list[str]:
     )
 
 
-def test_resume_button_text_and_icon_are_dark_on_amber(authed_page: Page, app_url: str) -> None:
+def test_resume_button_text_and_icon_are_dark_on_the_accent(authed_page: Page, app_url: str) -> None:
     page = authed_page
     mock_dashboard_defaults(page)
     page.add_init_script(_SOCKET_STUB)

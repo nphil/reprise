@@ -27,17 +27,6 @@ def test_settings_sr_hints_stay_short_when_detail_moves_to_info_icon() -> None:
     assert not too_long, f"move the explanation into the label's ⓘ template: {too_long}"
 
 
-def test_webhook_secret_detail_lives_in_info_template_when_hint_is_short() -> None:
-    text = (WEB / "templates" / "_automation_triggers.html").read_text(encoding="utf-8")
-
-    detail = re.search(r'<template id="infoWebhookSecretTpl">(.*?)</template>', text, re.S)
-
-    assert detail, "Webhook Secret ⓘ detail template is missing"
-    body = " ".join(html.unescape(TAGS.sub("", detail.group(1))).split())
-    assert "Leave empty to use the main API token instead." in body
-    assert "re-registers any Plex Direct webhook" in body
-
-
 def test_no_message_says_on_on() -> None:
     # "Turn that role on on the node" read as a typo; say which setting turns it on instead.
     package = WEB.parent

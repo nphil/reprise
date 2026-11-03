@@ -1,4 +1,4 @@
-"""Overlays redesign: creation dialogs, Job details, navbar menus, notifications, toasts and the info dialog.
+"""Overlays redesign: creation dialogs, Job details, notifications, toasts and the info dialog.
 
 Each creation dialog is driven through its redesigned controls (type cards, segmented controls, switches) and the
 exact request it sends is asserted, so a restyle cannot change what the app submits.
@@ -490,7 +490,8 @@ class TestJobDetails:
         box = page.locator("#logsModal .modal-content").bounding_box()
         if width == 390:
             assert box["width"] >= 389 and box["height"] >= 840
-        page.locator("#opActionReprocess").click()
+        with page.expect_response(lambda r: r.request.method == "POST" and "/api/jobs/" in r.url):
+            page.locator("#opActionReprocess").click()
         assert [w for w in writes if "reprocess" in w["url"] or "rerun" in w["url"] or w["url"].startswith("jobs")]
 
     def test_retry_chain_shows_attempts_and_operator_actions(self, overlay_page, width: int) -> None:
@@ -509,68 +510,6 @@ class TestJobDetails:
         expect(page.locator("#opActionRetryNow")).to_be_visible()
         expect(page.locator("#opActionCancelChain")).to_be_visible()
         expect(page.locator("#logsLiveHint")).to_be_hidden()
-
-
-class TestNavbarMenus:
-    @pytest.mark.parametrize(
-        ("toggle", "menu", "count"),
-        [("#navAutomationDropdown", "#navAutomationMenu", 2), ("#navSettingsDropdown", "#navSettingsMenu", 9)],
-    )
-    def test_menu_opens_by_keyboard_and_caret_and_closes_on_escape(
-        self, overlay_page, toggle: str, menu: str, count: int
-    ) -> None:
-        page, _ = overlay_page
-        page.set_viewport_size({"width": 1440, "height": 900})
-        page.locator(toggle).focus()
-        page.keyboard.press("ArrowDown")
-        expect(page.locator(menu)).to_be_visible()
-        expect(page.locator(f"{menu} .dropdown-item")).to_have_count(count)
-        expect(page.locator(f"{menu} .dropdown-item small").first).to_be_visible()
-        page.keyboard.press("Escape")
-        expect(page.locator(menu)).to_be_hidden()
-        box = page.locator(toggle).bounding_box()
-        page.mouse.click(box["x"] + box["width"] - 10, box["y"] + box["height"] / 2)
-        expect(page.locator(menu)).to_be_visible()
-        assert page.url.endswith("/dashboard")
-
-    def test_settings_menu_has_two_groups_and_tools_keeps_run_setup_again(self, overlay_page) -> None:
-        page, _ = overlay_page
-        page.set_viewport_size({"width": 1440, "height": 900})
-        page.locator("#navSettingsDropdown").hover()
-        expect(page.locator("#navSettingsMenu .dropdown-header")).to_have_text(["Processing", "System"])
-        page.locator("#navToolsDropdown").hover()
-        expect(page.locator("#navToolsMenu .dropdown-item b")).to_have_text(
-            ["Inspector", "Library health", "Logs", "Webhook Activity", "Run setup again"]
-        )
-        expect(page.locator('#navToolsMenu a[href="/setup?rerun=1"]')).to_be_visible()
-
-    def test_help_menu_lists_five_links(self, overlay_page) -> None:
-        page, _ = overlay_page
-        page.set_viewport_size({"width": 1440, "height": 900})
-        page.locator("#helpMenuBtn").click()
-        expect(page.locator('.dropdown-menu[aria-labelledby="helpMenuBtn"] .dropdown-item')).to_have_count(5)
-
-    def test_phone_menu_lists_every_item_and_pins_logout(self, overlay_page) -> None:
-        page, _ = overlay_page
-        page.set_viewport_size({"width": 390, "height": 844})
-        page.locator(".navbar-toggler").click()
-        drawer = page.locator("#navbarNav")
-        expect(drawer).to_be_visible()
-        for label in ("Library", "Jobs", "Servers", "Automation", "Settings", "Tools"):
-            expect(drawer.get_by_role("link", name=label).first).to_be_visible()
-        for toggle, menu, count in (
-            ("#navAutomationDropdown", "#navAutomationMenu", 2),
-            ("#navSettingsDropdown", "#navSettingsMenu", 9),
-            ("#navToolsDropdown", "#navToolsMenu", 5),
-        ):
-            page.locator(toggle).click()
-            expect(page.locator(f"{menu} .dropdown-item")).to_have_count(count)
-            expect(page.locator(f"{menu} .dropdown-item").first).to_be_visible()
-        expect(drawer.locator("#notificationBellLabel")).to_have_text("2 notifications")
-        for name in ("Help & feedback", "Buy me a coffee", "Star on GitHub", "Switch to light theme"):
-            expect(drawer.get_by_text(name)).to_be_visible()
-        expect(drawer.locator("#navLogoutBtn")).to_be_in_viewport()
-        assert page.evaluate("document.documentElement.scrollWidth") == 390
 
 
 class TestNotificationsToastsAndInfo:

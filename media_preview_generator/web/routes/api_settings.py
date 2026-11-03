@@ -1428,15 +1428,6 @@ def complete_setup():
     return jsonify({"success": True, "redirect": "/"})
 
 
-@api.route("/setup/token-info", methods=["GET"])
-@setup_or_auth_required
-def get_setup_token_info():
-    """Get information about the current authentication token for setup wizard."""
-    from ..auth import get_token_info
-
-    return jsonify(get_token_info())
-
-
 @api.route("/setup/skip", methods=["POST"])
 @setup_or_auth_required
 def skip_setup():
@@ -1451,27 +1442,6 @@ def skip_setup():
     settings = get_settings_manager()
     settings.complete_setup()
     return jsonify({"success": True})
-
-
-@api.route("/setup/set-token", methods=["POST"])
-@setup_or_auth_required
-def set_setup_token():
-    """Set a custom authentication token during setup."""
-    from ..auth import set_auth_token
-
-    data = _json_object()
-    new_token = data.get("token", "")
-    confirm_token = data.get("confirm_token", "")
-
-    if new_token != confirm_token:
-        return jsonify({"success": False, "error": "Tokens do not match."}), 400
-
-    result = set_auth_token(new_token)
-
-    if not result["success"]:
-        return jsonify(result), 400
-
-    return jsonify(result)
 
 
 def _validate_plex_data_path(plex_data_path: str, result: dict) -> None:

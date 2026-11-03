@@ -85,10 +85,9 @@ def app(tmp_path, monkeypatch):
 
 @pytest.fixture
 def client(app):
-    c = app.test_client()
-    with c.session_transaction() as sess:
-        sess["authenticated"] = True
-    return c
+    from tests.auth_helpers import sign_in
+
+    return sign_in(app.test_client())
 
 
 def api_headers():

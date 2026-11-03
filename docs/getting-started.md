@@ -42,7 +42,7 @@ description: Install Media Preview Generator with Docker or Docker Compose, then
   <ol class="setup-path__steps" aria-label="First-run sequence">
     <li>Check prerequisites</li>
     <li>Run the container</li>
-    <li>Get the access token</li>
+    <li>Create your account</li>
     <li>Complete the setup wizard</li>
     <li>Check server settings</li>
     <li>Add webhooks or a schedule</li>
@@ -66,7 +66,7 @@ Generate preview thumbnails for **Plex, Emby, Jellyfin**, or any combination of 
 - [Quick Start (Docker)](#quick-start-docker)
 - [Recommended media-server settings](#recommended-media-server-settings)
 - [Volume Mounts](#volume-mounts)
-- [Authentication Token](#authentication-token)
+- [Sign in and your account](#sign-in-and-your-account)
 - [Docker Compose](#docker-compose)
 - [GPU Acceleration](#gpu-acceleration)
 - [Unraid](#unraid)
@@ -123,15 +123,14 @@ Replace `/path/to/media`, `/path/to/plex/config`, and `/path/to/app/config` with
 > [!TIP]
 > **Timezone:** The `/etc/localtime` mount makes log timestamps and scheduled jobs use your local time. If your host doesn't have this file (e.g. some NAS devices), use `-e TZ=America/New_York` instead (replace with your [timezone](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)).
 
-### Step 2: Get Your Access Token
+### Step 2: Create Your Account
 
-Find your token using the [Authentication Token](#authentication-token) section below.
+Open `http://YOUR_SERVER_IP:8080`. The first time, the **Welcome to Reprise** page asks you to choose a username and a password (at least 8 characters, typed twice). You are signed in at once. See [Sign in and your account](#sign-in-and-your-account) for the details.
 
 ### Step 3: Complete the Setup Wizard
 
-1. Open `http://YOUR_SERVER_IP:8080`
-2. Enter the authentication token
-3. Follow the wizard. Its steps are **Server type**, **Connect**, **Paths**, **Options** and **Security**:
+1. After you create your account, a short tour opens. You can skip it. The setup wizard follows.
+2. Follow the wizard. It has 4 steps: **Server type**, **Connect**, **Paths** and **Options**:
    - **Step 1 — Choose your media server**: click **Plex**, **Emby** or **Jellyfin**.
      - **Plex** → **Sign in with Plex**, then **Next**. If plex.tv is blocked, open **Can't reach plex.tv? Enter server details manually**, enter the URL and token, and click **Verify connection**.
      - **Emby** → enter the server URL, then choose **Username + Password** or **API Key**. Click **Test connection**, then **Save server**.
@@ -140,7 +139,6 @@ Find your token using the [Authentication Token](#authentication-token) section 
    - **Step 2 — Connect your server** *(Plex only)*: pick the Plex server, then tick the libraries to monitor. Tick none to monitor all. Emby and Jellyfin skip this step. Their libraries come in when you save the server, and you manage them later in **Servers → Edit → Libraries**.
    - **Step 3 — Where are your files?**: for Plex, confirm the **Plex Media Server data folder** (usually `/plex` in this container). Use **Check a real file** to confirm this container can read a media file at the path your server reports. Under **Advanced**, add path mappings and exclude paths if you need them.
    - **Step 4 — Processing options**: **GPU device tuning** lists detected GPUs (**Re-scan GPUs** re-detects them). Below it, set up your worker groups, then the **Thumbnails** interval and quality. These are shared by every configured server.
-   - **Step 5 — Set your access token**: choose a new token (at least 8 characters, different from the current one), then click **Complete Setup**. If `WEB_AUTH_TOKEN` is set, the token is fixed and this step says so.
 
 You can add more servers, any vendor and any number of each, at any time with **Servers → Add Server**. A file present on multiple servers is generated once and published to each in its native format. To go through the wizard again, use **Tools → Run setup again**.
 
@@ -214,22 +212,35 @@ With a `:ro` media mount, Emby and default-layout Jellyfin can't save anything. 
 
 ---
 
-## Authentication Token
+## Sign in and your account
 
-Use this section whenever documentation asks for your authentication token.
+**First run.** Open `http://YOUR_SERVER_IP:8080`. You see a **Welcome to Reprise** page (`/welcome`). Choose a username and a password (at least 8 characters, typed twice; the **Show** button lets you check what you typed). You are signed in at once.
 
-On first start the app makes a random token and saves it in `auth.json`, in the folder you mounted as
-`/config`. The logs show only its last 4 characters, so read it from that file:
+A short tour then opens. It has 5 steps: what Reprise does, picking episodes in the Library, Analyze, Review and approve, and a note that sending to Plex is off. Every step has **Skip**. Skipping or finishing it is remembered on the server for your account, so it stays closed in every browser (pressing Esc only closes it for now). To open the tour again, use **Take the tour** in the sidebar or go to **Settings → Advanced → Account → Take the tour**.
+
+After an account exists, the welcome page is closed for good. It can never create or change an account again.
+
+**Signing in later.** Use your username and password. The **Keep me signed in on this device** box is ticked by default. It keeps this browser signed in for up to 7 days. If you untick it, the sign-in ends when you close the browser. You get 5 sign-in attempts per minute per address.
+
+**One account.** There is one account, the owner. Passwords are stored only as salted scrypt hashes (a one-way scramble) in `auth.json` in your config folder. That file holds only the account and the state of the tour.
+
+**Change your password.** Go to **Settings → Advanced → Account → Change password**. You need your current password. Every other browser is signed out. This one stays signed in.
+
+**Forgot your password?** There is no email, so you reset it from a console inside the container. Run one of these:
 
 ```bash
-docker exec media-preview-generator cat /config/auth.json
+# Choose a new password for the same account (signs every browser out)
+docker exec -it media-preview-generator python3 -m media_preview_generator.web.account_cli reset-password
+
+# Remove the account; the next visit shows the welcome page to create a new one
+docker exec -it media-preview-generator python3 -m media_preview_generator.web.account_cli reset-account
 ```
 
-You can also set a fixed token for predictable logins:
+On Unraid, open the **Docker** tab, click the container icon, choose **Console**, and run the same command without `docker exec -it media-preview-generator`. Deleting `auth.json` from the config folder does the same as `reset-account`. Both take effect at once, with no restart. Your webhook secret, servers and results are not touched.
 
-```bash
-WEB_AUTH_TOKEN=your-password
-```
+**Upgrading from the old token login.** Older versions used one random "authentication token" (the `WEB_AUTH_TOKEN` variable, or the token in `auth.json`). That token no longer signs anyone in. On the first start after you upgrade, the old token is copied once, unchanged, into the new **webhook secret** (**Settings → Connections**, card at the bottom). Sonarr, Radarr, Plex and your scripts that used the token keep working with no changes. The app then shows the welcome page so you can create your account. You can remove `WEB_AUTH_TOKEN` afterwards (the log tells you so). Fresh installs get a random webhook secret.
+
+**Reverse proxy or VPN.** If you protect the app with a reverse proxy or VPN, set `AUTH_METHOD=external`. The built-in sign-in is then switched off (no account and no welcome page), and the proxy or VPN is trusted. See [Reference](reference.md#external-authentication-auth_method).
 
 ---
 
@@ -328,7 +339,7 @@ docker run -d \
 ```
 
 > [!TIP]
-> Passing an NVIDIA GPU does not establish GPU acceleration or Dolby Vision Profile 5 colour accuracy with the CPU-focused FFmpeg bundled in this build.
+> Passing an NVIDIA GPU lets Reprise's analysis decode H.264 and HEVC video on it with NVDEC (see Optional GPU decoding in the README). GPU acceleration of thumbnail generation and Dolby Vision Profile 5 colour accuracy are not established for the FFmpeg bundled in this build.
 
 > [!WARNING]
 > **Passing `/dev/nvidia*` as devices isn't enough.** Without `--gpus all` or the NVIDIA runtime (`runtime: nvidia` in compose), the container gets the GPU but not the driver, so the GPU isn't detected and the log warns that the NVIDIA driver isn't in the container.
@@ -417,7 +428,7 @@ Two install paths: the Community Applications template (easiest) or a manual `do
 
 1. Run the container (CA template or `docker run` below).
 2. Open the Web UI at `http://YOUR_UNRAID_IP:8080`.
-3. Sign in with the token from `auth.json` in the app's config folder (`/mnt/user/appdata/media-preview-generator` in the example below), or set `WEB_AUTH_TOKEN` on the container.
+3. On first run, the **Welcome to Reprise** page asks you to choose a username and a password. See [Sign in and your account](#sign-in-and-your-account). If you forget the password, the same section shows how to reset it from the container's **Console** on the Docker tab.
 4. Complete the Setup Wizard — connect a server and review the options.
 
 > [!TIP]
@@ -432,7 +443,6 @@ docker run -d \
   -p 8080:8080 \
   -l net.unraid.docker.webui="http://[IP]:[PORT:8080]/" \
   --device /dev/dri:/dev/dri \
-  -e WEB_AUTH_TOKEN=my-secret-password \
   -e PUID=99 \
   -e PGID=100 \
   -v /mnt/user/data/plex:/data/plex:ro \
@@ -446,7 +456,6 @@ docker run -d \
 |---------|-------|-------------|
 | `-l net.unraid.docker.webui` | Web UI label | Adds a Web UI button in Unraid |
 | `--device /dev/dri` | GPU passthrough | Intel VAAPI/QuickSync |
-| `WEB_AUTH_TOKEN` | `my-secret-password` | **Your login password** (set your own!) |
 | `PUID/PGID` | `99/100` | Unraid `nobody:users` account |
 | `/data/plex` | Media path | Same as Plex container = no path mapping |
 | `/config` | App config | Settings persist here |
@@ -462,7 +471,6 @@ docker run -d \
   --network=br0 \
   --ip=192.168.1.50 \
   --device /dev/dri:/dev/dri \
-  -e WEB_AUTH_TOKEN=my-secret-password \
   -e PUID=99 \
   -e PGID=100 \
   -v /mnt/user/data/plex:/data/plex:ro \
@@ -487,7 +495,6 @@ docker run -d \
   -p 8080:8080 \
   -e NVIDIA_VISIBLE_DEVICES=all \
   -e NVIDIA_DRIVER_CAPABILITIES=all \
-  -e WEB_AUTH_TOKEN=my-secret-password \
   -e PUID=99 \
   -e PGID=100 \
   -v /mnt/user/data/plex:/data/plex:ro \
@@ -613,7 +620,6 @@ docker run -d \
   --ip=192.168.1.51 \
   -l net.unraid.docker.webui="http://[IP]:[PORT:8080]/" \
   --device /dev/dri:/dev/dri \
-  -e WEB_AUTH_TOKEN=your-password \
   -e PUID=99 \
   -e PGID=100 \
   -v /mnt/user/data/plex:/data/plex:ro \

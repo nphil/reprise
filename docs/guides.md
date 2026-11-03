@@ -41,7 +41,7 @@ Guides for the web interface, remote nodes, webhooks, Intro & Credits, HDR handl
 
 ### Setup Wizard
 
-The first time you open the web interface, a **Setup Wizard** walks you through setup for **Plex, Emby and Jellyfin**:
+The first time you open the web interface, you create your account on the **Welcome to Reprise** page (see [Sign in and your account](getting-started.md#sign-in-and-your-account)). A **Setup Wizard** then walks you through setup for **Plex, Emby and Jellyfin**:
 
 1. **Choose your media server.** Pick **Plex**, **Emby** or **Jellyfin**. The chosen card expands:
    - **Plex** — sign in via Plex OAuth (no manual token copying), or paste a URL + token if you prefer.
@@ -50,7 +50,6 @@ The first time you open the web interface, a **Setup Wizard** walks you through 
 2. **Connect.** Finish the selected server's connection. Plex includes server and library selection; Emby/Jellyfin manage libraries later from **Servers → Edit → Libraries**.
 3. **Paths.** Confirm the server's output location and media path mappings. Plex needs a writable data folder for BIFs; Emby and Jellyfin's default layout need writable media. Jellyfin off-media output has its own config-mount and plugin requirements.
 4. **Options.** Named CPU/GPU worker groups with allowed jobs and availability, per-device FFmpeg threads, thumbnail interval, and quality.
-5. **Security.** View or replace your access token (optional).
 
 When setup finishes, you land on the dashboard. Add more servers (any vendor, any number) later from **Servers → Add Server**.
 
@@ -66,8 +65,7 @@ Use **Setup Health** and a one-file job to verify the whole output path.
 
 1. Start the container
 2. Open `http://YOUR_SERVER_IP:8080`
-3. Get your authentication token using [Authentication Token](getting-started.md#authentication-token)
-4. Enter the token to log in
+3. First time only: choose a username and password on the **Welcome to Reprise** page. After that, sign in with them. See [Sign in and your account](getting-started.md#sign-in-and-your-account).
 
 The version you're running shows under the app's name in the top bar. A dot beside it means a newer version is out; click the version for the release notes.
 
@@ -442,7 +440,7 @@ The Triggers tab has:
 - **Publish to which server?** scopes the copy-ready *arr and custom webhook URLs to one server.
 - **Enable webhook processing**, the master toggle.
 - **Delay before processing**, the seconds to wait after an import so the server can index the file.
-- **Webhook Secret**, an optional dedicated authentication token (**Generate**).
+- **Webhook secret**: this tab links to **Settings → Connections**, where the secret lives. See [Webhook secret](#webhook-secret).
 - **Setup instructions** for each source.
 - **View webhook activity**, a link to **Tools → Webhook Activity**.
 
@@ -600,32 +598,36 @@ Traefik v2+ forwards WebSocket upgrade headers automatically. A standard HTTP ro
 
 ### Authentication
 
-The web interface uses token-based authentication:
+The web interface uses one account (the owner) with a username and password:
 
-1. **Auto-generated token:** created on first run and saved to `/config/auth.json`.
-2. **Custom token:** set your own in the setup wizard (step 5).
-3. **Fixed token:** set the `WEB_AUTH_TOKEN` environment variable. It overrides the wizard setting.
-4. **Token masking:** logs show only the last 4 characters of a token.
+1. **First run:** the **Welcome to Reprise** page asks you to choose a username and a password (at least 8
+   characters). After an account exists, that page is closed for good.
+2. **Signing in:** username and password. **Keep me signed in on this device** keeps the browser signed in for up
+   to 7 days. Unticked, the sign-in ends when the browser closes.
+3. **Passwords:** stored only as salted scrypt hashes in `auth.json` in the config folder. Change yours in
+   **Settings → Advanced → Account → Change password**. Every other browser is signed out.
+4. **Forgot it?** Open a console in the container and run `python3 -m media_preview_generator.web.account_cli reset-password`
+   (or `reset-account`). See [Sign in and your account](getting-started.md#sign-in-and-your-account).
 5. **Server secrets:** a media server token, API key or password inside an error (a request's URL, say) shows as
    `****` in this app's log lines (tracebacks included), a job's error and log, and the Files panel.
 6. **Protection from other sites:** while you're signed in, every change the browser makes (saving settings,
    starting or cancelling a job, editing a server) carries a security token only this app's pages know, so a page on
-   another site can't make those changes for you. If a button says the page's security token is
-   out of date, reload the page. Webhooks use the webhook secret instead. A script must send the API
-   token in a header on every request, as below: signing in once with `POST /api/auth/login` and reusing the cookie
-   doesn't work for changes. See [Reference — Authentication](reference.md#authentication).
-7. **Signing out:** **Logout** signs out this browser only. Other browsers stay signed in, even after you change the
-   token. To sign every browser out, delete `flask_secret.key` from the config folder (or change `FLASK_SECRET_KEY`,
-   if you set it) and restart the container (see [Reference — Authentication](reference.md#authentication)).
+   another site can't make those changes for you. The sign-in and welcome forms carry it too. If a button says the
+   page's security token is out of date, reload the page. Webhooks use the webhook secret instead. A script must send
+   the webhook secret in a header on every request, as below: signing in once with `POST /api/auth/login` and
+   reusing the cookie doesn't work for changes. See [Reference — Authentication](reference.md#authentication).
+7. **Signing out:** **Logout** signs out this browser only. Changing the password signs out the other browsers. To
+   sign every browser out, delete `flask_secret.key` from the config folder (or change `FLASK_SECRET_KEY`, if you
+   set it) and restart the container (see [Reference — Authentication](reference.md#authentication)).
 
-API authentication:
+Scripts that call the REST API send the webhook secret (**Settings → Connections**):
 
 ```bash
 # Bearer token
-curl -H "Authorization: Bearer YOUR_TOKEN" http://localhost:8080/api/jobs
+curl -H "Authorization: Bearer YOUR_WEBHOOK_SECRET" http://localhost:8080/api/jobs
 
 # X-Auth-Token header
-curl -H "X-Auth-Token: YOUR_TOKEN" http://localhost:8080/api/jobs
+curl -H "X-Auth-Token: YOUR_WEBHOOK_SECRET" http://localhost:8080/api/jobs
 ```
 
 ### Rate Limiting
@@ -805,8 +807,8 @@ The source-specific URLs batch imports as described below. The universal `/incom
    - On Import
    - On Upgrade
 7. **Authentication** (use one):
-   - **Username/Password** (works in all versions): leave **Username** empty and set **Password** to your API token (see [Authentication Token](getting-started.md#authentication-token)) or webhook secret. The app treats the password as the token.
-   - **Custom headers** (if your webhook form has a Headers section): Add **Key** = `X-Auth-Token`, **Value** = your API token or webhook secret.
+   - **Username/Password** (works in all versions): leave **Username** empty and set **Password** to your webhook secret (**Settings → Connections**, see [Webhook secret](#webhook-secret)). The app treats the password as the secret.
+   - **Custom headers** (if your webhook form has a Headers section): Add **Key** = `X-Auth-Token`, **Value** = your webhook secret.
 8. Click **Test** to verify the connection
 9. Click **Save**
 
@@ -821,8 +823,8 @@ The source-specific URLs batch imports as described below. The universal `/incom
    download id matches the two, so a season pack that takes an hour to import isn't queued twice), and a
    file only it lists is processed.
 6. **Authentication** (use one):
-   - **Username/Password** (works in all versions): leave **Username** empty and set **Password** to your API token or webhook secret. The app treats the password as the token.
-   - **Custom headers** (if your webhook form has a Headers section): Add **Key** = `X-Auth-Token`, **Value** = your API token or webhook secret.
+   - **Username/Password** (works in all versions): leave **Username** empty and set **Password** to your webhook secret (**Settings → Connections**). The app treats the password as the secret.
+   - **Custom headers** (if your webhook form has a Headers section): Add **Key** = `X-Auth-Token`, **Value** = your webhook secret.
 7. Click **Test** then **Save**
 
 ### Set a delay per webhook URL
@@ -889,7 +891,7 @@ The custom webhook starts preview generation when a tool POSTs a file path. Use 
 | `title` | string | No | Display label shown in history/jobs (defaults to first file's basename) |
 | `eventType` | string | No | Set to `"Test"` to verify the connection without triggering processing |
 
-Authentication is the same as Radarr/Sonarr: use `X-Auth-Token` header, `Authorization: Bearer`, or Basic auth (password = token).
+Authentication is the same as Radarr/Sonarr: use `X-Auth-Token` header, `Authorization: Bearer`, or Basic auth (username empty, password = your webhook secret).
 
 #### Configure Tdarr
 
@@ -901,7 +903,7 @@ Tdarr has no built-in webhooks. Use the **Send Web Request** Flow plugin to POST
 4. Configure the plugin:
    - **Method**: `POST`
    - **Request URL**: paste the Custom Webhook URL (e.g. `http://your-server:8080/api/webhooks/custom`)
-   - **Request Headers**: `{"Content-Type": "application/json", "X-Auth-Token": "YOUR_TOKEN"}`
+   - **Request Headers**: `{"Content-Type": "application/json", "X-Auth-Token": "YOUR_WEBHOOK_SECRET"}`
    - **Request Body**: `{"file_path": "{{{args.inputFileObj._id}}}"}`
 5. Save the Flow
 
@@ -923,7 +925,7 @@ FileFlows needs two nodes at the end of your flow: **Set Variable** to build the
    - **Method**: `POST`
    - **URL**: paste the Custom Webhook URL (e.g. `http://your-server:8080/api/webhooks/custom`)
    - **Content Type**: `JSON`
-   - **Headers**: key `X-Auth-Token`, value `YOUR_TOKEN`
+   - **Headers**: key `X-Auth-Token`, value `YOUR_WEBHOOK_SECRET`
    - **Body**: `{"file_path": "{output_file}"}`
 5. Save the flow
 
@@ -934,7 +936,7 @@ FileFlows replaces `{output_file}` with the absolute path of the file as it exis
 ```bash
 curl -X POST "http://your-server:8080/api/webhooks/custom" \
   -H "Content-Type: application/json" \
-  -H "X-Auth-Token: YOUR_TOKEN" \
+  -H "X-Auth-Token: YOUR_WEBHOOK_SECRET" \
   -d '{"file_path": "/media/movies/Movie (2024)/Movie.mkv"}'
 ```
 
@@ -946,16 +948,28 @@ These settings are under **Settings** on the **Automation → Triggers** tab. Th
 |---------|---------|-------------|
 | **Enable webhook processing** | On | Master toggle |
 | **Delay before processing** | 60s | Default initial wait for every webhook URL (slider: 10–300 s); override per request with `delay=1` through `delay=3600`. Universal/per-server routes wait per job. Source-specific routes reset their batch timer on new files, with a maximum age of the greater of 10 minutes and the longest accepted delay. |
-| **Webhook Secret** | *(empty)* | Dedicated authentication token for webhooks |
+| **Webhook secret** | *(made on first start)* | The shared secret every sender uses. It lives under **Settings → Connections** (see [Webhook secret](#webhook-secret)) |
 
 Webhook processing uses each server's library selection (**Servers → Edit → Libraries**). If a webhook path belongs to a library that isn't selected, it is skipped.
 
 ### Webhook Secret
 
-By default, webhooks authenticate with your main API token. You can set a separate **webhook secret** instead:
+The **webhook secret** is the one shared password for everything that calls this app without a browser: Sonarr, Radarr, Plex, Emby, Jellyfin, Tdarr, FileFlows and your own scripts. The app makes one on first start, so there is nothing to set up. If you upgraded from the old token login, your old token was copied into it once, so your senders keep working (see [Sign in and your account](getting-started.md#sign-in-and-your-account)).
 
-1. On **Automation → Triggers**, click **Generate** next to the secret field. It saves automatically.
-2. Use the secret as the token: in Radarr or Sonarr, put it in **Password** (leave Username empty) or in the **X-Auth-Token** header if your form has a Headers section.
+Find it in **Settings → Connections**, on the **Webhook secret** card at the bottom. It is shown hidden. **Show** and **Copy** fetch the real value only when you press them, and **Regenerate** makes a new one.
+
+How each sender uses it:
+
+| Sender | How to give it the secret |
+|--------|---------------------------|
+| Sonarr / Radarr | Leave **Username** empty and put the secret in **Password**, or send the `X-Auth-Token` header |
+| Emby / Jellyfin plugin | `X-Auth-Token` header |
+| Plex | The registered webhook URL carries it as `?token=` |
+| Tdarr, FileFlows, custom scripts | `X-Auth-Token` or `Authorization: Bearer` header |
+
+Scripts that call the REST API use the same headers (`X-Auth-Token` or `Authorization: Bearer`).
+
+**Regenerate** makes the old value stop working everywhere until you update each sender. Plex is the exception: the app registers Plex's webhook again for you.
 
 ### Batching and the delay
 
@@ -994,7 +1008,7 @@ The app registers its own `/api/webhooks/plex` endpoint through Plex's account A
 
 **What happens:** Plex POSTs a `library.new` event to `/api/webhooks/plex` whenever a new item is added. The app ignores other events (`media.play`, `media.rate`, etc.), takes the file paths from `Metadata.Media[].Part[].file` or else looks the item up by `ratingKey`, and queues them like Radarr and Sonarr imports.
 
-**Authentication:** Plex's webhook settings allow no custom headers or HTTP Basic credentials, so **Register with Plex** appends your webhook secret (or API token) to the stored URL as a `?token=…` query parameter, and the endpoint checks it like the header tokens from Radarr and Sonarr. **If you rotate the webhook secret**, click **Re-register with Plex** so Plex picks up the new value. Saving a new secret re-registers it automatically.
+**Authentication:** Plex's webhook settings allow no custom headers or HTTP Basic credentials, so **Register with Plex** appends your webhook secret to the stored URL as a `?token=…` query parameter, and the endpoint checks it like the header tokens from Radarr and Sonarr. **If you regenerate the webhook secret**, the app registers Plex's webhook again for you.
 
 ### Option B — Recently Added scanner (universal)
 
@@ -1803,7 +1817,7 @@ Common questions have moved to their own page — see [FAQ](faq.md).
 | Job waits for workers | No compatible enabled group, outside group hours, unavailable GPU, or compatible workers busy | Read the waiting reason. In **Settings → Workers**, check job permissions, hours and hardware. Loudness needs a CPU device. Outside hours normally resolves at the next opening; busy workers finish their current files. |
 | Job shows **Waiting to start** | Three other jobs are loading and listing their files | It starts as soon as one of them has listed its files; a High-priority job goes first. Check global and per-job pause holds too. |
 | Job shows **Waiting for a free worker** | Every worker that handles this job type is busy | It starts when one frees up. Add workers or enable a worker group for this job type under **Worker groups**. A paused job also shows this until it's resumed. |
-| Webhook returns `401` | Invalid or missing authentication | In Sonarr/Radarr webhook settings, leave **Username** empty and set **Password** to your API token or webhook secret. |
+| Webhook returns `401` | Invalid or missing authentication | In Sonarr/Radarr webhook settings, leave **Username** empty and set **Password** to your webhook secret (**Settings → Connections**). |
 | Webhook test passes but imports do not trigger jobs | Wrong webhook events or webhooks disabled | Enable **On Import** in Radarr/Sonarr and check **Enable webhook processing** is on (Automation → Triggers → Settings). |
 | Log warns `Webhook from sonarr: ignored '…' — the payload didn't carry a file path` | The sender's payload has no file path anywhere: no `episodeFile`, no `episodeFiles[]`, no `filePath` (Sonarr's own "On Import Complete" event lists its files, so it never causes this) | Check the sender posts Sonarr's standard webhook body; a custom template or a proxy that rewrites the body must keep `episodeFile.path` (or `series.path` + `episodeFile.relativePath`). |
 | New files are imported but previews are not generated | Plex indexing delay or wrong library mapping | Increase webhook delay and check the file's library is selected on the server (**Servers → Edit → Libraries**) and its path mapping. |

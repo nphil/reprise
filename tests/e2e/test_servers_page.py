@@ -47,7 +47,7 @@ class TestServersPageLoads:
         assert "/login" not in servers_page.url
 
     def test_servers_page_has_heading(self, servers_page: Page):
-        expect(servers_page.locator("h1")).to_contain_text("Media Servers")
+        expect(servers_page.locator("h1")).to_contain_text("Connections")
 
     def test_servers_page_has_server_list_container(self, servers_page: Page):
         # The JS swaps loading spinner → empty state → cards. The container is always present.

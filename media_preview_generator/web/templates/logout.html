@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}Sign out - Media Preview Generator{% endblock %}
+{% block title %}Sign out · Reprise{% endblock %}
 
 {% block content %}
 {# GET /logout: a page anywhere can make the browser open this URL, so it only asks; the button signs out. #}
@@ -11,7 +11,7 @@
             {% if auth_external %}
             <p class="text-muted small mb-4">Sign-in is handled by your proxy or VPN: sign out there to leave. This only clears this app's own session.</p>
             {% else %}
-            <p class="text-muted small mb-4">You'll need your token to sign in again.</p>
+            <p class="text-muted small mb-4">You'll need your username and password to sign in again.</p>
             {% endif %}
             <form method="post" action="{{ url_for('main.logout') }}" class="d-flex gap-2">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

@@ -11,9 +11,17 @@ import pytest
 from media_preview_generator.markers.store import MarkerStore
 from media_preview_generator.reprise import service as service_module
 from media_preview_generator.reprise.admission import admit_references
+from media_preview_generator.reprise.analysis import NO_OTHER_EPISODES, OTHER_EPISODES_NOT_READY, UNCOMPARABLE_MEDIA
 from media_preview_generator.reprise.identity import media_version
-from media_preview_generator.reprise.models import DecisionRange, Evidence, PlaybackIdentity
-from media_preview_generator.reprise.service import RepriseService, _mapping_fingerprint
+from media_preview_generator.reprise.models import (
+    AnalysisDraft,
+    AnalysisRefused,
+    DecisionRange,
+    Evidence,
+    PlaybackIdentity,
+    ReviewRefused,
+)
+from media_preview_generator.reprise.service import CHANGED_ON_DISK, RepriseService, _mapping_fingerprint
 from media_preview_generator.reprise.store import RepriseStore
 from media_preview_generator.reprise.verification_profile import PROFILE_FINGERPRINT, PROFILE_ID
 from media_preview_generator.servers.registry import ServerRegistry
@@ -204,7 +212,7 @@ def lifecycle(tmp_path, monkeypatch, synthetic_episode):
     service = RepriseService(store, registry, manager)
     monkeypatch.setattr(service_module, "_SERVICE", service)
 
-    def register(name, rating_key):
+    def register(name, rating_key, candidates=None):
         path = library / (name + ".mkv")
         shutil.copyfile(synthetic_episode.canonical_path, path)
         version = media_version(str(path), 7000, synthetic_episode.stream_signature)
@@ -222,7 +230,9 @@ def lifecycle(tmp_path, monkeypatch, synthetic_episode):
                 "show_key": "show",
                 "season": 1,
                 "episode": int(rating_key.rsplit("-", 1)[-1]),
-                "candidates": [
+                "candidates": candidates
+                if candidates is not None
+                else [
                     {"kind": kind, "start_ms": 1000, "end_ms": 6000, "source": "fixture"}
                     for kind in ("intro", "credits")
                 ],
@@ -474,3 +484,162 @@ def test_real_preview_queue_completes_and_opens_artifact(lifecycle):
     assert service.get_job(job["id"])["status"] == "completed"
     with service.open_preview(job["id"])[0] as stream:
         assert b"ftyp" in stream.read(32)
+
+
+def test_single_episode_analysis_tells_the_owner_why_nothing_was_proposed(lifecycle):
+    service, register = lifecycle
+    target, _ = register("target", "episode-1")
+    job_id = queued_analysis(service, target)
+    answer = service.get_result(target.id)
+    assert answer["analysis_status"] == "complete" and NO_OTHER_EPISODES in answer["reasons"]
+    job = service.get_job(job_id)
+    assert job["media_version_ids"] == [target.id] and job["message"] is None
+    assert job["outcome"] == {
+        "state": "nothing_found",
+        "message": NO_OTHER_EPISODES,
+        "per_media": [{"id": target.id, "state": "nothing_found", "message": NO_OTHER_EPISODES}],
+    }
+    (item,) = service.list_media()["items"]
+    assert (item["ranges"]["skip"], item["ranges"]["to_review"]) == (0, 0) and item["reasons"] == [NO_OTHER_EPISODES]
+
+
+def test_single_episode_analysis_uses_season_siblings_and_reports_ranges_to_review(lifecycle):
+    service, register = lifecycle
+    target, _ = register("target", "episode-1")
+    register("sibling", "episode-2")
+    job = service.get_job(queued_analysis(service, target))
+    assert job["outcome"]["state"] == "found" and job["message"] is None
+    item = next(i for i in service.list_media()["items"] if i["id"] == target.id)
+    assert item["ranges"]["skip"] > 0 and item["ranges"]["to_review"] == item["ranges"]["skip"]
+    assert NO_OTHER_EPISODES not in item["reasons"] and OTHER_EPISODES_NOT_READY not in item["reasons"]
+
+
+def test_siblings_that_changed_on_disk_are_reported_as_not_ready(lifecycle):
+    service, register = lifecycle
+    target, _ = register("target", "episode-1")
+    sibling, _ = register("sibling", "episode-2")
+    with open(sibling.canonical_path, "ab") as file:
+        file.write(b"changed")
+    queued_analysis(service, target)
+    assert OTHER_EPISODES_NOT_READY in service.get_result(target.id)["reasons"]
+
+
+def test_permission_change_does_not_make_an_episode_stale(lifecycle):
+    service, register = lifecycle
+    target, identity = register("target", "episode-1")
+    time.sleep(0.02)
+    os.chmod(target.canonical_path, 0o600)  # moves only the change time, as a permissions or hard-link pass does
+    assert os.stat(target.canonical_path).st_ctime_ns != target.ctime_ns
+    assert service.lookup(identity)["freshness"] == "current"
+    queued_analysis(service, target)
+    service.open_stream(target.id)[0].close()
+
+
+def test_analysis_of_a_replaced_file_is_refused_in_plain_words(lifecycle):
+    service, register = lifecycle
+    target, _ = register("target", "episode-1")
+    with open(target.canonical_path, "ab") as file:
+        file.write(b"changed")
+    with pytest.raises(AnalysisRefused) as refused:
+        service.enqueue_analysis([target.id], principal="owner")
+    assert str(refused.value) == CHANGED_ON_DISK
+
+
+def test_failed_analysis_keeps_its_reason_instead_of_a_generic_failure(lifecycle, monkeypatch):
+    from media_preview_generator.reprise import analysis
+
+    service, register = lifecycle
+    target, _ = register("target", "episode-1")
+    detail = "Native audio timestamps are discontinuous"
+    monkeypatch.setattr(
+        analysis, "analyze", lambda *a, **k: AnalysisDraft((), (), "failed", (UNCOMPARABLE_MEDIA, detail))
+    )
+    job_id = service.enqueue_analysis([target.id], principal="owner")["id"]
+    wait_for_queue()
+    stored = service.store.get_result(target.id)
+    assert (stored.analysis_status, stored.reasons) == ("failed", (UNCOMPARABLE_MEDIA, detail))
+    job = service.get_job(job_id)
+    assert (job["status"], job["message"], job["outcome"]["state"]) == ("failed", UNCOMPARABLE_MEDIA, "failed")
+
+
+def test_refreshing_after_a_permission_change_keeps_the_same_version_and_its_results(lifecycle):
+    service, register = lifecycle
+    target, identity = register("target", "episode-1")
+    queued_analysis(service, target)
+    before = service.store.get_result(target.id)
+    time.sleep(0.02)
+    os.chmod(target.canonical_path, 0o600)
+    again = media_version(target.canonical_path, target.duration_ms, target.stream_signature)
+    assert again.id == target.id and again.ctime_ns != target.ctime_ns
+    metadata = service.store.get_bindings(target.id)[0][2]
+    service.store.register_media(again, identity, server_id="server", metadata=metadata)  # what a refresh does
+    assert service.store.get_result(target.id) == before
+    assert service.lookup(identity)["freshness"] == "current"
+
+
+PLEX_MARKERS = [
+    {"kind": "intro", "start_ms": 1000, "end_ms": 3000, "source": "plex"},
+    {"kind": "credits", "start_ms": 4000, "end_ms": 7000, "source": "plex"},
+]
+
+
+def test_plex_markers_nothing_confirmed_are_suggestions_the_owner_approves_range_by_range(lifecycle):
+    service, register = lifecycle
+    target, identity = register("target", "episode-1", PLEX_MARKERS)
+    job = service.get_job(queued_analysis(service, target))
+    assert job["outcome"]["state"] == "suggested"
+    assert job["outcome"]["message"].startswith("Plex suggested the intro and credits, but Reprise could not confirm")
+    answer = service.get_result(target.id)
+    assert NO_OTHER_EPISODES in answer["reasons"]
+    assert any(reason.startswith("Plex suggested the intro (from 0:01 to 0:03)") for reason in answer["reasons"])
+    (item,) = service.list_media()["items"]
+    assert (item["ranges"]["suggested"], item["ranges"]["to_review"]) == (2, 0)
+    # Plex's word is not enough to skip: nothing is eligible, the suggestions are only proposals
+    assert not answer["eligible_skip_ranges"]
+    assert {r["origin"] for r in answer["proposed_ranges"]} == {"plex"}
+
+    result = service.store.get_result(target.id)
+    intro = next(r for r in result.ranges if r.kind == "intro")
+    with pytest.raises(ReviewRefused):
+        service.review(
+            target.id, result.result_revision, [{"range_id": intro.id, "review_status": "approved"}], "owner"
+        )
+    assert not service.lookup(identity)["eligible_skip_ranges"]
+    approval = {"range_id": intro.id, "review_status": "approved", "acknowledge_plex_suggestion": True}
+    service.review(target.id, result.result_revision, [approval], "owner")
+    eligible = service.lookup(identity)["eligible_skip_ranges"]
+    assert [(r["kind"], r["start_ms"], r["end_ms"]) for r in eligible] == [("intro", 1000, 3000)]  # not the credits
+    (item,) = service.list_media()["items"]
+    assert (item["ranges"]["suggested"], item["ranges"]["approved"]) == (1, 1)
+
+
+def test_a_keep_still_vetoes_an_approved_plex_suggestion(lifecycle):
+    service, register = lifecycle
+    target, identity = register("target", "episode-1", PLEX_MARKERS)
+    queued_analysis(service, target)
+    result = service.store.get_result(target.id)
+    intro = next(r for r in result.ranges if r.kind == "intro")
+    edits = [
+        {"range_id": intro.id, "review_status": "approved", "acknowledge_plex_suggestion": True},
+        {"range_id": None, "action": "keep", "kind": "intro", "start_ms": 1500, "end_ms": 2000},
+    ]
+    service.review(target.id, result.result_revision, edits, "owner")
+    eligible = service.lookup(identity)["eligible_skip_ranges"]
+    assert [(r["start_ms"], r["end_ms"]) for r in eligible] == [(1000, 1500), (2000, 3000)]
+
+
+def test_analysis_is_given_only_the_three_nearest_episodes_in_a_stable_order(lifecycle, monkeypatch):
+    from media_preview_generator.reprise import analysis
+
+    service, register = lifecycle
+    target, _ = register("target", "episode-3")
+    siblings = {n: register(f"sibling-{n}", f"episode-{n}")[0] for n in (1, 2, 4, 5, 6)}
+    seen = []
+
+    def capture(media, candidates, references, **kwargs):
+        seen.append([reference.id for reference in references])
+        return AnalysisDraft((), (), "complete", ())
+
+    monkeypatch.setattr(analysis, "analyze", capture)
+    queued_analysis(service, target)
+    assert seen == [[siblings[n].id for n in (2, 4, 1)]]

@@ -384,27 +384,19 @@ class TestAdjustEditing:
         expect(authed_page.locator("#inspAdjustPanel .insp-adjust-summary")).to_have_text("Nothing to save yet")
         expect(authed_page.locator("#inspAdjustSave")).to_be_disabled()
 
-    def test_with_intro_and_credits_off_everywhere_nothing_can_be_adjusted(
+    def test_with_intro_and_credits_off_everywhere_the_page_points_to_library(
         self, authed_page: Page, app_url: str
     ) -> None:
+        # The older detector would queue a job that checks nothing, so it is not offered; Reprise's own analysis is.
         file, item = fx.checked_episode()
         for server in item["servers"]:
             server["markers_enabled"] = False
         api = fx.install(authed_page, _api_with(file, item))
         _open(authed_page, app_url, fx.EPISODE)
-        authed_page.locator("#inspAdjust").click()
 
-        expect(authed_page.locator("[data-cant-adjust='intro']")).to_contain_text(
-            "No server with Intro & Credits on for this file shows intros, so there is nothing to send it to and it "
-            "can't be adjusted here."
-        )
-        expect(authed_page.locator("[data-cant-adjust='credits']")).to_contain_text("shows credits")
-        expect(authed_page.locator("#inspAdjustPanel [data-adjust]")).to_have_count(0)
-        expect(authed_page.locator("#inspAdjustPanel [data-add]")).to_have_count(0)
-        expect(authed_page.locator("#inspAdjustPanel .insp-adjust-summary")).to_have_text("Nothing to save yet")
-        save = authed_page.locator("#inspAdjustSave")
-        expect(save).to_be_disabled()
-        expect(save).to_have_text("Save and send to your servers")
+        expect(authed_page.locator("#inspAnalyzeInLibrary").first).to_have_attribute("href", re.compile(r"^/reprise"))
+        expect(authed_page.locator("#inspAdjust")).to_have_count(0)
+        expect(authed_page.locator("#inspRedetect")).to_have_count(0)
         assert api.saves == []
 
     def test_a_recap_jellyfin_shows_is_edited_and_sent(self, authed_page: Page, app_url: str) -> None:

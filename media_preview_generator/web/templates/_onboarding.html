@@ -1,0 +1,84 @@
+{#- The first-run tour. base.html includes this on every page that has the sidebar. It opens by itself once for a new
+    account (auth_ui.onboarding_auto: not dismissed, not finished), and from any [data-tour-open] button (Settings,
+    the sidebar). Copy is plain on purpose; the diagrams reuse the Library page's own timeline and chips, with
+    example values, so what the tour shows is what the page looks like. -#}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/reprise.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/pages/onboarding.css') }}">
+<dialog id="repriseTour" class="tour" aria-label="A quick tour of Reprise"
+        data-auto="{{ 'true' if auth_ui.onboarding_auto else 'false' }}"
+        data-state-url="{{ url_for('api.set_onboarding') }}">
+    <div class="reprise tour-frame">
+        <header class="tour-head">
+            <div class="tour-progress">
+                <p class="tour-count" id="tourCount" aria-live="polite">Step 1 of 5</p>
+                <ol class="tour-dots" aria-hidden="true"><li></li><li></li><li></li><li></li><li></li></ol>
+            </div>
+            <button type="button" class="rp-btn quiet" data-tour-skip>Skip<span class="rp-sr"> the tour</span></button>
+        </header>
+
+        <div class="tour-body" id="tourBody" aria-live="polite"></div>
+        <p class="tour-error" id="tourError" role="alert" hidden>Couldn't save that. Check your connection and try again, or press Skip.</p>
+
+        <footer class="tour-foot">
+            <div class="rp-actions">
+                <button type="button" class="rp-btn" data-tour-back>Back</button>
+                <button type="button" class="rp-btn primary" data-tour-next autofocus>Next</button>
+            </div>
+        </footer>
+
+        <div id="tourSteps" hidden>
+            <section class="tour-step" data-step="1">
+                <h2 class="tour-title">Skip the repeat. Keep the story.</h2>
+                <p>Reprise looks across your episodes for the intros and credits that repeat, then lets you decide what is safe to skip. It never changes your media files.</p>
+                <figure class="tour-figure">
+                    <div class="rp-timeline" role="img" aria-label="Example episode: a repeated intro and repeated credits can be skipped, and a scene inside the credits is kept.">
+                        <span class="rp-timeline-segment" style="left:0;width:9%"></span>
+                        <span class="rp-timeline-segment" style="left:90%;width:10%"></span>
+                        <span class="rp-timeline-segment keep" style="left:93%;width:4%"></span>
+                    </div>
+                    <ul class="rp-legend" aria-hidden="true"><li><i></i>Skip: a repeated intro or credits</li><li><i class="keep"></i>Keep: a scene Reprise never skips</li></ul>
+                    <figcaption class="rp-note">An example episode.</figcaption>
+                </figure>
+            </section>
+
+            <section class="tour-step" data-step="2">
+                <h2 class="tour-title">Pick episodes in the Library</h2>
+                <p>The Library lists your shows and episodes. Search by name, or narrow it by show and season. Tick the episodes you want checked, or open one to see what Reprise found.</p>
+                <p class="rp-note tour-aside">Nothing listed yet? Connect your media server first, under Settings, then Connections.</p>
+            </section>
+
+            <section class="tour-step" data-step="3">
+                <h2 class="tour-title">Analyze them</h2>
+                <p>With episodes ticked, press <b>Analyze</b>. Reprise compares them to find what repeats. Expect minutes to about an hour, depending on how many episodes you pick and on your hardware. It runs in the background, so you can keep browsing or close the tab.</p>
+                <div class="tour-figure tour-demo" aria-hidden="true">
+                    <span class="rp-btn primary">Analyze</span>
+                    <span class="rp-chip" data-tone="busy">Analyzing</span>
+                </div>
+                <p class="rp-note tour-aside">Progress shows in the Activity panel. Reprise works on a CPU alone; a GPU is optional, and Settings, then Advanced lists what it found.</p>
+            </section>
+
+            <section class="tour-step" data-step="4">
+                <h2 class="tour-title">Review, then approve</h2>
+                <p>Open an episode to see its timeline. Each section Reprise found is a suggestion: approve what is right, reject what is not, or protect a scene it must keep. Press <b>Save review</b> when you are done. Nothing is skipped until you approve it.</p>
+                <figure class="tour-figure">
+                    <ul class="tour-ranges" aria-label="Example sections and decisions">
+                        <li><span class="tour-range-name">Intro</span><span class="tour-range-time">0:00 to 0:52</span><span class="rp-chip" data-tone="positive">Approved</span></li>
+                        <li><span class="tour-range-name">Scene in the credits</span><span class="tour-range-time">42:20 to 42:40</span><span class="rp-chip" data-tone="accent">Needs review</span></li>
+                        <li><span class="tour-range-name">Credits</span><span class="tour-range-time">41:10 to 43:02</span><span class="rp-chip" data-tone="danger">Rejected</span></li>
+                    </ul>
+                    <figcaption class="rp-note">Example sections.</figcaption>
+                </figure>
+            </section>
+
+            <section class="tour-step" data-step="5">
+                <h2 class="tour-title">Sending to Plex stays off until you turn it on</h2>
+                <p>Saving a review stays inside Reprise. Nothing goes to Plex until you switch on <b>Allow sending to Plex</b> under Settings, then Sharing, and every change still needs your confirmation. The shield in the sidebar always shows the current state.</p>
+                <div class="tour-figure tour-demo" aria-hidden="true">
+                    <span class="rp-toggle"><input type="checkbox" disabled tabindex="-1"> Allow sending to Plex</span>
+                </div>
+                <p class="tour-aside"><a class="rp-btn" href="{{ url_for('main.reprise_sharing_page') }}" data-tour-finish>Open Sharing</a></p>
+            </section>
+        </div>
+    </div>
+</dialog>
+<script src="{{ url_for('static', filename='js/onboarding.js') }}" defer></script>

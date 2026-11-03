@@ -12,15 +12,16 @@ Two app subprocesses are exposed:
   wizard hits is mocked client-side via ``page.route()`` — the
   Python-side ``setup_complete`` flag never flips.
 
-Auth bypass: both subprocesses run with ``WEB_AUTH_TOKEN=e2e-test-token``;
-each session captures the Flask session cookie via a real form POST and
-replays it into Playwright contexts via the ``session_cookie`` /
-``session_cookie_wizard`` fixtures.
+Auth bypass: both subprocesses run with ``WEB_AUTH_TOKEN=e2e-test-token``, which the app carries over as its webhook
+secret on first start, so ``X-Auth-Token: e2e-test-token`` authenticates API calls; each session also makes the owner
+account through the real first-run form and captures the Flask session cookie, replayed into Playwright contexts by the
+``session_cookie`` / ``session_cookie_wizard`` fixtures.
 """
 
 from __future__ import annotations
 
 import http.cookiejar
+import json
 import os
 import re
 import socket
@@ -240,34 +241,70 @@ def auth_token() -> str:
     return "e2e-test-token"
 
 
-def login_form_csrf_token(opener: urllib.request.OpenerDirector, target_url: str) -> str:
-    """GET /login through ``opener`` (which keeps the session cookie) and return the form's CSRF token."""
-    with opener.open(f"{target_url}/login", timeout=10) as resp:  # noqa: S310 (test-only localhost)
+E2E_USERNAME = "e2e-owner"
+E2E_PASSWORD = "e2e-owner-password"
+
+
+def _form_page(opener: urllib.request.OpenerDirector, url: str) -> tuple[str, str]:
+    """GET ``url`` through ``opener`` (which keeps the session cookie); return where it landed and the form's CSRF token."""
+    with opener.open(url, timeout=10) as resp:  # noqa: S310 (test-only localhost)
+        landed_on = urlparse(resp.geturl()).path
         html = resp.read().decode()
     match = re.search(r'name="csrf_token" value="([^"]+)"', html)
     if not match:
-        raise RuntimeError("The login page has no csrf_token field")
-    return match.group(1)
+        raise RuntimeError(f"{url} has no csrf_token field")
+    return landed_on, match.group(1)
+
+
+def _dismiss_the_tour(opener: urllib.request.OpenerDirector, target_url: str) -> None:
+    """Skip the tour for the new account, as a person would with its Skip button.
+
+    A new account is offered the first-run tour as a modal <dialog> that opens by itself and makes the page behind it
+    inert, so every click an e2e test makes would wait for it. The tests that cover the tour open it themselves, from
+    any ``[data-tour-open]`` button.
+    """
+    with opener.open(f"{target_url}/", timeout=10) as resp:  # noqa: S310 (test-only localhost)
+        page_token = re.search(r'<meta name="csrf-token" content="([^"]+)"', resp.read().decode())
+    if not page_token:
+        raise RuntimeError("The signed-in page has no csrf-token meta tag")
+    req = urllib.request.Request(
+        f"{target_url}/api/account/onboarding",
+        data=json.dumps({"state": "dismissed"}).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json", "X-CSRFToken": page_token.group(1)},
+    )
+    opener.open(req, timeout=10)  # noqa: S310 (test-only localhost)
 
 
 def _capture_session_cookie(target_url: str) -> dict:
-    """Sign in through the real login form + return the Flask session cookie as a Playwright dict."""
+    """Sign in through the real forms and return the Flask session cookie as a Playwright dict.
+
+    A fresh app has no account, so /welcome is the first-run form and this makes the owner there; an app that already
+    has one sends /welcome on to /login, and this signs in with the same credentials.
+    """
     cookie_jar = http.cookiejar.CookieJar()
     opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
-    csrf_token = login_form_csrf_token(opener, target_url)
-    data = urllib.parse.urlencode({"token": "e2e-test-token", "csrf_token": csrf_token}).encode()
+    landed_on, csrf_token = _form_page(opener, f"{target_url}/welcome")
+    if landed_on == "/welcome":
+        action = "/welcome"
+        fields = {"username": E2E_USERNAME, "password": E2E_PASSWORD, "confirm_password": E2E_PASSWORD}
+    else:
+        action = "/login"
+        fields = {"username": E2E_USERNAME, "password": E2E_PASSWORD, "remember": "1"}
+    data = urllib.parse.urlencode({**fields, "csrf_token": csrf_token}).encode()
     parsed = urlparse(target_url)
     req = urllib.request.Request(
-        f"{target_url}/login",
+        f"{target_url}{action}",
         data=data,
         method="POST",
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
     opener.open(req, timeout=10)  # noqa: S310 (test-only localhost)
+    _dismiss_the_tour(opener, target_url)
     for c in cookie_jar:
-        if c.name == "session":
+        if c.name == "reprise_session":
             return {
-                "name": "session",
+                "name": "reprise_session",
                 "value": c.value,
                 "domain": parsed.hostname or "localhost",
                 "path": "/",
@@ -275,7 +312,7 @@ def _capture_session_cookie(target_url: str) -> dict:
                 "secure": False,
                 "sameSite": "Lax",
             }
-    raise RuntimeError("Login form returned no session cookie — did POST /login fail?")
+    raise RuntimeError(f"POST {action} returned no session cookie: did the sign-in fail?")
 
 
 @pytest.fixture(scope="session")

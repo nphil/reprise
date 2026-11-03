@@ -14,14 +14,12 @@ from playwright.sync_api import Page, expect
 from ._mocks import (
     capture_servers_save,
     capture_settings_save,
-    capture_setup_set_token,
     mock_emby_password_auth,
     mock_plex_libraries,
     mock_servers_test_connection,
     mock_settings_get,
     mock_setup_complete,
     mock_setup_status,
-    mock_setup_token_info,
     mock_system_status,
     mock_validate_plex_config_folder,
 )
@@ -37,8 +35,6 @@ class TestPlexHappyPath:
         mock_validate_plex_config_folder(wizard_page, valid=True)
         mock_settings_get(wizard_page)
         mock_system_status(wizard_page)
-        mock_setup_token_info(wizard_page, env_controlled=False)
-        captured_token = capture_setup_set_token(wizard_page, ok=True)
         called_complete = mock_setup_complete(wizard_page, redirect="/")
         # Stub the literal "/" navigation only — the previous broader
         # **/ glob caused state-leak hangs across consecutive tests.
@@ -80,16 +76,10 @@ class TestPlexHappyPath:
         # Step 4 — processing.
         expect(wizard_page.locator('div.setup-step[data-step="4"]')).to_have_class("setup-step active")
         expect(wizard_page.locator("#gpuDetecting")).to_be_hidden()
+        # "Finish setup" saves the processing options and completes setup.
         wizard_page.locator("#step4Next").click()
-
-        # Step 5 — security/token.
-        expect(wizard_page.locator('div.setup-step[data-step="5"]')).to_have_class("setup-step active")
-        wizard_page.locator("#newToken").fill("happy-path-token-1")
-        wizard_page.locator("#confirmToken").fill("happy-path-token-1")
-        wizard_page.locator("#finishSetup").click()
         wizard_page.wait_for_url("**/", timeout=5000)
 
-        assert captured_token, "set-token never fired"
         assert called_complete, "complete never fired"
 
 
@@ -100,11 +90,9 @@ class TestEmbyHappyPath:
         mock_setup_status(wizard_page, complete=False)
         mock_settings_get(wizard_page)
         mock_system_status(wizard_page)
-        mock_setup_token_info(wizard_page, env_controlled=False)
         mock_emby_password_auth(wizard_page, ok=True)
         mock_servers_test_connection(wizard_page, ok=True)
         capture_servers_save(wizard_page, vendor="emby")
-        captured_token = capture_setup_set_token(wizard_page, ok=True)
         called_complete = mock_setup_complete(wizard_page, redirect="/")
         # Stub the literal "/" navigation only — the previous broader
         # **/ glob caused state-leak hangs across consecutive tests.
@@ -136,12 +124,7 @@ class TestEmbyHappyPath:
         # Step 4 — GPU + processing options.
         expect(wizard_page.locator('div.setup-step[data-step="4"]')).to_have_class("setup-step active")
         expect(wizard_page.locator("#gpuDetecting")).to_be_hidden()
+        # "Finish setup" saves the processing options and completes setup.
         wizard_page.locator("#step4Next").click()
-
-        # Step 5 token set.
-        wizard_page.locator("#newToken").fill("emby-flow-token-9")
-        wizard_page.locator("#confirmToken").fill("emby-flow-token-9")
-        wizard_page.locator("#finishSetup").click()
         wizard_page.wait_for_url("**/", timeout=5000)
-        assert captured_token
         assert called_complete

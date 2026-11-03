@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% from "_settings_nav.html" import settings_mobile_nav, settings_sidebar %}
 
-{% block title %}Settings - Media Preview Generator{% endblock %}
+{% block title %}Advanced settings · Reprise{% endblock %}
 
 {% block head %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/settings.css') }}">
@@ -12,7 +12,7 @@
     <header class="page-header settings-header" id="settingsHeader">
         <div class="settings-header-row">
             <div class="settings-header-title">
-                <h1 class="page-title"><i class="bi bi-gear me-2"></i>Settings</h1>
+                <h1 class="page-title">Advanced settings</h1>
                 <p class="page-subtitle mb-0">Changes save automatically, except worker groups (Apply) and the pause schedule (Save).</p>
             </div>
             <div class="page-actions">
@@ -810,80 +810,8 @@
             </div>
         </div>
 
-        <!-- Authentication Token -->
-        <div class="card section-card" id="section-auth">
-            <div role="heading" aria-level="2" class="card-header">
-                <i class="bi bi-key sec-ico" aria-hidden="true"></i>
-                <div class="sec-title"><span class="sec-name">Authentication</span><span class="sec-desc">The token that signs browsers in and secures this web interface.</span></div>
-            </div>
-            <div class="card-body">
-                <h3 class="settings-subheading"><i class="bi bi-pencil-square" aria-hidden="true"></i>Set a custom token</h3>
-                <div class="setting-row">
-                    <div class="sr-label">
-                        <label class="sr-title" for="customAuthToken">New token</label>
-                        <div class="sr-hint">Your own passphrase instead of the random one. At least 8 characters.</div>
-                    </div>
-                    <div class="sr-control">
-                        <div class="secret-field">
-                            <input type="password" class="form-control" id="customAuthToken" autocomplete="new-password" placeholder="At least 8 characters">
-                            <button type="button" class="btn btn-sm btn-icon" data-toggle-secret aria-label="Show token" title="Show token"><i class="bi bi-eye"></i></button>
-                        </div>
-                    </div>
-                </div>
-                <div class="setting-row">
-                    <div class="sr-label"><label class="sr-title" for="customAuthTokenConfirm">Confirm</label></div>
-                    <div class="sr-control">
-                        <div class="secret-field">
-                            <input type="password" class="form-control" id="customAuthTokenConfirm" autocomplete="new-password" placeholder="Repeat the token">
-                            <button type="button" class="btn btn-sm btn-icon" data-toggle-secret aria-label="Show confirmation" title="Show confirmation"><i class="bi bi-eye"></i></button>
-                        </div>
-                    </div>
-                </div>
-                <div class="form-actions">
-                    <div id="customTokenResult" class="small"></div>
-                    <button type="button" class="btn btn-outline-secondary" onclick="setCustomToken()">
-                        <i class="bi bi-check-lg me-1"></i>Set
-                    </button>
-                </div>
-
-                <div class="danger-zone" id="tokenDanger">
-                    <div class="dz-head"><i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i>Sign-in token</div>
-                    <div class="dz-body">
-                        <div class="dz-warn"><i class="bi bi-exclamation-octagon" aria-hidden="true"></i>
-                            <div><strong>Changing the token signs out every browser.</strong>
-                                <div class="sr-hint">Scripts and webhooks using the old token stop working until updated. <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="When to regenerate the token." data-explain-title="Regenerate token" data-explain-template="infoRegenerateTokenTpl"><i class="bi bi-info-circle"></i></button>
-<template id="infoRegenerateTokenTpl">
-    <p>Scripts and webhooks using the old token stop working until updated. Use this when you suspect the token has leaked.</p>
-</template>
-</div></div>
-                        </div>
-                        <div class="form-actions form-actions-start">
-                            <button type="button" class="btn btn-outline-danger" onclick="regenerateToken()">
-                                <i class="bi bi-arrow-repeat me-1"></i>Regenerate token
-                            </button>
-                        </div>
-
-                        {# Holds the freshly-regenerated token until the user copies it.
-                           Shown by regenerateToken() instead of an alert() popup —
-                           this stays visible (and selectable) until the explicit
-                           "log me out" button is clicked. #}
-                        <div id="newTokenPanel" class="token-panel d-none" role="alert">
-                            <div class="token-panel-title"><i class="bi bi-check-circle-fill" aria-hidden="true"></i>New token generated</div>
-                            <div class="sr-hint">Copy this token now — it&rsquo;s the only time it&rsquo;s shown.</div>
-                            <div class="token-panel-row">
-                                <input type="text" id="newTokenValue" class="form-control font-monospace" readonly aria-label="New token">
-                                <button type="button" class="btn btn-primary" id="newTokenCopyBtn">
-                                    <i class="bi bi-clipboard me-1"></i>Copy
-                                </button>
-                            </div>
-                            <button type="button" class="btn btn-sm btn-outline-danger" id="newTokenLogoutBtn">
-                                <i class="bi bi-box-arrow-right me-1"></i>I&rsquo;ve copied it &mdash; log me out
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
+        <!-- Account: who signs in, change password, the tour -->
+        {% include "_account_panel.html" %}
 
         <!-- Backups -->
         <div class="card section-card" id="section-backups">
@@ -945,7 +873,7 @@
         <div class="card section-card" id="section-about">
             <div role="heading" aria-level="2" class="card-header">
                 <i class="bi bi-info-circle sec-ico" aria-hidden="true"></i>
-                <div class="sec-title"><span class="sec-name">About</span><span class="sec-desc">Video preview thumbnails for your media servers, with GPU acceleration.</span></div>
+                <div class="sec-title"><span class="sec-name">About</span><span class="sec-desc">Skip the repeat. Keep the story.</span></div>
             </div>
             <div class="card-body">
                 <div class="version-row">
@@ -955,8 +883,8 @@
                     </span>
                     <span class="state-pill" id="updateStatusPill" hidden></span>
                     <span class="flex-fill"></span>
-                    <a class="btn btn-sm btn-outline-secondary" href="https://github.com/stevezau/media_preview_generator" target="_blank" rel="noopener"><i class="bi bi-github me-1"></i>View on GitHub</a>
-                    <a class="btn btn-sm btn-outline-secondary" href="https://github.com/stevezau/media_preview_generator/releases/latest" target="_blank" rel="noopener"><i class="bi bi-journal-richtext me-1"></i>Release notes</a>
+                    <a class="btn btn-sm btn-outline-secondary" href="https://github.com/nphil/reprise" target="_blank" rel="noopener"><i class="bi bi-github me-1"></i>View on GitHub</a>
+                    <a class="btn btn-sm btn-outline-secondary" href="https://github.com/nphil/reprise/releases/latest" target="_blank" rel="noopener"><i class="bi bi-journal-richtext me-1"></i>Release notes</a>
                 </div>
                 <div class="hint-line">
                     <i class="bi bi-info-circle" aria-hidden="true"></i>
@@ -967,6 +895,10 @@
                 <div id="updateAlert" class="hint-line update-hint d-none">
                     <i class="bi bi-arrow-up-circle" aria-hidden="true"></i>
                     <span id="updateMessage"></span>
+                </div>
+                <div class="hint-line">
+                    <i class="bi bi-heart" aria-hidden="true"></i>
+                    <span>Reprise is built on <a href="https://github.com/stevezau/media_preview_generator" target="_blank" rel="noopener noreferrer">Media Preview Generator</a> by stevezau and Recurring Content Detector, under their licenses.</span>
                 </div>
             </div>
         </div>
@@ -1598,95 +1530,6 @@ async function saveAllSettings() {
         // Surface non-fatal clamps/validation notes as a toast in addition
         // to the Saved indicator.
         showToast('Warning', result.warning, 'warning');
-    }
-}
-
-async function regenerateToken() {
-    if (!await window.appConfirm('Regenerate the API token? Every open session (including this one) will be logged out.', { title: 'Regenerate token', confirmText: 'Regenerate' })) {
-        return;
-    }
-
-    try {
-        const response = await fetch('/api/token/regenerate', { method: 'POST' });
-        const data = await response.json();
-
-        if (data.success) {
-            // Show the new token inline (selectable + with a copy button)
-            // instead of a popup that disappears on dismiss. The user has
-            // to explicitly click "log me out" once they've copied it.
-            const panel = document.getElementById('newTokenPanel');
-            document.getElementById('newTokenValue').value = data.token;
-            panel.classList.remove('d-none');
-            panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            document.getElementById('newTokenCopyBtn').onclick = async () => {
-                try {
-                    await navigator.clipboard.writeText(data.token);
-                    showToast('Copied', 'New token copied to clipboard.', 'success');
-                } catch (_) {
-                    document.getElementById('newTokenValue').select();
-                }
-            };
-            document.getElementById('newTokenLogoutBtn').onclick = () => {
-                window.location.href = '/login';
-            };
-        } else {
-            showToast('Failed to regenerate token', data.error || 'Unknown error', 'danger');
-        }
-    } catch (error) {
-        showToast('Failed to regenerate token', 'Network error', 'danger');
-    }
-}
-
-// Settings → Web Authentication → "Set custom token" form (Phase H2).
-// Posts to /api/token/set, surfaces server-side errors inline (env var locked,
-// length, mismatch). On success the server already cleared the session, so
-// just send the user to /login to enter the new token.
-async function setCustomToken() {
-    const tok = document.getElementById('customAuthToken').value;
-    const conf = document.getElementById('customAuthTokenConfirm').value;
-    const result = document.getElementById('customTokenResult');
-    result.className = 'small mb-3';
-    result.textContent = '';
-
-    if (!tok) {
-        result.classList.add('text-danger');
-        result.textContent = 'Enter a token first.';
-        return;
-    }
-    if (tok.length < 8) {
-        result.classList.add('text-danger');
-        result.textContent = 'Token must be at least 8 characters.';
-        return;
-    }
-    if (tok !== conf) {
-        result.classList.add('text-danger');
-        result.textContent = 'Tokens do not match.';
-        return;
-    }
-    if (!await window.appConfirm('Set the new token? Every open session (including this one) will be logged out.', { title: 'Set new token', confirmText: 'Set token' })) {
-        return;
-    }
-    try {
-        const response = await fetch('/api/token/set', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-CSRFToken': typeof getCsrfToken === 'function' ? getCsrfToken() : '',
-            },
-            body: JSON.stringify({ token: tok, confirm_token: conf }),
-        });
-        const data = await response.json();
-        if (data.success) {
-            // No popup — they entered the new token themselves and the
-            // login screen confirms it worked. Just redirect.
-            window.location.href = '/login';
-        } else {
-            result.classList.add('text-danger');
-            result.textContent = data.error || 'Failed to set token.';
-        }
-    } catch (error) {
-        result.classList.add('text-danger');
-        result.textContent = 'Network error: ' + (error && error.message ? error.message : 'unknown');
     }
 }
 

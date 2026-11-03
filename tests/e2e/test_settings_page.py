@@ -6,17 +6,16 @@ import pytest
 from playwright.sync_api import Page, expect
 
 from ._mocks import (
+    capture_account_password,
     capture_settings_backups_restore,
     capture_settings_save,
     mock_settings_backups,
     mock_settings_get,
     mock_setup_status,
     mock_system_status,
-    mock_token_regenerate,
-    mock_token_set,
     mock_worker_groups,
 )
-from .conftest import accept_app_confirm
+from .conftest import E2E_PASSWORD, E2E_USERNAME, accept_app_confirm
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -103,61 +102,82 @@ class TestSettingsSteppers:
 
 
 @pytest.mark.e2e
-class TestSettingsAuth:
-    def test_set_custom_token_matching_succeeds(self, authed_page: Page, app_url: str) -> None:
+class TestSettingsAccount:
+    """The Account card (``#section-auth``): the owner's name, Change password, and the tour opener."""
+
+    @pytest.fixture
+    def account_page(self, authed_page: Page, app_url: str) -> Page:
         mock_settings_get(authed_page)
         mock_setup_status(authed_page, complete=True)
         mock_system_status(authed_page)
         mock_settings_backups(authed_page)
         capture_settings_save(authed_page)
-        captured = mock_token_set(authed_page, ok=True)
         authed_page.goto(f"{app_url}/settings")
         authed_page.wait_for_load_state("domcontentloaded")
+        return authed_page
 
-        # Settings page uses customAuthToken + customAuthTokenConfirm.
-        # The "log out all sessions" prompt is an appConfirm modal — click
-        # its OK button after triggering setCustomToken(). ``void`` so
-        # Playwright's auto-await on returned Promises doesn't deadlock
-        # waiting for the modal to resolve before we've clicked OK.
-        authed_page.locator("#customAuthToken").fill("brand-new-tok-1")
-        authed_page.locator("#customAuthTokenConfirm").fill("brand-new-tok-1")
-        authed_page.evaluate("void setCustomToken()")
-        with authed_page.expect_response(
-            lambda r: r.request.method == "POST" and r.url.endswith("/api/token/set"),
-            timeout=5000,
-        ) as req_info:
-            accept_app_confirm(authed_page)
-        req_info.value  # noqa: B018 — waiting for the response, not the request, means the mock has recorded the body
-        assert captured, "POST /api/token/set never fired"
-        # Pin the payload: the token field must equal the typed value.
-        # A regression that always sent an empty/wrong token would have
-        # silently passed the call-count check (audit P2 finding).
-        assert captured[0].get("token") == "brand-new-tok-1", (
-            f"POST /api/token/set body must carry the typed token; got {captured[0]!r}"
-        )
+    def test_account_card_shows_who_is_signed_in_and_the_old_token_card_is_gone(self, account_page: Page) -> None:
+        expect(account_page.locator("#section-auth .sec-name")).to_have_text("Account")
+        expect(account_page.locator("#accountUsername")).to_have_text(E2E_USERNAME)
+        assert account_page.locator("#customAuthToken").count() == 0
+        assert account_page.locator("#customAuthTokenConfirm").count() == 0
 
-    def test_regenerate_token_button_calls_endpoint(self, authed_page: Page, app_url: str) -> None:
-        mock_settings_get(authed_page)
-        mock_setup_status(authed_page, complete=True)
-        mock_system_status(authed_page)
-        mock_settings_backups(authed_page)
-        capture_settings_save(authed_page)
-        called = mock_token_regenerate(authed_page)
-        authed_page.goto(f"{app_url}/settings")
-        authed_page.wait_for_load_state("domcontentloaded")
+    def test_change_password_sends_current_and_new_password(self, account_page: Page) -> None:
+        captured = capture_account_password(account_page, ok=True)
 
-        # Direct invoke to bypass any visibility/scroll issues. The confirm
-        # is an appConfirm modal, not native window.confirm. ``void`` so
-        # Playwright's auto-await on returned Promises doesn't deadlock
-        # waiting for the modal to resolve before we've clicked OK.
-        authed_page.evaluate("void regenerateToken()")
-        with authed_page.expect_response(
-            lambda r: r.request.method == "POST" and r.url.endswith("/api/token/regenerate"),
-            timeout=5000,
-        ) as req_info:
-            accept_app_confirm(authed_page)
-        req_info.value  # noqa: B018 — waiting for the response, not the request, means the mock has recorded the body
-        assert called, "POST /api/token/regenerate never fired"
+        account_page.locator("#currentPassword").fill(E2E_PASSWORD)
+        account_page.locator("#newPassword").fill("a-brand-new-password")
+        account_page.locator("#newPasswordAgain").fill("a-brand-new-password")
+        account_page.locator("#changePasswordBtn").click()
+
+        expect(account_page.locator("#passwordResult")).to_contain_text("Password changed", timeout=5000)
+        # Pin the payload: both fields must carry what was typed. A regression that sent the wrong field
+        # would still pass a bare "the call fired" check.
+        assert captured == [{"current_password": E2E_PASSWORD, "new_password": "a-brand-new-password"}]
+        # The form is cleared after a successful change.
+        expect(account_page.locator("#currentPassword")).to_have_value("")
+        expect(account_page.locator("#newPassword")).to_have_value("")
+
+    def test_change_password_shows_the_servers_reason_when_the_current_password_is_wrong(
+        self, account_page: Page
+    ) -> None:
+        captured = capture_account_password(account_page, ok=False, error="Your current password isn't right.")
+
+        account_page.locator("#currentPassword").fill("not-my-password")
+        account_page.locator("#newPassword").fill("a-brand-new-password")
+        account_page.locator("#newPasswordAgain").fill("a-brand-new-password")
+        account_page.locator("#changePasswordBtn").click()
+
+        expect(account_page.locator("#passwordResult")).to_have_text("Your current password isn't right.", timeout=5000)
+        assert len(captured) == 1
+        # The button comes back so the owner can try again.
+        expect(account_page.locator("#changePasswordBtn")).to_be_enabled()
+
+    def test_change_password_checks_the_form_before_calling_the_server(self, account_page: Page) -> None:
+        captured = capture_account_password(account_page, ok=True)
+        result = account_page.locator("#passwordResult")
+        submit = account_page.locator("#changePasswordBtn")
+
+        submit.click()
+        expect(result).to_have_text("Enter your current password.")
+
+        account_page.locator("#currentPassword").fill(E2E_PASSWORD)
+        account_page.locator("#newPassword").fill("short")
+        submit.click()
+        expect(result).to_contain_text("at least 8 characters")
+
+        account_page.locator("#newPassword").fill("a-brand-new-password")
+        account_page.locator("#newPasswordAgain").fill("a-different-password")
+        submit.click()
+        expect(result).to_contain_text("don't match")
+
+        assert captured == [], "an invalid form must never reach POST /api/account/password"
+
+    def test_take_the_tour_button_opens_the_tour(self, account_page: Page) -> None:
+        tour = account_page.locator("#repriseTour")
+        account_page.locator("#section-auth [data-tour-open]").click()
+        expect(tour).to_have_attribute("open", "")
+        expect(account_page.locator("#tourCount")).to_have_text("Step 1 of 5")
 
 
 @pytest.mark.e2e

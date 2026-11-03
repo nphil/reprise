@@ -14,7 +14,9 @@ RUN apt-get update && \
 
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
-# Build the CPU-focused fallback and retain its exact source and build recipe.
+# Build the GPL FFmpeg (software decode plus NVDEC and VA-API hardware decode) and retain its exact source and build
+# recipe. libffmpeg-nvenc-dev is the header-only NVIDIA codec API, libva-dev the VA-API headers and clang compiles the
+# CUDA filters; none of them needs the proprietary CUDA toolkit.
 FROM toolchain AS ffmpeg-gpl-builder
 RUN arch="$(dpkg --print-architecture)" && \
     if [ "$arch" = amd64 ]; then mirror=http://archive.ubuntu.com/ubuntu; \
@@ -22,8 +24,8 @@ RUN arch="$(dpkg --print-architecture)" && \
     printf "deb-src %s noble main universe\ndeb-src %s noble-updates main universe\ndeb-src %s noble-security main universe\n" "$mirror" "$mirror" "$mirror" > /etc/apt/sources.list.d/ffmpeg-source.list && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
-      make g++ dpkg-dev nasm pkg-config xz-utils curl ca-certificates \
-      zlib1g-dev libbz2-dev liblzma-dev libgnutls28-dev libzimg-dev libchromaprint-dev && \
+      make g++ dpkg-dev nasm pkg-config xz-utils curl ca-certificates clang \
+      zlib1g-dev libbz2-dev liblzma-dev libgnutls28-dev libzimg-dev libchromaprint-dev libffmpeg-nvenc-dev libva-dev && \
     rm -rf /var/lib/apt/lists/*
 COPY docker/ffmpeg/build.sh /tmp/ffmpeg-gpl-build.sh
 COPY Dockerfile /tmp/ffmpeg-gpl-Dockerfile
@@ -103,8 +105,9 @@ FROM base
 
 # Runtime dependencies, including the existing Intel graphics repository.
 #
-# Existing graphics drivers are retained; the bundled FFmpeg build is CPU-focused.
-# - libvpl2 / libmfx-gen1: Intel oneVPL runtime (QSV).
+# Hardware decode: the bundled FFmpeg decodes with NVDEC (libcuda and libnvcuvid come from the NVIDIA container
+# runtime at run time, so nothing is installed for it) and with VA-API (libva below plus a VA-API driver).
+# - libvpl2 / libmfx-gen1: Intel oneVPL runtime (QSV; the bundled FFmpeg does not use it).
 # - libva2, libva-drm2: VA-API libraries
 # - vainfo: Tool to test/verify VA-API functionality
 # - pciutils: Provides lspci for better GPU naming
@@ -126,6 +129,9 @@ RUN apt-get update && \
         > /etc/apt/sources.list.d/intel-graphics.list && \
       apt-get update && \
       apt-get install -y --no-install-recommends \
+        # The Intel media driver is built for the libva of this same repository: Ubuntu's older libva cannot load it
+        # (every VA-API start then logged an error and fell back to i965, which cannot read back 10-bit surfaces).
+        libva2 libva-drm2 libva-x11-2 libva-wayland2 \
         intel-media-va-driver-non-free \
         i965-va-driver \
         libmfx-gen1 \

@@ -182,7 +182,7 @@ Set each device's worker count in **Settings → Workers** (1 to 32). Start low 
 
 ### Why is CPU usage high when I have a GPU configured?
 
-The bundled FFmpeg is CPU-focused. GPU acceleration is not established for this build, even when a GPU is detected or passed to the container. Dolby Vision Profile 5 has no HDR10 fallback layer, and thumbnail colours are not guaranteed.
+The bundled FFmpeg can decode H.264 and HEVC on NVIDIA (NVDEC) and VA-API GPUs, and Reprise's analysis uses that automatically (see Optional GPU decoding in the README). GPU acceleration of thumbnail generation is not established for this build, even when a GPU is detected or passed to the container. Dolby Vision Profile 5 has no HDR10 fallback layer, and thumbnail colours are not guaranteed.
 
 **FFmpeg threads per worker** (**Settings → Processing options → GPU device tuning**, one value per GPU) caps the CPU threads each GPU worker may use. The default is 2 and 0 means no cap. If several GPU workers fight over the CPU, lower it.
 
@@ -224,9 +224,9 @@ Most common cause: `init: true` in your docker-compose. Remove it — this conta
 
 Path mapping issue. See [Path Mappings](reference.md#path-mappings).
 
-### Where do I find the login token?<a id="how-do-i-get-the-authentication-token"></a>
+### I forgot my password
 
-Use [Authentication Token](getting-started.md#authentication-token).
+There is no email, so you reset it from a console inside the container. Run `docker exec -it media-preview-generator python3 -m media_preview_generator.web.account_cli reset-password` to choose a new password for the same account. Run it with `reset-account` instead to remove the account, so the next visit shows the welcome page to create a new one. On Unraid, open the **Docker** tab, click the container icon and choose **Console**. It takes effect at once, with no restart, and your webhook secret, servers and results are not touched. Full steps are in [Sign in and your account](getting-started.md#sign-in-and-your-account).
 
 ---
 

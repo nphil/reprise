@@ -1,5 +1,6 @@
 """CSRF protection: a browser session's state-changing requests need the page's token; scripts and webhooks don't."""
 
+import base64
 import json
 import os
 import re
@@ -7,9 +8,13 @@ from unittest.mock import patch
 
 import pytest
 
-API_TOKEN = "csrf-test-token-123"
+from tests.auth_helpers import OWNER_PASSWORD, OWNER_USERNAME, ensure_owner_account, sign_in
+
+# The one secret: what scripts send as the X-Auth-Token / Bearer header, and what webhook senders (Sonarr, Radarr,
+# Plex ...) carry. A browser has no use for it: it signs in with the owner account.
 WEBHOOK_SECRET = "csrf-webhook-secret-456"
 REFUSED = "security token"
+SIGN_IN_FORM = {"username": OWNER_USERNAME, "password": OWNER_PASSWORD}
 
 # One route per mutating method, each with a body the route accepts and the status it answers when it runs.
 MUTATING_ROUTES = [
@@ -38,36 +43,65 @@ WEBHOOK_RAN = {
     "webhooks_bp.webhook_incoming": (400, "no recognised vendor signature"),
     "webhooks_bp.webhook_per_server": (404, "not configured"),
 }
+# The ways a sender carries the secret to a receiver. Only "header" is also what a script sends: a receiver takes
+# Plex's ``?token=`` and Sonarr's Basic password too, which the script check never reads, so for those the receiver
+# exemption alone lets the call through without a page token.
+SECRET_FORMS = ["query", "basic", "header"]
 
 
-def _make_app(config_dir, settings: dict, extra_env: dict | None = None):
+def _with_secret(url: str, form: str, secret: str = WEBHOOK_SECRET) -> tuple[str, dict]:
+    """``url`` and the headers a sender uses to carry ``secret`` in the given form."""
+    if form == "query":
+        return f"{url}?token={secret}", {}
+    if form == "basic":  # Sonarr: a blank Username, the secret as the Password
+        return url, {"Authorization": "Basic " + base64.b64encode(f":{secret}".encode()).decode()}
+    return url, {"X-Auth-Token": secret}
+
+
+def _post_to_receiver(client, endpoint: str, url: str, headers: dict | None = None):
+    """The test call each receiver understands (Plex posts a form with a JSON ``payload``)."""
+    if endpoint == "webhooks_bp.plex_webhook":
+        return client.post(url, data={"payload": json.dumps({"event": "test.ping"})}, headers=headers or {})
+    return client.post(url, json={"eventType": "Test"}, headers=headers or {})
+
+
+def _make_app(config_dir, settings: dict):
     from media_preview_generator.web import settings_manager as sm_mod
     from media_preview_generator.web.app import create_app
 
     sm_mod.reset_settings_manager()
     (config_dir / "settings.json").write_text(json.dumps(settings))
-    env = {"CONFIG_DIR": str(config_dir), "WEB_AUTH_TOKEN": API_TOKEN, **(extra_env or {})}
+    env = {"CONFIG_DIR": str(config_dir)}
     with patch.dict(os.environ, env):
         flask_app = create_app(config_dir=str(config_dir))
     flask_app.config["TESTING"] = True
     return flask_app
 
 
+@pytest.fixture(autouse=True)
+def _account_file_in_tmp(tmp_path, monkeypatch):
+    """The owner account is saved in this test's folder, never in /config."""
+    monkeypatch.setattr("media_preview_generator.web.auth.AUTH_FILE", str(tmp_path / "auth.json"))
+
+
 @pytest.fixture
-def app(tmp_path, monkeypatch):
+def app(tmp_path):
+    """A set-up app with no owner account yet: the first-run page is still open."""
     from media_preview_generator.web import settings_manager as sm_mod
 
-    monkeypatch.setenv("WEB_AUTH_TOKEN", API_TOKEN)
     yield _make_app(tmp_path, {"setup_complete": True, "webhook_secret": WEBHOOK_SECRET})
     sm_mod.reset_settings_manager()
 
 
 @pytest.fixture
+def owner_account(app):
+    """The owner account exists, so /login is served; nobody is signed in."""
+    ensure_owner_account()
+
+
+@pytest.fixture
 def signed_in(app):
-    client = app.test_client()
-    with client.session_transaction() as sess:
-        sess["authenticated"] = True
-    return client
+    return sign_in(app.test_client())
 
 
 def _page_token(client, path: str = "/logs") -> str:
@@ -105,9 +139,7 @@ class TestSignedInBrowserSession:
         assert REFUSED in resp.get_json()["error"]
 
     def test_token_from_another_session_is_refused(self, app, signed_in):
-        other = app.test_client()
-        with other.session_transaction() as sess:
-            sess["authenticated"] = True
+        other = sign_in(app.test_client())
 
         resp = signed_in.post("/api/processing/pause", headers={"X-CSRFToken": _page_token(other)})
 
@@ -157,27 +189,75 @@ class TestSignedInBrowserSession:
         assert resp.headers["Location"].endswith("/reprise")
 
 
-class TestApiTokenScripts:
+class TestAccountAndSecretRoutes:
+    """The routes that change the account or the webhook secret answer only a signed-in browser, and a forged
+    request from another site must not get through on that browser's cookie."""
+
+    ROUTES = [
+        pytest.param("/api/webhook-secret/regenerate", None, id="regenerate-the-secret"),
+        pytest.param(
+            "/api/account/password",
+            {"current_password": OWNER_PASSWORD, "new_password": "a brand new password"},
+            id="change-the-password",
+        ),
+        pytest.param("/api/account/onboarding", {"state": "dismissed"}, id="dismiss-the-tour"),
+    ]
+
+    @staticmethod
+    def _state() -> tuple[dict, str]:
+        from media_preview_generator.web.auth import get_webhook_secret, load_auth_config
+
+        return load_auth_config(), get_webhook_secret()
+
+    @pytest.mark.parametrize(("url", "body"), ROUTES)
+    def test_refused_without_the_page_token_and_nothing_changes(self, signed_in, url, body):
+        before = self._state()
+
+        resp = _send(signed_in, "POST", url, body)
+
+        assert resp.status_code == 400
+        assert REFUSED in resp.get_json()["error"]
+        assert self._state() == before
+
+    @pytest.mark.parametrize(("url", "body"), ROUTES)
+    def test_run_with_the_page_token(self, signed_in, url, body):
+        before = self._state()
+
+        resp = _send(signed_in, "POST", url, body, {"X-CSRFToken": _page_token(signed_in)})
+
+        assert resp.status_code == 200, resp.get_data(as_text=True)[:200]
+        assert self._state() != before
+
+    @pytest.mark.parametrize(("url", "body"), ROUTES)
+    def test_the_secret_in_a_header_is_not_a_signed_in_browser(self, app, owner_account, url, body):
+        # A script's header skips the page token, so these routes must still turn it away themselves.
+        resp = _send(app.test_client(), "POST", url, body, {"X-Auth-Token": WEBHOOK_SECRET})
+
+        assert resp.status_code == 401
+        assert resp.get_json() == {"error": "Authentication required"}
+
+
+class TestScriptsWithTheWebhookSecret:
     @pytest.mark.parametrize("header", ["X-Auth-Token", "Authorization"])
     @pytest.mark.parametrize(("method", "url", "body", "ran_status"), MUTATING_ROUTES)
     def test_run_without_a_csrf_token(self, app, header, method, url, body, ran_status):
-        value = API_TOKEN if header == "X-Auth-Token" else f"Bearer {API_TOKEN}"
+        value = WEBHOOK_SECRET if header == "X-Auth-Token" else f"Bearer {WEBHOOK_SECRET}"
 
         resp = _send(app.test_client(), method, url, body, {header: value})
 
         assert resp.status_code == ran_status, resp.get_data(as_text=True)[:200]
 
     @pytest.mark.parametrize("header", ["X-Auth-Token", "Authorization"])
-    def test_wrong_api_token_is_answered_as_unauthenticated(self, app, header):
-        value = "wrong-token" if header == "X-Auth-Token" else "Bearer wrong-token"
+    def test_wrong_secret_is_answered_as_unauthenticated(self, app, header):
+        value = "wrong-secret" if header == "X-Auth-Token" else "Bearer wrong-secret"
 
         resp = app.test_client().post("/api/processing/pause", headers={header: value})
 
         assert resp.status_code == 401
         assert resp.get_json() == {"error": "Authentication required"}
 
-    def test_valid_api_token_runs_even_alongside_a_session(self, signed_in):
-        resp = signed_in.post("/api/processing/pause", headers={"X-Auth-Token": API_TOKEN})
+    def test_valid_secret_runs_even_alongside_a_session(self, signed_in):
+        resp = signed_in.post("/api/processing/pause", headers={"X-Auth-Token": WEBHOOK_SECRET})
 
         assert resp.status_code == 200
 
@@ -207,7 +287,7 @@ class TestWebhookReceivers:
         url = "/api/v1/analyses"
         body = {"media_version_ids": []}
         client = app.test_client()
-        for headers in ({}, {"Authorization": "Bearer invalid"}, {"Authorization": f"Bearer {API_TOKEN}"}):
+        for headers in ({}, {"Authorization": "Bearer invalid"}, {"Authorization": f"Bearer {WEBHOOK_SECRET}"}):
             assert client.post(url, json=body, headers=headers).status_code == 401
         assert signed_in.post(url, json=body).status_code == 401
         headers = {"Authorization": f"Bearer {limited.get_json()['secret']}"}
@@ -225,31 +305,36 @@ class TestWebhookReceivers:
         assert enqueue.call_args.args == (["media-1"],)
         assert enqueue.call_args.kwargs["principal"].id == created.get_json()["id"]
 
-    def test_receiver_runs_whatever_sec_fetch_site_says(self, app):
+    @pytest.mark.parametrize("form", SECRET_FORMS)
+    def test_receiver_runs_whatever_sec_fetch_site_says(self, app, form):
+        url, headers = _with_secret("/api/webhooks/radarr", form)
+
         resp = app.test_client().post(
-            "/api/webhooks/radarr",
-            json={"eventType": "Test"},
-            headers={"X-Auth-Token": WEBHOOK_SECRET, "Sec-Fetch-Site": "cross-site"},
+            url, json={"eventType": "Test"}, headers={**headers, "Sec-Fetch-Site": "cross-site"}
         )
 
         assert resp.status_code == 200 and "configured successfully" in resp.get_data(as_text=True)
 
+    @pytest.mark.parametrize("form", SECRET_FORMS)
     @pytest.mark.parametrize(("endpoint", "url"), WEBHOOK_RECEIVERS.items())
-    def test_receiver_runs_without_a_csrf_token(self, app, endpoint, url):
-        # The webhook secret isn't the API token, so this request isn't let through as a script.
-        client = app.test_client()
-        if endpoint == "webhooks_bp.plex_webhook":
-            resp = client.post(
-                url,
-                data={"payload": json.dumps({"event": "test.ping"})},
-                headers={"X-Auth-Token": WEBHOOK_SECRET},
-            )
-        else:
-            resp = client.post(url, json={"eventType": "Test"}, headers={"X-Auth-Token": WEBHOOK_SECRET})
+    def test_receiver_runs_without_a_csrf_token(self, app, endpoint, url, form):
+        url, headers = _with_secret(url, form)
+
+        resp = _post_to_receiver(app.test_client(), endpoint, url, headers)
 
         status, text = WEBHOOK_RAN[endpoint]
         body = resp.get_data(as_text=True)
         assert resp.status_code == status and text in body, (resp.status_code, body[:200])
+
+    @pytest.mark.parametrize("form", SECRET_FORMS)
+    @pytest.mark.parametrize(("endpoint", "url"), WEBHOOK_RECEIVERS.items())
+    def test_receiver_refuses_a_wrong_secret_as_unauthenticated(self, app, endpoint, url, form):
+        url, headers = _with_secret(url, form, secret="not-the-webhook-secret")
+
+        resp = _post_to_receiver(app.test_client(), endpoint, url, headers)
+
+        assert resp.status_code == 401
+        assert resp.get_json() == {"error": "Authentication required"}
 
     @pytest.mark.parametrize(("endpoint", "url"), WEBHOOK_RECEIVERS.items())
     def test_receiver_still_refuses_a_call_without_its_secret(self, app, endpoint, url):
@@ -258,18 +343,18 @@ class TestWebhookReceivers:
         assert resp.status_code == 401
 
 
-def _form_token(client) -> str:
-    html = client.get("/login").get_data(as_text=True)
+def _form_token(client, path: str = "/login") -> str:
+    html = client.get(path).get_data(as_text=True)
     return re.search(r'name="csrf_token" value="([^"]+)"', html).group(1)
 
 
 class TestSignInStartsAFreshSession:
     """Another app on this host can plant a session cookie whose token it read from /login (session fixation)."""
 
-    def test_a_token_from_before_the_form_sign_in_is_refused_after_it(self, app):
+    def test_a_token_from_before_the_form_sign_in_is_refused_after_it(self, app, owner_account):
         client = app.test_client()
         planted = _form_token(client)
-        client.post("/login", data={"token": API_TOKEN, "csrf_token": planted})
+        client.post("/login", data={**SIGN_IN_FORM, "csrf_token": planted})
 
         stale = client.post("/api/processing/pause", headers={"X-CSRFToken": planted})
         fresh = client.post("/api/processing/pause", headers={"X-CSRFToken": _page_token(client)})
@@ -277,10 +362,10 @@ class TestSignInStartsAFreshSession:
         assert stale.status_code == 400
         assert fresh.status_code == 200
 
-    def test_a_token_from_before_the_api_sign_in_is_refused_after_it(self, app):
+    def test_a_token_from_before_the_api_sign_in_is_refused_after_it(self, app, owner_account):
         client = app.test_client()
         planted = _form_token(client)
-        client.post("/api/auth/login", json={"token": API_TOKEN}, headers={"X-CSRFToken": planted})
+        client.post("/api/auth/login", json=SIGN_IN_FORM, headers={"X-CSRFToken": planted})
 
         stale = client.post("/api/processing/pause", headers={"X-CSRFToken": planted})
 
@@ -288,13 +373,28 @@ class TestSignInStartsAFreshSession:
         with client.session_transaction() as sess:
             assert sess.get("authenticated") is True
 
-    def test_a_failed_sign_in_keeps_the_pages_token(self, app):
+    def test_a_token_from_before_the_first_run_form_is_refused_after_it(self, app):
+        # The welcome page signs the new owner in too, so it starts a fresh session the same way.
+        client = app.test_client()
+        planted = _form_token(client, "/welcome")
+        created = client.post(
+            "/welcome", data={**SIGN_IN_FORM, "confirm_password": OWNER_PASSWORD, "csrf_token": planted}
+        )
+        assert created.status_code == 302
+
+        stale = client.post("/api/processing/pause", headers={"X-CSRFToken": planted})
+        fresh = client.post("/api/processing/pause", headers={"X-CSRFToken": _page_token(client)})
+
+        assert stale.status_code == 400
+        assert fresh.status_code == 200
+
+    def test_a_failed_sign_in_keeps_the_pages_token(self, app, owner_account):
         # Nothing was signed in, so the form on the page stays usable for the next try.
         client = app.test_client()
         token = _form_token(client)
-        client.post("/login", data={"token": "wrong-token", "csrf_token": token})
+        client.post("/login", data={**SIGN_IN_FORM, "password": "not-the-password", "csrf_token": token})
 
-        resp = client.post("/login", data={"token": API_TOKEN, "csrf_token": token})
+        resp = client.post("/login", data={**SIGN_IN_FORM, "csrf_token": token})
 
         assert resp.status_code == 302
 
@@ -324,24 +424,39 @@ class TestSecFetchSite:
             assert REFUSED in resp.get_json()["error"]
 
     @pytest.mark.parametrize("header", ["X-Auth-Token", "Authorization"])
-    def test_api_token_requests_are_unaffected(self, app, header):
-        value = API_TOKEN if header == "X-Auth-Token" else f"Bearer {API_TOKEN}"
+    def test_requests_with_the_secret_are_unaffected(self, app, header):
+        value = WEBHOOK_SECRET if header == "X-Auth-Token" else f"Bearer {WEBHOOK_SECRET}"
 
         resp = app.test_client().post("/api/processing/pause", headers={header: value, "Sec-Fetch-Site": "cross-site"})
 
         assert resp.status_code == 200
 
-    def test_sign_in_from_another_origin_is_refused(self, app):
+    def test_sign_in_from_another_origin_is_refused(self, app, owner_account):
         client = app.test_client()
         token = _form_token(client)
 
         resp = client.post(
-            "/login", data={"token": API_TOKEN, "csrf_token": token}, headers={"Sec-Fetch-Site": "same-site"}
+            "/login", data={**SIGN_IN_FORM, "csrf_token": token}, headers={"Sec-Fetch-Site": "same-site"}
         )
 
         assert resp.status_code == 400
         with client.session_transaction() as sess:
             assert not sess.get("authenticated")
+
+    def test_first_run_from_another_origin_is_refused_and_makes_no_account(self, app):
+        from media_preview_generator.web.auth import account_exists
+
+        client = app.test_client()
+        token = _form_token(client, "/welcome")
+
+        resp = client.post(
+            "/welcome",
+            data={**SIGN_IN_FORM, "confirm_password": OWNER_PASSWORD, "csrf_token": token},
+            headers={"Sec-Fetch-Site": "same-site"},
+        )
+
+        assert resp.status_code == 400
+        assert not account_exists()
 
 
 class TestLogout:
@@ -376,7 +491,7 @@ class TestLogout:
 
         assert resp.status_code == 200
         assert "Sign out?" in resp.get_data(as_text=True)
-        assert "You'll need your token to sign in again." in resp.get_data(as_text=True)
+        assert "You'll need your username and password to sign in again." in resp.get_data(as_text=True)
         with signed_in.session_transaction() as sess:
             assert sess.get("authenticated") is True
 
@@ -385,37 +500,36 @@ class TestLoginForm:
     def _form_token(self, client) -> str:
         return _form_token(client)
 
-    def test_signs_in_with_the_form_token(self, app):
+    def test_signs_in_with_the_form_token(self, app, owner_account):
         client = app.test_client()
 
-        resp = client.post("/login", data={"token": API_TOKEN, "csrf_token": self._form_token(client)})
+        resp = client.post("/login", data={**SIGN_IN_FORM, "csrf_token": self._form_token(client)})
 
         assert resp.status_code == 302
         with client.session_transaction() as sess:
             assert sess.get("authenticated") is True
 
-    def test_without_the_form_token_shows_the_page_expired_and_stays_signed_out(self, app):
+    def test_without_the_form_token_shows_the_page_expired_and_stays_signed_out(self, app, owner_account):
         client = app.test_client()
 
-        resp = client.post("/login", data={"token": API_TOKEN})
+        resp = client.post("/login", data=SIGN_IN_FORM)
 
         assert resp.status_code == 400
-        assert "This sign-in page expired." in resp.get_data(as_text=True)
+        assert "This page expired." in resp.get_data(as_text=True)
         with client.session_transaction() as sess:
             assert not sess.get("authenticated")
 
 
 class TestSetupWizard:
     @pytest.fixture
-    def fresh_app(self, tmp_path, monkeypatch):
+    def fresh_app(self, tmp_path):
         from media_preview_generator.web import settings_manager as sm_mod
 
-        monkeypatch.setenv("WEB_AUTH_TOKEN", API_TOKEN)
         yield _make_app(tmp_path, {})
         sm_mod.reset_settings_manager()
 
     def test_wizard_step_saves_with_the_page_token(self, fresh_app):
-        client = fresh_app.test_client()
+        client = sign_in(fresh_app.test_client())
         token = _page_token(client, "/setup")
 
         resp = client.post("/api/setup/state", json={"current_step": 2}, headers={"X-CSRFToken": token})
@@ -424,13 +538,16 @@ class TestSetupWizard:
 
     def test_another_site_cannot_drive_the_wizard_before_setup(self, fresh_app):
         # Before setup the wizard's routes need no sign-in, so the CSRF token is the only thing stopping a page on
-        # another site from choosing this app's token for the user.
-        resp = fresh_app.test_client().post(
-            "/api/setup/set-token", json={"token": "attacker-token", "confirm_token": "attacker-token"}
-        )
+        # another site from choosing this app's webhook secret for the user.
+        from media_preview_generator.web.auth import get_webhook_secret
+
+        before = get_webhook_secret()
+
+        resp = fresh_app.test_client().post("/api/settings", json={"webhook_secret": "attacker-chosen-secret"})
 
         assert resp.status_code == 400
         assert REFUSED in resp.get_json()["error"]
+        assert get_webhook_secret() == before
 
 
 class TestExternalAuth:
@@ -438,17 +555,15 @@ class TestExternalAuth:
     def external_app(self, tmp_path, monkeypatch):
         from media_preview_generator.web import settings_manager as sm_mod
 
-        env = {"WEB_AUTH_TOKEN": API_TOKEN, "AUTH_METHOD": "external"}
-        for key, value in env.items():
-            monkeypatch.setenv(key, value)
-        yield _make_app(tmp_path, {"setup_complete": True}, env)
+        monkeypatch.setenv("AUTH_METHOD", "external")
+        yield _make_app(tmp_path, {"setup_complete": True})
         sm_mod.reset_settings_manager()
 
     def test_the_sign_out_page_says_to_sign_out_at_the_proxy(self, external_app):
         text = external_app.test_client().get("/logout").get_data(as_text=True)
 
         assert "Sign-in is handled by your proxy or VPN" in text
-        assert "You'll need your token" not in text
+        assert "You'll need your username and password" not in text
 
     def test_browser_request_still_needs_the_page_token(self, external_app):
         # The proxy's own sign-in cookie rides along on a forged request just like ours would.

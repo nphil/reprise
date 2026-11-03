@@ -186,8 +186,8 @@
 
                 <div class="info mt-3">
                     <i class="bi bi-shield-lock"></i>
-                    <span>Authentication uses the webhook secret (or API token) configured in the
-                    <a href="#section-webhooks-settings">Settings section</a> below.</span>
+                    <span>Authentication uses the webhook secret. Show, copy or regenerate it under
+                    <a href="{{ url_for('main.servers_page') }}#webhookSecretPanel">Settings &rarr; Connections</a>.</span>
                 </div>
             </div>
         </div>
@@ -245,7 +245,7 @@
                             <li>Set <strong>Request Headers</strong>:
                                 <pre class="payload mt-1 mb-1"><code>{% raw %}{
   "Content-Type": "application/json",
-  "X-Auth-Token": "YOUR_TOKEN"
+  "X-Auth-Token": "YOUR_WEBHOOK_SECRET"
 }{% endraw %}</code></pre>
                             </li>
                             <li>Set <strong>Request Body</strong>:
@@ -273,7 +273,7 @@
                                     <li><strong>Method</strong>: <code>POST</code></li>
                                     <li><strong>URL</strong>: copy the Custom Webhook URL above</li>
                                     <li><strong>Content Type</strong>: <code>JSON</code></li>
-                                    <li><strong>Headers</strong>: key <code>X-Auth-Token</code>, value <code>YOUR_TOKEN</code></li>
+                                    <li><strong>Headers</strong>: key <code>X-Auth-Token</code>, value <code>YOUR_WEBHOOK_SECRET</code></li>
                                     <li><strong>Body</strong>:
                                         <pre class="payload mt-1 mb-1"><code>{% raw %}{"file_path": "{output_file}"}{% endraw %}</code></pre>
                                     </li>
@@ -289,7 +289,7 @@
                     <summary>curl example</summary>
                     <div><pre class="payload mb-0"><code>{% raw %}curl -X POST "http://your-server:8080/api/webhooks/custom" \
   -H "Content-Type: application/json" \
-  -H "X-Auth-Token: YOUR_TOKEN" \
+  -H "X-Auth-Token: YOUR_WEBHOOK_SECRET" \
   -d '{"file_path": "/media/movies/Movie.mkv"}'{% endraw %}</code></pre></div>
                 </details>
             </div>
@@ -390,29 +390,15 @@
                     batching delay does not change the wait between retries.</p>
                 </template>
 
-                <div class="set col">
+                <div class="set">
                     <div class="l">
-                        <label for="webhookSecret" class="lbl">Webhook Secret
-                            <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Optional secret webhooks can send instead of your API token, for when Sonarr/Radarr can't send custom headers." data-explain-title="Webhook Secret" data-explain-template="infoWebhookSecretTpl"><i class="bi bi-info-circle"></i></button>
-                        </label>
-                        <p class="help">Authenticates incoming webhooks.</p>
-                        <template id="infoWebhookSecretTpl">
-    <p>Used by Sonarr/Radarr/Emby/Jellyfin/Custom webhooks and embedded in the Plex Direct webhook URL
-        (Servers &rarr; your Plex card &rarr; Webhook &amp; Scanner).</p>
-    <p>Leave empty to use the main API token instead.</p>
-    <p>Rotating this value automatically re-registers any Plex Direct webhook the next time you save it from the Servers page.</p>
-</template>
+                        <span class="lbl">Webhook secret</span>
+                        <p class="help">What Sonarr, Radarr, Plex and your own scripts send to prove a request is theirs.</p>
                     </div>
                     <div class="r">
-                        <div class="input-group">
-                            <input type="password" class="form-control" id="webhookSecret" placeholder="Optional — falls back to API token">
-                            <button class="btn btn-outline-secondary" type="button" onclick="toggleSecretVisibility()" aria-label="Show or hide secret" title="Show or hide secret">
-                                <i class="bi bi-eye" id="secretToggleIcon"></i>
-                            </button>
-                        </div>
-                        <button class="btn btn-sm btn-outline-secondary" type="button" onclick="generateSecret()">
-                            <i class="bi bi-magic me-1"></i>Generate
-                        </button>
+                        <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('main.servers_page') }}#webhookSecretPanel">
+                            Show, copy or regenerate<i class="bi bi-arrow-right ms-1" aria-hidden="true"></i>
+                        </a>
                     </div>
                 </div>
 
@@ -535,11 +521,6 @@ async function loadWebhookSettings() {
         _syncWebhookStatePills();
         document.getElementById('webhookDelay').value = data.webhook_delay || 60;
         document.getElementById('delayValue').textContent = data.webhook_delay || 60;
-        if (data.webhook_secret && data.webhook_secret !== '****') {
-            document.getElementById('webhookSecret').value = data.webhook_secret;
-        } else if (data.webhook_secret === '****') {
-            document.getElementById('webhookSecret').placeholder = 'Secret configured (hidden)';
-        }
 
         try {
             if (window._triggersScrollSpy) window._triggersScrollSpy.refresh();
@@ -555,11 +536,6 @@ async function saveWebhookSettings() {
         webhook_delay: parseInt(document.getElementById('webhookDelay').value, 10),
     };
 
-    const secretVal = document.getElementById('webhookSecret').value;
-    if (secretVal && secretVal !== '****') {
-        payload.webhook_secret = secretVal;
-    }
-
     await apiPost('/api/settings', payload);
 }
 
@@ -570,27 +546,5 @@ function copyUrl(elementId) {
     if (!button) return;
     button.classList.add('copied');
     setTimeout(function() { button.classList.remove('copied'); }, 1200);
-}
-
-function generateSecret() {
-    const bytes = crypto.getRandomValues(new Uint8Array(16));
-    const hex = Array.from(bytes, function(b) { return b.toString(16).padStart(2, '0'); }).join('');
-    const input = document.getElementById('webhookSecret');
-    input.value = hex;
-    input.type = 'text';
-    document.getElementById('secretToggleIcon').classList.replace('bi-eye', 'bi-eye-slash');
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-}
-
-function toggleSecretVisibility() {
-    const input = document.getElementById('webhookSecret');
-    const icon = document.getElementById('secretToggleIcon');
-    if (input.type === 'password') {
-        input.type = 'text';
-        icon.classList.replace('bi-eye', 'bi-eye-slash');
-    } else {
-        input.type = 'password';
-        icon.classList.replace('bi-eye-slash', 'bi-eye');
-    }
 }
 </script>

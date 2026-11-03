@@ -11,7 +11,6 @@ from ._mocks import (
     mock_plex_libraries,
     mock_settings_get,
     mock_setup_status,
-    mock_setup_token_info,
     mock_system_status,
 )
 
@@ -22,7 +21,6 @@ def _resume(page: Page, vendor: str, *, missing: bool = False) -> tuple[list, li
     mock_settings_get(page)
     mock_setup_status(page, complete=False)
     mock_system_status(page)
-    mock_setup_token_info(page)
     state = {"step": 3, "data": {"chosenVendor": vendor, "chosenEjServerId": "saved-server"}}
     saves, updates = [], []
 
@@ -64,7 +62,7 @@ def test_resume_restores_vendor_paths_and_updates_only_that_server(wizard_page, 
     wizard_page.goto(app_url_wizard + "/setup")
     expect(wizard_page.locator("#setupResumeNotice")).to_contain_text("Home " + vendor.title())
     expect(wizard_page.locator("#step3PlexConfigSection")).to_be_hidden()
-    expect(wizard_page.locator("#setupProgressCurrent")).to_have_text("Step 2 of 4 · Paths")
+    expect(wizard_page.locator("#setupProgressCurrent")).to_have_text("Step 2 of 3 · Paths")
     expect(wizard_page.locator(".path-mapping-local")).to_have_value("/media")
     expect(wizard_page.locator(".exclude-path-value")).to_have_value("/media/trailers")
     wizard_page.locator("#step3Next").click()

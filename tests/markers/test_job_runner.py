@@ -3025,6 +3025,25 @@ class TestBudgetExhaustedCompletionWarning:
         env.jm.complete_job.assert_called_once_with("j1", warning=None)
 
 
+class TestNothingCheckedWarning:
+    """A job none of whose files belongs to a server with Intro & Credits on must not end as a green success."""
+
+    def test_it_says_nothing_was_checked(self):
+        jm = MagicMock()
+        job_runner.finish_job(jm, "j1", {"markers_no_owners": 2}, [])
+        jm.complete_job.assert_called_once_with("j1", warning=job_runner.NOTHING_CHECKED)
+
+    def test_a_job_that_checked_some_files_keeps_its_ordinary_summary(self):
+        jm = MagicMock()
+        job_runner.finish_job(jm, "j1", {"markers_no_owners": 1, "markers_published": 1}, [])
+        jm.complete_job.assert_called_once_with("j1", warning=None)
+
+    def test_it_comes_before_the_jobs_other_warnings(self):
+        jm = MagicMock()
+        job_runner.finish_job(jm, "j1", {"markers_no_owners": 1}, ["Couldn't list X"])
+        jm.complete_job.assert_called_once_with("j1", warning=f"{job_runner.NOTHING_CHECKED} | Couldn't list X")
+
+
 class TestClosingLogLines:
     """The job's log ends with the pipeline's closing line (the totals)."""
 

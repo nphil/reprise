@@ -1,4 +1,4 @@
-"""Regression tests for auth and token-handling security fixes."""
+"""Regression tests for auth and credential-handling security fixes."""
 
 import json
 import os
@@ -9,18 +9,19 @@ import pytest
 from media_preview_generator.web.app import create_app
 from media_preview_generator.web.notifications import reset_session
 from media_preview_generator.web.settings_manager import MAX_DISMISSED_NOTIFICATIONS, SettingsManager
+from tests.auth_helpers import OWNER_PASSWORD, OWNER_USERNAME, ensure_owner_account, sign_in
 
-TOKEN = "test-token-12345678"
-AUTH = {"Authorization": f"Bearer {TOKEN}"}
+SECRET = "test-webhook-secret-12345678"
+AUTH = {"Authorization": f"Bearer {SECRET}"}
 
 
 def _make_app(tmp_path, settings: dict | str):
     config_dir = str(tmp_path / "config")
     os.makedirs(config_dir, exist_ok=True)
-    with open(os.path.join(config_dir, "auth.json"), "w") as fh:
-        json.dump({"token": TOKEN}, fh)
+    if isinstance(settings, dict):
+        settings = json.dumps({"webhook_secret": SECRET, **settings})
     with open(os.path.join(config_dir, "settings.json"), "w") as fh:
-        fh.write(settings if isinstance(settings, str) else json.dumps(settings))
+        fh.write(settings)
     return config_dir
 
 
@@ -37,8 +38,8 @@ def make_client(tmp_path, monkeypatch):
 
     def _build(settings):
         config_dir = _make_app(tmp_path, settings)
+        monkeypatch.setattr("media_preview_generator.web.auth.AUTH_FILE", os.path.join(config_dir, "auth.json"))
         monkeypatch.setenv("CONFIG_DIR", config_dir)
-        monkeypatch.setenv("WEB_AUTH_TOKEN", TOKEN)
         monkeypatch.setenv("WEB_PORT", "8099")
         app = create_app(config_dir=config_dir)
         app.config["TESTING"] = True
@@ -68,6 +69,12 @@ class TestDismissRoutesAuth:
         assert resp.status_code == 200
         assert _reload(client).dismissed_notifications == ["vulkan_software_fallback"]
 
+    def test_known_id_is_stored_for_a_signed_in_browser(self, make_client):
+        client = sign_in(make_client({"setup_complete": True}))
+        resp = client.post("/api/system/notifications/vulkan_software_fallback/dismiss-permanent")
+        assert resp.status_code == 200
+        assert _reload(client).dismissed_notifications == ["vulkan_software_fallback"]
+
     def test_dismissed_list_is_capped(self, tmp_path):
         manager = SettingsManager(config_dir=str(tmp_path))
         for i in range(MAX_DISMISSED_NOTIFICATIONS + 25):
@@ -83,24 +90,32 @@ def _reload(client):
     return get_settings_manager()
 
 
-class TestTokenComparison:
-    def test_non_ascii_and_non_str_tokens_are_rejected_not_errors(self, make_client):
-        from media_preview_generator.web.auth import validate_token
+class TestSecretComparison:
+    def test_non_ascii_and_non_str_secrets_are_rejected_not_errors(self, make_client):
+        from media_preview_generator.web.auth import webhook_secret_matches
 
         make_client({"setup_complete": True})
-        assert validate_token("café-token") is False
-        assert validate_token(5) is False
-        assert validate_token(TOKEN) is True
+        assert webhook_secret_matches("café-secret") is False
+        assert webhook_secret_matches(5) is False
+        assert webhook_secret_matches(SECRET) is True
 
     def test_non_ascii_header_gives_401(self, make_client):
         client = make_client({"setup_complete": True})
         resp = client.get("/api/settings", headers={"X-Auth-Token": "café"})
         assert resp.status_code == 401
 
-    def test_login_with_non_string_token_gives_401(self, make_client):
+    def test_login_with_non_string_credentials_gives_401(self, make_client):
         client = make_client({"setup_complete": True})
-        resp = client.post("/api/auth/login", json={"token": 5})
-        assert resp.status_code in (400, 401)
+        ensure_owner_account()
+        for credentials in (
+            {"username": 5, "password": 5},
+            {"username": OWNER_USERNAME, "password": 5},
+            {"username": OWNER_USERNAME, "password": [OWNER_PASSWORD]},
+            {"username": [OWNER_USERNAME], "password": OWNER_PASSWORD},
+            {"username": None, "password": None},
+        ):
+            resp = client.post("/api/auth/login", json=credentials)
+            assert resp.status_code == 401, credentials
 
 
 class TestFailClosedOnUnreadableSettings:

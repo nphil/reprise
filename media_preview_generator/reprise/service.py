@@ -18,11 +18,55 @@ from ..gpu.ffmpeg_capabilities import ffmpeg_binary
 from ..servers.ownership import apply_path_mappings
 from .admission import admit_references, pair_provenance
 from .identity import is_current, media_version
-from .models import CandidateWindow, PlaybackIdentity
+from .models import ORIGIN_PLEX, AnalysisRefused, CandidateWindow, PlaybackIdentity
 from .policy import eligible_ranges
 from .verification_profile import PROFILE_FINGERPRINT
 
 _SERVICE = None
+
+NOT_IN_LIBRARY = "This episode is not in the library any more. Refresh the library, then try again."
+CHANGED_ON_DISK = (
+    "This file changed on disk after the library was last refreshed. Refresh the library, then analyze it again."
+)
+
+
+def _range_counts(ranges):
+    """``to_review``: skips Reprise confirmed and the owner has not decided; ``suggested``: Plex's, likewise."""
+    undecided = [r for r in ranges if r.action == "skip" and r.review_status == "proposed"]
+    return {
+        "skip": sum(1 for r in ranges if r.action == "skip"),
+        "keep": sum(1 for r in ranges if r.action == "keep"),
+        "proposed": sum(1 for r in ranges if r.review_status == "proposed"),
+        "approved": sum(1 for r in ranges if r.review_status == "approved"),
+        "to_review": sum(1 for r in undecided if r.origin != ORIGIN_PLEX),
+        "suggested": sum(1 for r in undecided if r.origin == ORIGIN_PLEX),
+    }
+
+
+def _kinds_text(ranges):
+    kinds = sorted({r.kind for r in ranges}, key=lambda kind: ({"intro": 0, "credits": 1}.get(kind, 2), kind))
+    return " and ".join(kinds)
+
+
+def _analysis_summary(ranges, reasons):
+    """(state, sentence) for an analysis that finished: what it confirmed, what only Plex suggested, or the first
+    reason it proposed nothing."""
+    skips = [r for r in ranges if r.action == "skip"]
+    suggested = [r for r in skips if r.origin == ORIGIN_PLEX]
+    confirmed = [r for r in skips if r.origin != ORIGIN_PLEX]
+    if confirmed:
+        noun = "range" if len(confirmed) == 1 else "ranges"
+        message = f"Found {len(confirmed)} {noun} to review ({_kinds_text(confirmed)})."
+        if suggested:
+            message += f" Plex also suggested the {_kinds_text(suggested)}, which Reprise could not confirm."
+        return "found", message
+    if suggested:
+        it = "it" if len(suggested) == 1 else "them"
+        return "suggested", (
+            f"Plex suggested the {_kinds_text(suggested)}, but Reprise could not confirm {it} by comparing "
+            f"episodes. Review {it} before approving."
+        )
+    return "nothing_found", reasons[0] if reasons else "Nothing was found to skip."
 
 
 def set_service(service):
@@ -346,12 +390,11 @@ class RepriseService:
                         path, part.get("Stream", []), cancel_check=cancel, pause_check=freeze, ffmpeg_path=ffmpeg_path
                     )
                     version = media_version(path, duration, signature)
-                    if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+                    if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
                         version.device,
                         version.inode,
                         version.size_bytes,
                         version.mtime_ns,
-                        version.ctime_ns,
                     ):
                         raise ValueError("Media changed during discovery")
                     part_key = urlsplit(str(part["key"])).path
@@ -564,6 +607,9 @@ class RepriseService:
             version, meta = row["media_version"], row["metadata"]
             bindings = self._bindings(version["id"])
             current = self.lookup(bindings[0][0]) if bindings else None
+            stored = (
+                self.store.get_result(version["id"]) if current and current["analysis_status"] != "missing" else None
+            )
             items.append(
                 {
                     "id": version["id"],
@@ -575,6 +621,8 @@ class RepriseService:
                     "duration_ms": version["duration_ms"],
                     "analysis_status": current["analysis_status"] if current else "missing",
                     "freshness": current["freshness"] if current else "unavailable",
+                    "ranges": _range_counts(stored.ranges if stored else ()),
+                    "reasons": list(stored.reasons) if stored else [],
                     "identities": [asdict(b[0]) for b in bindings],
                 }
             )
@@ -609,8 +657,7 @@ class RepriseService:
             if (
                 not stat.S_ISREG(info.st_mode)
                 or (info.st_dev, info.st_ino) != (current.st_dev, current.st_ino)
-                or (info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-                != (version.size_bytes, version.mtime_ns, version.ctime_ns)
+                or (info.st_size, info.st_mtime_ns) != (version.size_bytes, version.mtime_ns)
                 or not any(self._valid_binding(version, *b) for b in bindings)
             ):
                 raise FileNotFoundError("Media changed while opening")
@@ -711,8 +758,11 @@ class RepriseService:
             raise ValueError("Select at least one media version")
         for mid in ids:
             version = self.store.get_media(mid)
-            if not version or not any(self._valid_binding(version, *b) for b in self._bindings(mid)):
-                raise ValueError("Media is unavailable or stale")
+            bindings = self._bindings(mid) if version else []
+            if not bindings:
+                raise AnalysisRefused(NOT_IN_LIBRARY)
+            if not any(self._valid_binding(version, *b) for b in bindings):
+                raise AnalysisRefused(CHANGED_ON_DISK)
         owner = getattr(principal, "id", None) or str(principal or "owner")
         with self._enqueue_lock:
             for job in self.job_manager.get_all_jobs():
@@ -814,6 +864,7 @@ class RepriseService:
             "progress": job.progress.to_dict(),
             "created_at": job.created_at,
             "error": "Job failed" if job.error else None,
+            "message": None,
             "pause_requested": self.job_manager.is_pause_requested(job.id),
         }
         config = job.config or {}
@@ -822,6 +873,13 @@ class RepriseService:
         )
         if config.get("refresh_result"):
             data["refresh"] = config["refresh_result"]
+        if config.get("media_version_ids"):
+            data["media_version_ids"] = list(config["media_version_ids"])
+        outcome = self._analysis_outcome(job)
+        if outcome:
+            data["outcome"] = outcome
+            if outcome["state"] in ("failed", "cancelled"):
+                data["message"] = outcome["message"]
         artifact = (job.config or {}).get("preview_artifact")
         if job.status.value == "completed" and artifact:
             data["preview"] = {
@@ -831,6 +889,49 @@ class RepriseService:
                 "mime_type": artifact["mime_type"],
             }
         return data
+
+    def _record_outcome(self, job_id, media_id, state, message):
+        """Remember how one requested episode ended, so the queue can say so without reading every result."""
+        job = self.job_manager.get_job(job_id)
+        config = (job.config if job else None) or {}
+        if config.get("media_version_ids"):
+            outcomes = {**(config.get("analysis_outcomes") or {}), media_id: {"state": state, "message": message}}
+            self.job_manager.merge_job_config(job_id, {"analysis_outcomes": outcomes})
+
+    @staticmethod
+    def _analysis_outcome(job):
+        """What an owner-requested analysis ended with, in sentences, from what its run recorded per episode."""
+        config, status = job.config or {}, job.status.value
+        ids, recorded = config.get("media_version_ids"), config.get("analysis_outcomes") or {}
+        if not ids or status not in ("completed", "failed", "cancelled") or (status == "completed" and not recorded):
+            return None
+        stopped = {"state": "cancelled", "message": "Not analyzed because the job stopped first."}
+        per_media = [{"id": media_id, **recorded.get(media_id, stopped)} for media_id in ids]
+        if status == "cancelled":
+            return {"state": "cancelled", "message": "Analysis was cancelled.", "per_media": per_media}
+        if status == "failed":
+            failed = next((entry for entry in per_media if entry["state"] == "failed"), None)
+            message = failed["message"] if failed else "Analysis could not be completed."
+            return {"state": "failed", "message": message, "per_media": per_media}
+        found = [entry for entry in per_media if entry["state"] == "found"]
+        suggested = [entry for entry in per_media if entry["state"] == "suggested"]
+        many = len(per_media) > 1
+        if found:
+            message = (
+                f"Found ranges to review in {len(found)} of {len(per_media)} episodes." if many else found[0]["message"]
+            )
+            if many and suggested:
+                message += f" Plex suggested ranges in {len(suggested)} more."
+            return {"state": "found", "message": message, "per_media": per_media}
+        if suggested:
+            message = (
+                f"Plex suggested ranges in {len(suggested)} of {len(per_media)} episodes; Reprise could not confirm them."
+                if many
+                else suggested[0]["message"]
+            )
+            return {"state": "suggested", "message": message, "per_media": per_media}
+        message = f"Nothing found in {len(per_media)} episodes." if many else per_media[0]["message"]
+        return {"state": "nothing_found", "message": message, "per_media": per_media}
 
     def get_job(self, job_id, principal=None):
         job = self.job_manager.get_job(job_id)
@@ -967,7 +1068,15 @@ class RepriseService:
                 lock.release()
 
     def run_job(self, job_id):
-        from .analysis import analyze
+        from .analysis import (
+            ENDING_WINDOW,
+            FALLBACK_WINDOW_MS,
+            NO_OTHER_EPISODES,
+            NO_REFERENCES,
+            OPENING_WINDOW,
+            OTHER_EPISODES_NOT_READY,
+            analyze,
+        )
 
         job = self.job_manager.get_job(job_id)
         from ..web.settings_manager import get_settings_manager
@@ -1051,22 +1160,27 @@ class RepriseService:
                     and self._valid_binding(version, *b)
                 ]
             if not version or not bindings or not any(self._valid_binding(version, *b) for b in bindings):
+                self._record_outcome(job_id, mid, "failed", CHANGED_ON_DISK)
                 raise ValueError("Media became unavailable or stale")
             meta = bindings[0][2]
             candidates = [CandidateWindow(**c) for c in meta.get("candidates", [])]
             present = {candidate.kind for candidate in candidates}
             midpoint = version.duration_ms // 2
             if "intro" not in present and midpoint > 0:
-                candidates.append(CandidateWindow("intro", 0, min(90000, midpoint), "opening-window"))
+                candidates.append(CandidateWindow("intro", 0, min(FALLBACK_WINDOW_MS, midpoint), OPENING_WINDOW))
             if "credits" not in present and version.duration_ms > midpoint:
                 candidates.append(
                     CandidateWindow(
-                        "credits", max(midpoint, version.duration_ms - 90000), version.duration_ms, "ending-window"
+                        "credits",
+                        max(midpoint, version.duration_ms - FALLBACK_WINDOW_MS),
+                        version.duration_ms,
+                        ENDING_WINDOW,
                     )
                 )
             references = []
             cursor = None
             seen_refs = set()
+            other_episodes = set()
             while True:
                 page = self.store.list_media(server_id=bindings[0][1], cursor=cursor, limit=100)
                 for row in page["items"]:
@@ -1074,6 +1188,13 @@ class RepriseService:
                     if rid == mid or rid in seen_refs:
                         continue
                     seen_refs.add(rid)
+                    other = row["metadata"]
+                    if meta.get("show_key") is not None:
+                        # Only other episodes of this very season can ever be admitted: leave the rest unread.
+                        if (other.get("show_key"), other.get("season")) != (meta["show_key"], meta.get("season")):
+                            continue
+                        if other.get("episode") != meta.get("episode"):
+                            other_episodes.add(other.get("episode"))
                     ref = self.store.get_media(rid)
                     ref_bindings = self._bindings(rid)
                     if ref and ref_bindings and all(self._valid_binding(ref, *b) for b in ref_bindings):
@@ -1083,6 +1204,7 @@ class RepriseService:
                     break
             admitted = admit_references(version, references, self.store)
             references = [ref for ref, _ in admitted]
+            no_comparison_note = OTHER_EPISODES_NOT_READY if other_episodes else NO_OTHER_EPISODES
             signature = hashlib.sha256(
                 (
                     version.stream_signature
@@ -1108,30 +1230,30 @@ class RepriseService:
                     ffmpeg_path=ffmpeg_path,
                 )
                 if draft.status != "complete":
-                    self.store.fail_analysis(
-                        aid,
-                        draft.status,
+                    why = draft.reasons or (
                         {
                             "failed": "Media analysis failed",
                             "unsupported": "Media is unsupported",
                             "cancelled": "Analysis cancelled",
                         }.get(draft.status, "Analysis did not complete"),
                     )
+                    self.store.fail_analysis(aid, draft.status, why)
                     recorded_failure = True
                     if draft.status == "cancelled":
                         self.job_manager.cancel_job(job_id)
                         return
+                    self._record_outcome(job_id, mid, "failed", why[0])
                     raise RuntimeError("Analysis did not complete")
                 elif not any(self._valid_binding(version, *b) for b in bindings):
                     raise ValueError("Media changed during analysis")
                 else:
-                    committed = self.job_manager.commit_if_active(
-                        job_id,
-                        lambda aid=aid, draft=draft, version=version: self.store.finish_analysis(
-                            aid, draft.evidence, draft.ranges, version.id
-                        ),
-                        complete=index == len(ids) - 1,
-                    )
+                    reasons = [no_comparison_note if reason == NO_REFERENCES else reason for reason in draft.reasons]
+
+                    def commit(aid=aid, draft=draft, version=version, reasons=reasons):
+                        self.store.finish_analysis(aid, draft.evidence, draft.ranges, version.id, reasons)
+                        self._record_outcome(job_id, version.id, *_analysis_summary(draft.ranges, reasons))
+
+                    committed = self.job_manager.commit_if_active(job_id, commit, complete=index == len(ids) - 1)
                     if not committed:
                         self.store.fail_analysis(aid, "cancelled", "Analysis cancelled")
                         recorded_failure = True
@@ -1140,4 +1262,5 @@ class RepriseService:
             except Exception:
                 if not recorded_failure:
                     self.store.fail_analysis(aid, "failed", "Analysis failed or media changed")
+                    self._record_outcome(job_id, mid, "failed", "Analysis failed or media changed")
                 raise

@@ -91,7 +91,7 @@ def test_warning_notice_survives_unfinished_filter_and_review_clears_other_filte
     assert "kind" not in queries[-1] and "q" not in queries[-1]
     page.locator(".card").filter(has=page.locator("#jobQueue")).screenshot(
         path=str(tmp_path / f"chapter-warnings-{width}.png"),
-        style=".navbar, .skip-link { visibility: hidden !important; }",
+        style=".rp-rail, .rp-subnav, .skip-link { visibility: hidden !important; }",
     )
     page.locator("#job-row-chapter-warning").get_by_role("button", name="View logs", exact=True).click()
     expect(page.locator("#logsModal")).to_be_visible()

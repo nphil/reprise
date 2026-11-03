@@ -8,8 +8,9 @@ from dataclasses import asdict
 
 from .identity import is_current
 from .verification_profile import ADMISSION_REVISION as _ADMISSION_REVISION
+from .verification_profile import PROFILE_SPEC
 
-MAX_REFERENCES = 6
+MAX_REFERENCES = PROFILE_SPEC["candidate"]["max_references"]
 
 
 def _episode(bindings):
@@ -63,7 +64,11 @@ def pair_provenance(target, target_bindings, reference, reference_bindings):
 
 
 def admit_references(target, references, store):
-    """Select at most one file per proven episode, in input order, before the cap."""
+    """Select one file per proven episode (the first given), then the MAX_REFERENCES nearest to the target.
+
+    Nearest is by episode number, the lower number first on a tie, so the same library always yields the same
+    references in the same order. Admission needs the same show and season, so every candidate is of the target's season.
+    """
     target_bindings = store.get_bindings(target.id)
     admitted, episodes = [], set()
     for reference in references:
@@ -71,8 +76,9 @@ def admit_references(target, references, store):
         provenance = pair_provenance(target, target_bindings, reference, bindings)
         episode = _episode(bindings)
         if provenance and episode not in episodes:
-            admitted.append((reference, provenance))
+            admitted.append((reference, provenance, episode[3]))
             episodes.add(episode)
-            if len(admitted) == MAX_REFERENCES:
-                break
-    return admitted
+    if admitted:
+        number = _episode(target_bindings)[3]
+        admitted.sort(key=lambda entry: (abs(entry[2] - number), entry[2]))
+    return [(reference, provenance) for reference, provenance, _ in admitted[:MAX_REFERENCES]]

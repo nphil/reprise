@@ -2,7 +2,7 @@
 Unit tests for Flask web routes.
 
 Covers: login flow, auth API, settings CRUD, job management,
-setup wizard, token endpoints, health check, and schedule endpoints.
+setup wizard, health check, and schedule endpoints.
 Uses Flask's test client with an in-memory config dir.
 """
 
@@ -19,6 +19,10 @@ from media_preview_generator.job_kinds import JOB_KINDS
 from media_preview_generator.upgrade import _CURRENT_SCHEMA_VERSION
 from media_preview_generator.web.app import create_app
 from media_preview_generator.web.settings_manager import reset_settings_manager
+from tests.auth_helpers import OWNER_PASSWORD, OWNER_USERNAME, ensure_owner_account, sign_in
+
+# What the API tests send as their Bearer / X-Auth-Token credential: the webhook secret the app starts with.
+WEBHOOK_SECRET = "test-webhook-secret-12345678"
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -90,27 +94,23 @@ def app(tmp_path, monkeypatch):
     config_dir = str(tmp_path / "config")
     os.makedirs(config_dir, exist_ok=True)
 
-    # Write a known auth token so tests can authenticate
-    auth_file = os.path.join(config_dir, "auth.json")
-    with open(auth_file, "w") as f:
-        json.dump({"token": "test-token-12345678"}, f)
-
     # auth.AUTH_FILE is computed once at module-import time from
     # CONFIG_DIR. By the time this fixture runs the module is already
     # imported, so the env var alone doesn't redirect writes — we have
     # to patch the constants directly. Without
-    # this, save_auth_config tries to write to /config/auth.json and
+    # this, the owner account would be written to /config/auth.json and
     # CI fails with PermissionError.
+    auth_file = os.path.join(config_dir, "auth.json")
     monkeypatch.setattr("media_preview_generator.web.auth.AUTH_FILE", auth_file)
     monkeypatch.setattr("media_preview_generator.web.auth.CONFIG_DIR", config_dir)
 
-    # Mark setup as complete so before_request doesn't redirect to /setup
+    # Mark setup as complete so before_request doesn't redirect to /setup, and give the app a known webhook
+    # secret so tests can authenticate their API calls with it
     settings_file = os.path.join(config_dir, "settings.json")
     with open(settings_file, "w") as f:
-        json.dump({"setup_complete": True}, f)
+        json.dump({"setup_complete": True, "webhook_secret": WEBHOOK_SECRET}, f)
 
     monkeypatch.setenv("CONFIG_DIR", config_dir)
-    monkeypatch.setenv("WEB_AUTH_TOKEN", "test-token-12345678")
     monkeypatch.setenv("WEB_PORT", "8099")
     flask_app = create_app(config_dir=config_dir)
     flask_app.config["TESTING"] = True
@@ -126,16 +126,24 @@ def client(app):
 
 
 @pytest.fixture()
+def owner_account(app):
+    """The owner account exists, so pages ask to sign in instead of sending everyone to the first-run page.
+
+    Nobody is signed in: tests that need that use ``authed_client``. Not in ``app`` itself because hashing the
+    password costs a fifth of a second and most tests here only call the API.
+    """
+    ensure_owner_account()
+
+
+@pytest.fixture()
 def authed_client(client):
-    """Flask test client with an authenticated session."""
-    with client.session_transaction() as sess:
-        sess["authenticated"] = True
-    return client
+    """Flask test client signed in as the owner."""
+    return sign_in(client)
 
 
-def _api_headers(token: str = "test-token-12345678") -> dict:
-    """Return headers for Bearer-token-authenticated API calls."""
-    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+def _api_headers(secret: str = WEBHOOK_SECRET) -> dict:
+    """Return headers for Bearer-authenticated API calls (the webhook secret, as a script sends it)."""
+    return {"Authorization": f"Bearer {secret}", "Content-Type": "application/json"}
 
 
 def _allow_dev_tmp_path(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -160,24 +168,25 @@ def _allow_dev_tmp_path(monkeypatch: pytest.MonkeyPatch) -> None:
 class TestPageRoutes:
     """Test HTML page routes."""
 
-    def test_index_redirects_to_login_when_unauthenticated(self, client):
+    def test_index_redirects_to_login_when_unauthenticated(self, client, owner_account):
         resp = client.get("/", follow_redirects=False)
         # @login_required uses Flask's default redirect (302). A 308 here would
         # mean the route became a permanent redirect, which is a UX regression.
         assert resp.status_code == 302
         assert "/login" in resp.headers.get("Location", "")
 
-    def test_login_page_renders(self, client):
+    def test_login_page_renders(self, client, owner_account):
         resp = client.get("/login")
         assert resp.status_code == 200
         # Pin stable form markers — disjunctive substring match on the
-        # word "login"/"token" was so loose any error page passed.
+        # word "login"/"password" was so loose any error page passed.
         body = resp.data
-        assert b'name="token"' in body, "login form must include the token input"
-        assert b'type="password"' in body, "token input must be type=password"
-        assert b'method="POST"' in body, "login form must POST"
+        assert b'name="username"' in body, "login form must include the username input"
+        assert b'name="password"' in body, "login form must include the password input"
+        assert b'type="password"' in body, "password input must be type=password"
+        assert b'method="post"' in body, "login form must POST"
 
-    def test_settings_requires_auth(self, client):
+    def test_settings_requires_auth(self, client, owner_account):
         resp = client.get("/settings", follow_redirects=False)
         assert resp.status_code == 302
         assert "/login" in resp.headers.get("Location", "")
@@ -205,7 +214,7 @@ class TestPageRoutes:
         assert b'id="settings-sidebar"' in body, "settings page must include the sidebar nav"
         assert b'id="section-processing"' in body, "settings page must include the Processing section"
 
-    def test_library_health_requires_auth(self, client):
+    def test_library_health_requires_auth(self, client, owner_account):
         resp = client.get("/library-health", follow_redirects=False)
         assert resp.status_code == 302
         assert "/login" in resp.headers.get("Location", "")
@@ -218,7 +227,7 @@ class TestPageRoutes:
         assert b'id="lhApp"' in body, "page missing the container the JS renders into"
         assert b"js/library_health.js" in body
 
-    def test_webhook_activity_requires_auth(self, client):
+    def test_webhook_activity_requires_auth(self, client, owner_account):
         resp = client.get("/webhook-activity", follow_redirects=False)
         assert resp.status_code == 302
         assert "/login" in resp.headers.get("Location", "")
@@ -284,7 +293,7 @@ class TestPageRoutes:
         assert b"attachStepper" in resp.data
         assert b"attachSteppersTo" in resp.data
 
-    def test_setup_page_loads_shared_panel_scripts(self, client):
+    def test_setup_page_loads_shared_panel_scripts(self, client, owner_account):
         """The wizard relies on three external JS modules (folder picker,
         gpu config panel, servers helpers). A missing <script> tag is a
         silent regression — verify all three are referenced from /setup.
@@ -297,7 +306,7 @@ class TestPageRoutes:
         assert b"gpu_config_panel.js" in body
         assert b"servers.js" in body
 
-    def test_setup_uses_group_editor_and_api_capacity_limits(self, client):
+    def test_setup_uses_group_editor_and_api_capacity_limits(self, client, owner_account):
         from media_preview_generator.web.settings_manager import get_settings_manager
 
         get_settings_manager().update({"setup_complete": False})
@@ -312,7 +321,7 @@ class TestPageRoutes:
         assert snapshot.status_code == 200
         assert snapshot.get_json()["limits"]["cpu"] == 7
 
-    def test_setup_page_inlines_connection_form_partial(self, client):
+    def test_setup_page_inlines_connection_form_partial(self, client, owner_account):
         """The Emby/Jellyfin connection form is rendered inline inside the
         wizard card (not in a modal popup). Assert the expected markers
         are present and the modal partial is *not* — that combination is
@@ -346,8 +355,10 @@ class TestPageRoutes:
 class TestLoginLogout:
     """Test login and logout flows."""
 
-    def test_login_post_valid_token(self, client):
-        resp = client.post("/login", data={"token": "test-token-12345678"}, follow_redirects=False)
+    def test_login_post_valid_credentials(self, client, owner_account):
+        resp = client.post(
+            "/login", data={"username": OWNER_USERNAME, "password": OWNER_PASSWORD}, follow_redirects=False
+        )
         # Should redirect to dashboard
         assert resp.status_code == 302
         assert "/login" not in resp.headers.get("Location", "")
@@ -355,16 +366,20 @@ class TestLoginLogout:
         # but session never updates and the next request bounces back to /login.
         with client.session_transaction() as sess:
             assert sess.get("authenticated") is True
+        assert client.get("/dashboard").status_code == 200, "the app must accept the session it just made"
 
-    def test_login_post_invalid_token(self, client):
-        resp = client.post("/login", data={"token": "wrong"})
-        assert resp.status_code == 200
-        # Pin a stable Bootstrap alert marker — substring "didn"/"invalid"
+    def test_login_post_wrong_password(self, client, owner_account):
+        resp = client.post("/login", data={"username": OWNER_USERNAME, "password": "wrong"})
+        assert resp.status_code == 401
+        # Pin a stable alert marker — substring "didn"/"invalid"
         # lets unrelated content pass. The error alert div is what the
         # template only renders when ``error`` is set in the context.
         body = resp.data
-        assert b'class="alert alert-danger' in body, "invalid-token POST must render the danger alert"
+        assert b'class="rp-message error"' in body, "wrong-password POST must render the error alert"
         assert b'role="alert"' in body
+        assert b"username or password isn't right" in body
+        with client.session_transaction() as sess:
+            assert not sess.get("authenticated")
 
     def test_already_authenticated_redirects_from_login(self, authed_client):
         resp = authed_client.get("/login", follow_redirects=False)
@@ -391,36 +406,38 @@ class TestLoginLogout:
             assert session.get("authenticated") is True
         assert authed_client.get("/logout").status_code == 200
 
-    def test_logout_get_when_signed_out_goes_to_login(self, client):
+    def test_logout_get_when_signed_out_goes_to_login(self, client, owner_account):
         resp = client.get("/logout", follow_redirects=False)
 
         assert resp.status_code == 302
         assert resp.headers["Location"].endswith("/login")
 
-    def test_login_rate_limit_exceeded(self, client):
+    def test_login_rate_limit_exceeded(self, client, owner_account):
         """After 5 POSTs to /login, 6th returns 429.
 
-        Assert the matrix: each of the first 5 POSTs returns 200 (legitimate
-        invalid-token render), and only the 6th flips to 429. Without this
+        Assert the matrix: each of the first 5 POSTs returns 401 (legitimate
+        wrong-password render), and only the 6th flips to 429. Without this
         ordering check a regression that bumped the limit to 50 would still
         pass the previous test (it only checked that the 6th was 429).
         """
+        wrong = {"username": OWNER_USERNAME, "password": "wrong"}
         for i in range(5):
-            r = client.post("/login", data={"token": "wrong"})
-            assert r.status_code == 200, f"attempt {i + 1} should still be allowed, got {r.status_code}"
-        resp = client.post("/login", data={"token": "wrong"})
+            r = client.post("/login", data=wrong)
+            assert r.status_code == 401, f"attempt {i + 1} should still be allowed, got {r.status_code}"
+        resp = client.post("/login", data=wrong)
         assert resp.status_code == 429, "6th attempt must be rate-limited"
 
-    def test_api_login_rate_limit_exceeded(self, client):
+    def test_api_login_rate_limit_exceeded(self, client, owner_account):
         """After 10 POSTs to /api/auth/login, 11th returns 429.
 
         Assert the matrix: each of the first 10 POSTs returns 401
-        (legitimate invalid-token), only the 11th returns 429.
+        (legitimate wrong password), only the 11th returns 429.
         """
+        wrong = {"username": OWNER_USERNAME, "password": "wrong"}
         for i in range(10):
-            r = client.post("/api/auth/login", json={"token": "wrong"})
-            assert r.status_code == 401, f"attempt {i + 1} should be 401 (invalid token), got {r.status_code}"
-        resp = client.post("/api/auth/login", json={"token": "wrong"})
+            r = client.post("/api/auth/login", json=wrong)
+            assert r.status_code == 401, f"attempt {i + 1} should be 401 (wrong password), got {r.status_code}"
+        resp = client.post("/api/auth/login", json=wrong)
         assert resp.status_code == 429, "11th attempt must be rate-limited"
 
 
@@ -442,15 +459,17 @@ class TestAuthAPI:
         data = resp.get_json()
         assert data["authenticated"] is True
 
-    def test_api_login_valid(self, client):
-        resp = client.post("/api/auth/login", json={"token": "test-token-12345678"})
+    def test_api_login_valid(self, client, owner_account):
+        resp = client.post("/api/auth/login", json={"username": OWNER_USERNAME, "password": OWNER_PASSWORD})
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
+        assert client.get("/api/auth/status").get_json()["authenticated"] is True, "the browser must be signed in"
 
-    def test_api_login_invalid(self, client):
-        resp = client.post("/api/auth/login", json={"token": "bad"})
+    def test_api_login_invalid(self, client, owner_account):
+        resp = client.post("/api/auth/login", json={"username": OWNER_USERNAME, "password": "bad"})
         assert resp.status_code == 401
         assert resp.get_json()["success"] is False
+        assert client.get("/api/auth/status").get_json()["authenticated"] is False
 
     def test_api_logout(self, authed_client):
         resp = authed_client.post("/api/auth/logout")
@@ -479,118 +498,34 @@ class TestHealthCheck:
 
 
 # ---------------------------------------------------------------------------
-# Token Endpoints
+# Webhook Secret Endpoints
 # ---------------------------------------------------------------------------
 
 
-class TestTokenEndpoints:
-    """Test token regeneration and info endpoints."""
+class TestWebhookSecretEndpoints:
+    """The webhook secret scripts send as their header is replaced from a signed-in browser."""
 
-    def test_regenerate_token_requires_auth(self, client):
-        resp = client.post("/api/token/regenerate")
-        assert resp.status_code == 401
-
-    def test_regenerate_token_returns_masked(self, client, monkeypatch):
-        # The fixture pins WEB_AUTH_TOKEN in env, which causes regenerate_token()
-        # to short-circuit and return the env token unchanged. Bypass the env-control
-        # gate so the endpoint actually mints a new token on disk and we can verify
-        # the change.
-        monkeypatch.delenv("WEB_AUTH_TOKEN", raising=False)
-        from media_preview_generator.web.auth import load_auth_config
-
-        original_token = load_auth_config()["token"]
-
-        resp = client.post("/api/token/regenerate", headers={"Authorization": f"Bearer {original_token}"})
+    def test_regenerating_retires_the_old_secret_and_leaves_the_browser_signed_in(self, authed_client, app):
+        # Regenerating the old sign-in token signed every browser out. The sign-in and the secret are separate
+        # credentials now, so replacing one must not touch the other.
+        resp = authed_client.post("/api/webhook-secret/regenerate")
         assert resp.status_code == 200
-        data = resp.get_json()
-        assert data["success"] is True
-        assert data["token"].startswith("****")
-        # Verify the persisted token actually changed — without this assertion
-        # a no-op endpoint would still pass the masked-prefix check.
-        new_token = load_auth_config()["token"]
-        assert new_token != original_token
-        assert data["token"].endswith(new_token[-4:])
+        new_secret = resp.get_json()["secret"]
+        assert new_secret != WEBHOOK_SECRET
 
-    def test_regenerate_token_invalidates_session(self, client):
-        """After token regeneration, session is cleared; request with old session gets 401."""
-        client.post("/api/auth/login", json={"token": "test-token-12345678"})
-        client.post("/api/token/regenerate", headers=_api_headers())
-        resp = client.get("/api/jobs")
-        assert resp.status_code == 401
+        script = app.test_client()
+        assert script.get("/api/jobs", headers=_api_headers(WEBHOOK_SECRET)).status_code == 401
+        assert script.get("/api/jobs", headers=_api_headers(new_secret)).status_code == 200
+        assert authed_client.get("/api/jobs").status_code == 200, "the browser stays signed in"
 
-    def test_setup_token_info(self, client):
-        resp = client.get("/api/setup/token-info", headers=_api_headers())
-        assert resp.status_code == 200
-        data = resp.get_json()
-        assert data["token"].startswith("****")
-        # The fixture sets WEB_AUTH_TOKEN, so source is "environment".
-        # Pin the enumerated value, not just key-presence — a regression
-        # returning source="leaked" would have passed.
-        assert data["source"] == "environment", data
-        assert data["env_controlled"] is True
-        # Token length must reflect the real token, not the masked one.
-        assert data["token_length"] == len("test-token-12345678")
 
-    def test_set_custom_token_requires_auth(self, client):
-        # No auth header → 401 regardless of env-var state.
-        resp = client.post("/api/token/set", json={"token": "newtoken123", "confirm_token": "newtoken123"})
-        assert resp.status_code == 401
+# ---------------------------------------------------------------------------
+# Setup Skip + Wizard Endpoints
+# ---------------------------------------------------------------------------
 
-    def test_set_custom_token_persists_to_disk(self, client, monkeypatch):
-        # The fixture pins WEB_AUTH_TOKEN in env, which would normally make the
-        # endpoint 409. Bypass only the env-control gate so the new token lands
-        # on disk; we don't assert that the new token grants access (the env
-        # var still wins until container restart, which is the documented
-        # behaviour).
-        monkeypatch.setattr(
-            "media_preview_generator.web.auth.is_token_env_controlled",
-            lambda: False,
-        )
-        resp = client.post(
-            "/api/token/set",
-            headers=_api_headers(),
-            json={"token": "supersecret-12345", "confirm_token": "supersecret-12345"},
-        )
-        assert resp.status_code == 200
-        body = resp.get_json()
-        assert body["success"] is True
-        assert body["token"].startswith("****")
-        from media_preview_generator.web.auth import load_auth_config
 
-        assert load_auth_config()["token"] == "supersecret-12345"
-
-    def test_set_custom_token_rejects_mismatch(self, client, monkeypatch):
-        # Keep WEB_AUTH_TOKEN in env (auth still works) but lie about
-        # env-control so the endpoint reaches its real validation paths.
-        monkeypatch.setattr(
-            "media_preview_generator.web.auth.is_token_env_controlled",
-            lambda: False,
-        )
-        resp = client.post(
-            "/api/token/set",
-            headers=_api_headers(),
-            json={"token": "abc12345", "confirm_token": "different-token"},
-        )
-        assert resp.status_code == 400
-        assert "match" in resp.get_json()["error"].lower()
-
-    def test_set_custom_token_rejects_too_short(self, client, monkeypatch):
-        # Keep WEB_AUTH_TOKEN in env (auth still works) but lie about
-        # env-control so the endpoint reaches its real validation paths.
-        monkeypatch.setattr(
-            "media_preview_generator.web.auth.is_token_env_controlled",
-            lambda: False,
-        )
-        resp = client.post(
-            "/api/token/set",
-            headers=_api_headers(),
-            json={"token": "short", "confirm_token": "short"},
-        )
-        assert resp.status_code == 400
-        # Pin the validation reason — bare 400 was bug-blind to the "match"
-        # path firing instead of the "too short" path.
-        body = resp.get_json()
-        assert "8 characters" in body["error"], body
+class TestSetupSkipAndWizardEndpoints:
+    """Test /api/setup/skip and the Add Server wizard endpoints while setup is incomplete."""
 
     def test_setup_skip_marks_complete(self, client):
         """Phase H8: /api/setup/skip lets Emby/Jellyfin users bypass the
@@ -626,17 +561,6 @@ class TestTokenEndpoints:
         )
         assert resp.get_json()["success"] is True
         assert sm.is_setup_complete() is True
-
-    def test_set_custom_token_rejects_when_env_controlled(self, client):
-        # The fixture already has WEB_AUTH_TOKEN set, so any /api/token/set
-        # call should 409 with the env-var message.
-        resp = client.post(
-            "/api/token/set",
-            headers=_api_headers(),
-            json={"token": "newtoken123", "confirm_token": "newtoken123"},
-        )
-        assert resp.status_code == 409
-        assert "WEB_AUTH_TOKEN" in resp.get_json()["error"]
 
     @pytest.mark.parametrize(
         "method,path,payload",
@@ -2020,12 +1944,15 @@ class TestSettingsAPI:
         plex = (sm.get("media_servers") or [{}])[0]
         assert plex["auth"]["token"] == "real-token"
 
-    def test_save_settings_preserves_webhook_secret_when_redacted(self, client):
+    def test_save_settings_preserves_webhook_secret_when_redacted(self, authed_client):
         """POSTing webhook_secret='****' (the placeholder GET returns) must not poison the secret.
 
         Without this guard, a UI that reads settings and re-saves them
         wholesale would silently overwrite the actual secret with the
         masked sentinel — turning '****' into a valid auth token.
+
+        Signed in as the owner, as that UI is: the webhook secret is also the
+        script header, so once the test replaces it the old header authenticates nothing.
         """
         from media_preview_generator.web.settings_manager import get_settings_manager
 
@@ -2033,27 +1960,24 @@ class TestSettingsAPI:
         sm.set("webhook_secret", "real-secret-xyz")
 
         # POST '****' (what GET returns when secret is set)
-        resp = client.post(
+        resp = authed_client.post(
             "/api/settings",
-            headers=_api_headers(),
             json={"webhook_secret": "****"},
         )
         assert resp.status_code == 200
         assert sm.get("webhook_secret") == "real-secret-xyz"
 
         # POST empty string also a no-op
-        resp = client.post(
+        resp = authed_client.post(
             "/api/settings",
-            headers=_api_headers(),
             json={"webhook_secret": ""},
         )
         assert resp.status_code == 200
         assert sm.get("webhook_secret") == "real-secret-xyz"
 
         # POST a real new value still rotates
-        resp = client.post(
+        resp = authed_client.post(
             "/api/settings",
-            headers=_api_headers(),
             json={"webhook_secret": "rotated-secret"},
         )
         assert resp.status_code == 200
@@ -2091,7 +2015,7 @@ class TestSettingsAPI:
         assert data["plex_config_folder"] == "/x"
         assert data["selected_libraries"] == ["5"]
 
-    def test_get_settings_never_leaks_real_credentials_anywhere_in_response(self, client):
+    def test_get_settings_never_leaks_real_credentials_anywhere_in_response(self, authed_client):
         """GET /api/settings must never echo a real credential value in
         any field of the response — masked sentinel only.
 
@@ -2131,7 +2055,7 @@ class TestSettingsAPI:
             }
         )
 
-        resp = client.get("/api/settings", headers=_api_headers())
+        resp = authed_client.get("/api/settings")
         assert resp.status_code == 200
         # Scan the raw bytes — robust against any nesting depth or
         # field name. If a future field forwards the secret in any form
@@ -2898,32 +2822,6 @@ class TestSetupWizardAPI:
         assert data["redirect"] == "/"
         assert sm.is_setup_complete() is True
 
-    def test_set_setup_token_mismatch(self, client):
-        resp = client.post(
-            "/api/setup/set-token",
-            headers=_api_headers(),
-            json={"token": "new-token-1234", "confirm_token": "different"},
-        )
-        assert resp.status_code == 400
-        assert "match" in resp.get_json()["error"].lower()
-
-    def test_set_setup_token_too_short(self, client, monkeypatch):
-        # The fixture sets WEB_AUTH_TOKEN, so the env-control gate would
-        # otherwise short-circuit with a different error. Bypass it so
-        # we exercise the real length-validation branch.
-        monkeypatch.setattr(
-            "media_preview_generator.web.auth.is_token_env_controlled",
-            lambda: False,
-        )
-        resp = client.post(
-            "/api/setup/set-token",
-            headers=_api_headers(),
-            json={"token": "short", "confirm_token": "short"},
-        )
-        assert resp.status_code == 400
-        # Pin the reason — bare 400 collides with the mismatch / env paths.
-        assert "8 characters" in resp.get_json()["error"]
-
 
 # ---------------------------------------------------------------------------
 # Schedules API
@@ -3206,25 +3104,27 @@ class TestSystemAPI:
         assert "error" not in body
         assert ("config_warning" in body) is not on_node
 
-    def test_media_servers_status_empty_when_unconfigured(self, client):
+    def test_media_servers_status_empty_when_unconfigured(self, authed_client):
         from media_preview_generator.web.routes import api_system as _api_system
 
         with _api_system._media_server_status_lock:
             _api_system._media_server_status_cache["result"] = None
             _api_system._media_server_status_cache["fetched_at"] = 0.0
 
+        # Signed in rather than sending the webhook secret: the settings manager is replaced below, and the secret
+        # is read from it.
         with patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_get_sm:
             sm = MagicMock()
             sm.get.return_value = []
             mock_get_sm.return_value = sm
-            resp = client.get("/api/system/media-servers", headers=_api_headers())
+            resp = authed_client.get("/api/system/media-servers")
         assert resp.status_code == 200
         body = resp.get_json()
         assert body["servers"] == []
         assert body["cached"] is False
         assert body["ttl"] == 30
 
-    def test_media_servers_status_summarises_each_entry(self, client):
+    def test_media_servers_status_summarises_each_entry(self, authed_client):
         from media_preview_generator.web.routes import api_system as _api_system
 
         with _api_system._media_server_status_lock:
@@ -3261,10 +3161,11 @@ class TestSystemAPI:
                 return_value=live,
             ),
         ):
+            # (signed in, not the secret header: the settings manager is a mock here)
             sm = MagicMock()
             sm.get.return_value = entries
             mock_get_sm.return_value = sm
-            resp = client.get("/api/system/media-servers", headers=_api_headers())
+            resp = authed_client.get("/api/system/media-servers")
         assert resp.status_code == 200
         body = resp.get_json()
         assert len(body["servers"]) == 2
@@ -3295,7 +3196,7 @@ class TestSystemAPI:
                 _api_system._media_server_status_cache["result"] = None
                 _api_system._media_server_status_cache["fetched_at"] = 0.0
 
-    def test_media_servers_status_classifies_401_as_unauthorised(self, client):
+    def test_media_servers_status_classifies_401_as_unauthorised(self, authed_client):
         """ConnectionResult uses .message (not .error). The unauthorised
         classification used to read result.error which doesn't exist on the
         dataclass, so every auth failure was silently bucketed as
@@ -3317,6 +3218,7 @@ class TestSystemAPI:
                 return_value=live,
             ),
         ):
+            # (signed in, not the secret header: the settings manager is a mock here)
             sm = MagicMock()
             sm.get.return_value = [
                 {
@@ -3329,7 +3231,7 @@ class TestSystemAPI:
                 }
             ]
             mock_get_sm.return_value = sm
-            resp = client.get("/api/system/media-servers", headers=_api_headers())
+            resp = authed_client.get("/api/system/media-servers")
         body = resp.get_json()
         row = body["servers"][0]
         assert row["status"] == "unauthorised", row
@@ -3478,7 +3380,7 @@ class TestPathValidation:
 
 
 class TestAuthMethods:
-    """Test that both Bearer token and session auth work for API.
+    """Test that the webhook secret (Bearer or X-Auth-Token header) and session auth both work for API.
 
     Each test asserts the endpoint returned a real JSON body (not just
     "auth didn't reject"). A regression where auth silently passes but
@@ -3487,13 +3389,13 @@ class TestAuthMethods:
     """
 
     def test_bearer_auth(self, client):
-        resp = client.get("/api/jobs", headers={"Authorization": "Bearer test-token-12345678"})
+        resp = client.get("/api/jobs", headers={"Authorization": f"Bearer {WEBHOOK_SECRET}"})
         assert resp.status_code == 200
         body = resp.get_json()
         assert isinstance(body, dict) and "jobs" in body, body
 
     def test_x_auth_token_header(self, client):
-        resp = client.get("/api/jobs", headers={"X-Auth-Token": "test-token-12345678"})
+        resp = client.get("/api/jobs", headers={"X-Auth-Token": WEBHOOK_SECRET})
         assert resp.status_code == 200
         body = resp.get_json()
         assert isinstance(body, dict) and "jobs" in body, body
@@ -4345,7 +4247,7 @@ class TestValidatePathsBranches:
 class TestPageRoutesAdditional:
     """Test additional page routes."""
 
-    def test_automation_page_requires_auth(self, client):
+    def test_automation_page_requires_auth(self, client, owner_account):
         resp = client.get("/automation", follow_redirects=False)
         assert resp.status_code == 302
         assert "/login" in resp.headers.get("Location", "")
@@ -4387,7 +4289,7 @@ class TestPageRoutesAdditional:
         assert "foo=bar" in location
         assert location.endswith("#webhooks")
 
-    def test_logs_page_requires_auth(self, client):
+    def test_logs_page_requires_auth(self, client, owner_account):
         resp = client.get("/logs", follow_redirects=False)
         assert resp.status_code == 302
         assert "/login" in resp.headers.get("Location", "")
@@ -4414,14 +4316,8 @@ class TestPageRoutesAdditional:
         """When setup is incomplete, authenticated user is redirected to setup."""
         config_dir = str(tmp_path / "setup_test_config")
         os.makedirs(config_dir, exist_ok=True)
-        auth_file = os.path.join(config_dir, "auth.json")
-        with open(auth_file, "w") as f:
-            json.dump({"token": "test-token-12345678"}, f)
 
-        with patch.dict(
-            os.environ,
-            {"CONFIG_DIR": config_dir, "WEB_AUTH_TOKEN": "test-token-12345678"},
-        ):
+        with patch.dict(os.environ, {"CONFIG_DIR": config_dir}):
             from media_preview_generator.web.settings_manager import (
                 reset_settings_manager,
             )
@@ -4429,9 +4325,8 @@ class TestPageRoutesAdditional:
             reset_settings_manager()
             flask_app = create_app(config_dir=config_dir)
             flask_app.config["TESTING"] = True
-            test_client = flask_app.test_client()
-            with test_client.session_transaction() as sess:
-                sess["authenticated"] = True
+            # The owner account lives where the `app` fixture (via ``client``) pointed auth.AUTH_FILE.
+            test_client = sign_in(flask_app.test_client())
 
             resp = test_client.get("/", follow_redirects=False)
             # Setup not complete + authed -> index should 302 to /setup. A
@@ -5025,7 +4920,7 @@ class TestPlexWebhookTestEndpointRemoved:
 
         resp = client.post(
             "/api/settings/plex_webhook/test",
-            headers=_api_headers(),
+            headers=_api_headers("secret-value"),
             json={"public_url": "http://localhost:9191/api/webhooks/server/plex-default"},
         )
         assert resp.status_code == 404, (
@@ -6919,8 +6814,10 @@ class TestBackupRestore:
         sm = get_settings_manager()
         monkeypatch.setattr(sm, "config_dir", tmp_path)
         monkeypatch.setattr(sm, "settings_file", tmp_path / "settings.json")
-        (tmp_path / "settings.json").write_text('{"log_retention_count": 9}')
-        sm._settings = {"log_retention_count": 9}
+        # The settings this test swaps in carry the webhook secret, or the header below would stop being valid.
+        live = {"log_retention_count": 9, "webhook_secret": WEBHOOK_SECRET}
+        (tmp_path / "settings.json").write_text(json.dumps(live))
+        sm._settings = dict(live)
         (tmp_path / "settings.json.20260101-100000.bak").write_text('{"log_retention_count": 3}')
 
         resp = client.post(
@@ -7145,9 +7042,10 @@ class TestBackupRestore:
             json.dump({"_schema_version": 23, "setup_complete": True, "media_servers": [server]}, f)
         return name
 
-    def test_a_backup_from_before_an_upgrade_is_brought_up_to_this_version(self, client):
+    def test_a_backup_from_before_an_upgrade_is_brought_up_to_this_version(self, authed_client):
         """Run as it was, a 5.1.0 backup's Plex helper is refused "no Plex database node" until a restart, and a
-        save of its server meanwhile drops the helper's address and key for good."""
+        save of its server meanwhile drops the helper's address and key for good. (Signed in: that backup has no
+        webhook secret, so a header that authenticated before the restore would not after it.)"""
         from media_preview_generator.markers.publishers.plex_remote import node_refusal
         from media_preview_generator.markers.settings import load_server
         from media_preview_generator.upgrade import _CURRENT_SCHEMA_VERSION, run_migrations
@@ -7156,17 +7054,16 @@ class TestBackupRestore:
         sm = get_settings_manager()
         backup = self._write_backup_from_5_1_0(sm.config_dir)
 
-        resp = client.post(
+        resp = authed_client.post(
             "/api/settings/backups/restore",
-            headers=_api_headers(),
             json={"file": "settings.json", "backup": backup},
         )
         assert resp.status_code == 200, resp.get_json()
         assert sm.get("_schema_version") == _CURRENT_SCHEMA_VERSION
         assert node_refusal(load_server(sm.get("media_servers")[0]["markers"], "plex")) is None
 
-        stored = client.get("/api/servers/s1", headers=_api_headers()).get_json()
-        resp = client.put("/api/servers/s1", headers=_api_headers(), json={"markers": stored["markers"]})
+        stored = authed_client.get("/api/servers/s1").get_json()
+        resp = authed_client.put("/api/servers/s1", json={"markers": stored["markers"]})
         assert resp.status_code == 200, resp.get_json()
         restarted = SettingsManager(config_dir=str(sm.config_dir))
         run_migrations(restarted)
@@ -8514,8 +8411,7 @@ def test_a_restore_without_a_name_takes_the_newest_backup_that_can_be_read(clien
     client.application.config["WTF_CSRF_ENABLED"] = False
     sm = get_settings_manager()
     sm.complete_setup()
-    with client.session_transaction() as s:
-        s["authenticated"] = True
+    sign_in(client)
     cfg = str(sm.config_dir)
     good = os.path.join(cfg, "settings.json.20260101-100000.bak")
     cut = os.path.join(cfg, "settings.json.20260102-100000.bak")

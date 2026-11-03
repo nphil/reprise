@@ -30,16 +30,16 @@ class TestLogsPolish:
         authed_page.goto(f"{app_url}/logs")
         authed_page.wait_for_selector("#logContainer")
 
-    def test_log_body_is_not_near_black_when_theme_is_light(self, authed_page: Page, app_url: str) -> None:
+    def test_log_body_follows_the_light_surface_when_theme_is_light(self, authed_page: Page, app_url: str) -> None:
         self._open(authed_page, app_url)
         authed_page.evaluate("document.documentElement.setAttribute('data-bs-theme', 'light')")
         bg = authed_page.evaluate(_LOG_LINE)["bg"]
-        assert bg == "rgb(30, 41, 59)"
+        assert bg == "rgb(250, 244, 237)"
 
-    def test_log_body_keeps_terminal_colour_when_theme_is_dark(self, authed_page: Page, app_url: str) -> None:
+    def test_log_body_uses_the_dark_canvas_when_theme_is_dark(self, authed_page: Page, app_url: str) -> None:
         self._open(authed_page, app_url)
         authed_page.evaluate("document.documentElement.setAttribute('data-bs-theme', 'dark')")
-        assert authed_page.evaluate(_LOG_LINE)["bg"] == "rgb(11, 11, 20)"
+        assert authed_page.evaluate(_LOG_LINE)["bg"] == "rgb(25, 23, 36)"
 
     def test_level_word_is_semibold_sentence_case_when_rendered(self, authed_page: Page, app_url: str) -> None:
         self._open(authed_page, app_url)

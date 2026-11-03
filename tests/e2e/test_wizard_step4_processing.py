@@ -11,6 +11,8 @@ Regressions covered:
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from playwright.sync_api import Page, expect
 
@@ -18,6 +20,7 @@ from ._mocks import (
     capture_settings_save,
     mock_plex_libraries,
     mock_settings_get,
+    mock_setup_complete,
     mock_setup_status,
     mock_system_rescan_gpus,
     mock_system_status,
@@ -26,8 +29,9 @@ from ._mocks import (
 )
 
 
-def _drive_to_step4(page: Page, app_url: str) -> None:
-    mock_worker_groups(page)
+def _drive_to_step4(page: Page, app_url: str) -> dict:
+    """Walk the Plex wizard to step 4; returns the worker-groups mock so a test can read what was saved."""
+    groups = mock_worker_groups(page)
     page.goto(f"{app_url}/setup")
     page.wait_for_load_state("domcontentloaded")
     page.locator('.wizard-vendor-btn[data-vendor="plex"]').click()
@@ -48,6 +52,7 @@ def _drive_to_step4(page: Page, app_url: str) -> None:
     page.locator("#wizardPlexConfigFolder").fill("/plex")
     page.locator("#step3Next").click()
     expect(page.locator('div.setup-step[data-step="4"]')).to_have_class("setup-step active")
+    return groups
 
 
 @pytest.mark.e2e
@@ -140,21 +145,33 @@ class TestPerGpuPanel:
 
 @pytest.mark.e2e
 class TestCpuWorkersStepper:
-    def test_cpu_group_draft_saves_before_wizard_advances(self, wizard_page: Page, app_url_wizard: str) -> None:
+    def test_cpu_group_draft_saves_before_setup_completes(self, wizard_page: Page, app_url_wizard: str) -> None:
         mock_plex_libraries(wizard_page)
         capture_settings_save(wizard_page)
         mock_setup_status(wizard_page, complete=False)
         mock_validate_plex_config_folder(wizard_page, valid=True)
         mock_settings_get(wizard_page)
         mock_system_status(wizard_page)
-        _drive_to_step4(wizard_page, app_url_wizard)
+        called_complete = mock_setup_complete(wizard_page, redirect="/")
+        # Stub the literal "/" navigation so the redirect after "Finish setup" stays isolated.
+        wizard_page.route(
+            re.compile(r"/$"),
+            lambda r: r.fulfill(content_type="text/html", body="<html>home</html>"),
+        )
+        groups = _drive_to_step4(wizard_page, app_url_wizard)
 
         wizard_page.locator('[data-edit="cpu"]').click()
         cpu = wizard_page.locator("#workerGroupMembers [data-member] [data-count]")
         expect(cpu).to_have_value("1")
         cpu.fill("2")
+        # "Finish setup" saves the worker-group draft first, then completes setup.
         wizard_page.locator("#step4Next").click()
-        expect(wizard_page.locator('div.setup-step[data-step="5"]')).to_have_class("setup-step active")
+        wizard_page.wait_for_url("**/", timeout=5000)
+        assert called_complete, "POST /api/setup/complete never fired"
+        saved = [w for w in groups["writes"] if w["method"] == "PUT"]
+        assert saved, "the CPU worker draft was never PUT to /api/worker-groups"
+        cpu_group = next(g for g in saved[-1]["body"]["groups"] if g["id"] == "cpu")
+        assert cpu_group["members"][0]["count"] == 2
 
 
 @pytest.mark.e2e

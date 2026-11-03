@@ -49,10 +49,9 @@ def client(flask_app):
 @pytest.fixture
 def auth_headers(flask_app):
     """Get auth headers for API calls."""
-    from media_preview_generator.web.auth import get_auth_token
+    from media_preview_generator.web.auth import get_webhook_secret
 
-    token = get_auth_token()
-    return {"X-Auth-Token": token}
+    return {"X-Auth-Token": get_webhook_secret()}
 
 
 class TestIsWithinBase:

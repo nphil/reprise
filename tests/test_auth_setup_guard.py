@@ -5,6 +5,7 @@ import json
 import pytest
 
 from media_preview_generator.web.settings_manager import get_settings_manager
+from tests.auth_helpers import ensure_owner_account, sign_in
 
 
 @pytest.fixture
@@ -45,26 +46,18 @@ class TestSetupNotComplete:
         response = client.get("/api/settings")
         assert response.status_code == 200
 
-    def test_unauthenticated_post_setup_set_token(self, client):
-        """Test unauthenticated POST /api/setup/set-token when setup incomplete."""
+    def test_unauthenticated_post_setup_complete(self, client):
+        """Test unauthenticated POST /api/setup/complete (the wizard's "Finish setup") when setup incomplete."""
         settings = get_settings_manager()
         assert not settings.is_setup_complete()
 
-        data = {"token": "test-tok-12345678", "confirm_token": "test-tok-12345678"}
-        response = client.post(
-            "/api/setup/set-token",
-            data=json.dumps(data),
-            content_type="application/json",
-        )
-        # A 200 with success=False (token silently not set) must fail too.
+        response = client.post("/api/setup/complete")
+        # A 200 with success=False (setup silently not completed) must fail too.
         assert response.status_code == 200
         body = response.get_json() or {}
-        assert body.get("success") is True, f"set-token must report success=True on success, got {body!r}"
-        # Verify the token actually changed.
-        from media_preview_generator.web.auth import get_auth_token
-
-        assert get_auth_token() == "test-tok-12345678", (
-            "set-token returned 200 with success=True but the token wasn't actually changed"
+        assert body.get("success") is True, f"setup/complete must report success=True on success, got {body!r}"
+        assert settings.is_setup_complete() is True, (
+            "setup/complete returned 200 with success=True but setup wasn't actually completed"
         )
 
     def test_unauthenticated_get_plex_servers(self, client):
@@ -120,14 +113,6 @@ class TestSetupNotComplete:
         )
         assert response.status_code == 200
 
-    def test_unauthenticated_get_token_info(self, client):
-        """Test unauthenticated GET /api/setup/token-info when setup incomplete."""
-        settings = get_settings_manager()
-        assert not settings.is_setup_complete()
-
-        response = client.get("/api/setup/token-info")
-        assert response.status_code == 200
-
 
 class TestSetupComplete:
     """Tests for auth enforcement when setup is complete."""
@@ -154,25 +139,14 @@ class TestSetupComplete:
         assert response.status_code == 401
         assert response.get_json()["error"] == "Authentication required"
 
-    def test_unauthenticated_post_set_token_requires_auth(self, client):
-        """Test unauthenticated POST /api/setup/set-token returns 401 after setup."""
+    def test_unauthenticated_post_setup_complete_requires_auth(self, client):
+        """Test unauthenticated POST /api/setup/complete returns 401 after setup."""
         settings = get_settings_manager()
         settings.set("setup_complete", True)
 
-        response = client.post(
-            "/api/setup/set-token",
-            data=json.dumps({"token": "test12345", "confirm_token": "test12345"}),
-            content_type="application/json",
-        )
+        response = client.post("/api/setup/complete")
         assert response.status_code == 401
-
-    def test_unauthenticated_get_token_info_requires_auth(self, client):
-        """Test unauthenticated GET /api/setup/token-info returns 401 after setup."""
-        settings = get_settings_manager()
-        settings.set("setup_complete", True)
-
-        response = client.get("/api/setup/token-info")
-        assert response.status_code == 401
+        assert response.get_json()["error"] == "Authentication required"
 
     def test_valid_bearer_token_get_settings(self, client, auth_headers):
         """Test valid Bearer token allows GET /api/settings after setup."""
@@ -190,6 +164,25 @@ class TestSetupComplete:
 
         response = client.get("/api/settings", headers=auth_headers)
         assert response.status_code == 200
+
+    def test_signed_in_browser_get_settings(self, client):
+        """Test a browser signed in as the owner allows GET /api/settings after setup."""
+        settings = get_settings_manager()
+        settings.set("setup_complete", True)
+
+        response = sign_in(client).get("/api/settings")
+        assert response.status_code == 200
+
+    def test_cookie_from_the_old_token_login_get_settings(self, client):
+        """Test a session marked authenticated without the account's epoch returns 401 after setup."""
+        settings = get_settings_manager()
+        settings.set("setup_complete", True)
+        ensure_owner_account()
+        with client.session_transaction() as sess:
+            sess["authenticated"] = True
+
+        response = client.get("/api/settings")
+        assert response.status_code == 401
 
     def test_invalid_token_get_settings(self, client):
         """Test invalid X-Auth-Token returns 401 after setup."""

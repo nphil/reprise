@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 from playwright.sync_api import Page, expect
 
-from .conftest import get_free_port
+from .conftest import E2E_PASSWORD, E2E_USERNAME, get_free_port
 
 # ``fetch`` with no X-CSRFToken header, the way a call site that forgot it would send it.
 _BARE_POST = """async (url) => {
@@ -86,13 +86,17 @@ class TestCsrfFetchWrapper:
 @pytest.mark.e2e
 class TestLoginFormWithCsrf:
     # Signing in through the form with its token is covered by test_webapp.py's login tests.
-    def test_an_expired_sign_in_page_says_so(self, page: Page, app_url: str, complete_setup: None) -> None:
+    def test_an_expired_sign_in_page_says_so(
+        self, page: Page, app_url: str, complete_setup: None, session_cookie: dict
+    ) -> None:
+        # ``session_cookie`` makes sure the owner account exists: with none, /login is sent to /welcome.
         page.goto(f"{app_url}/login")
         page.context.clear_cookies()  # the session holding the form's token is gone, as after a restart
-        page.locator("#token").fill("e2e-test-token")
+        page.locator("#username").fill(E2E_USERNAME)
+        page.locator("#password").fill(E2E_PASSWORD)
         page.locator('button[type="submit"]').click()
 
-        expect(page.locator(".alert-warning")).to_contain_text("This sign-in page expired.", timeout=3000)
+        expect(page.locator(".rp-message.error")).to_contain_text("This page expired.", timeout=3000)
 
 
 @pytest.mark.e2e

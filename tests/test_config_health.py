@@ -23,6 +23,7 @@ def app(tmp_path, monkeypatch):
     config_dir = str(tmp_path / "cfg")
     os.makedirs(config_dir, exist_ok=True)
     monkeypatch.setenv("CONFIG_DIR", config_dir)
+    monkeypatch.setattr("media_preview_generator.web.auth.AUTH_FILE", os.path.join(config_dir, "auth.json"))
     monkeypatch.setenv("WEB_AUTH_TOKEN", "test-token-12345678")
     monkeypatch.setenv("WEB_PORT", "8099")
     with (

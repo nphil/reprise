@@ -708,6 +708,48 @@ def test_native_audio_rejects_gap_and_unknown_layout(tmp_path):
         native_audio_pcm(item, 0, 0, 1000, lambda: False, lambda: False, 1)
 
 
+@pytest.mark.parametrize("shift_ms,accepted", [(0, True), (1, True), (3, False)])
+def test_native_audio_tolerates_one_container_tick_of_timestamp_error(tmp_path, shift_ms, accepted):
+    """MKV timestamps are whole milliseconds: real AC3 files stray from the sample grid by one tick, a gap by a frame.
+
+    Every Community episode of the live library failed analysis because of this one-millisecond wobble.
+    """
+    from media_preview_generator.reprise.media import native_audio_pcm
+
+    base, path = tmp_path / "base.mka", tmp_path / "wobble.mka"
+    execute("-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=3", "-c:a", "ac3", "-y", str(base))
+    shifted = f"if(gte(PTS,1000),PTS-{shift_ms},PTS)"
+    execute("-i", str(base), "-c", "copy", "-bsf:a", f"setts=pts='{shifted}':dts='{shifted}'", "-y", str(path))
+    item = media_version(str(path), 3000, "{}")
+    if accepted:
+        assert native_audio_pcm(item, 0, 0, 2500, lambda: False, lambda: False, 1).data is not None
+    else:
+        with pytest.raises(DecodeError, match="discontinuous"):
+            native_audio_pcm(item, 0, 0, 2500, lambda: False, lambda: False, 1)
+
+
+SUBTITLE_WARNING = (
+    "[in#0/matroska,webm @ 0x55d0] [warning] Could not find codec parameters for stream 3 "
+    "(Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size"
+)
+
+
+@pytest.mark.parametrize(
+    "line,decoded,fatal",
+    [
+        (SUBTITLE_WARNING, 0, False),  # a Blu-ray rip's PGS subtitles are never decoded here
+        (SUBTITLE_WARNING, 3, True),  # but the decoded stream itself must be understood
+        ("[in#0/matroska,webm @ 0x55d0] [warning] Could not find codec parameters for stream 1 (Audio: ac3)", 0, True),
+        ("[hevc @ 0x55d0] [error] Error splitting the input into NAL units", 0, True),
+        ("[Parsed_showinfo_0 @ 0x55d0] [info] n:0 pts:0", 0, False),
+    ],
+)
+def test_only_the_unsized_subtitle_warning_of_an_undecoded_stream_is_tolerated(line, decoded, fatal):
+    from media_preview_generator.reprise.media import is_fatal_diagnostic
+
+    assert is_fatal_diagnostic(line, decoded) is fatal
+
+
 def test_native_audio_preserves_opposite_phase_channels(tmp_path):
     import numpy as np
 

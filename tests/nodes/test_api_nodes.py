@@ -20,6 +20,7 @@ from media_preview_generator.nodes.client import (
     NodeUnreachableError,
 )
 from media_preview_generator.web.routes import api_nodes
+from tests.auth_helpers import sign_in
 
 APP_VERSION = "9.9.9"
 NODE_ROW_KEYS = {
@@ -102,8 +103,7 @@ def nodes(client, monkeypatch):
     client.application.config["WTF_CSRF_ENABLED"] = False
     # Signed in after setup: every /api/nodes route needs a session or the API token (TestAuth).
     _sm().complete_setup()
-    with client.session_transaction() as session:
-        session["authenticated"] = True
+    sign_in(client)
     fakes: dict[str, FakeNode] = {}
 
     def fake(url: str) -> FakeNode:
@@ -891,8 +891,7 @@ class TestDelete:
         }
         _sm().set("media_servers", [server])
         other = client.application.test_client()
-        with other.session_transaction() as session:
-            session["authenticated"] = True
+        sign_in(other)
         removed: list[int] = []
         check = markers_settings._node_choice_error
 

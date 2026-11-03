@@ -126,10 +126,11 @@ class TestOneAccentForControls:
 
 
 class TestPageShell:
-    def test_navbar_main_and_banner_share_the_one_page_shell_when_rendered(self) -> None:
+    def test_main_and_banner_share_the_one_page_shell_when_rendered(self) -> None:
         base = (WEB / "templates" / "base.html").read_text()
-        assert base.count("page-shell") == 3
-        assert 'class="page-shell"' in base
+        assert base.count("page-shell") == 2
+        assert re.search(r'<main[^>]*class="[^"]*\bpage-shell\b', base)
+        assert re.search(r'id="configHealthBanner" class="page-shell\b', base)
 
     def test_page_shell_uses_the_gutter_and_width_tokens(self) -> None:
         match = re.search(r"\.page-shell \{([^}]*)\}", STYLE)

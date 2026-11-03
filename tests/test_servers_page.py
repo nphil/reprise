@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from media_preview_generator.web.settings_manager import get_settings_manager
+from tests.auth_helpers import ensure_owner_account, sign_in
 
 
 @pytest.fixture
@@ -38,20 +39,17 @@ def client(flask_app):
 @pytest.fixture
 def authenticated_client(flask_app):
     """A test client with a valid session cookie."""
-    from media_preview_generator.web.auth import get_auth_token
-
-    token = get_auth_token()
     sm = get_settings_manager()
     sm.set("setup_complete", True)
 
     client = flask_app.test_client()
-    # Login to get a session cookie.
-    client.post("/login", data={"token": token}, follow_redirects=False)
+    sign_in(client)
     return client
 
 
 class TestServersPage:
     def test_unauthenticated_redirects_to_login(self, client):
+        ensure_owner_account()  # without an account every page sends you to /welcome instead
         response = client.get("/servers", follow_redirects=False)
         # Flask's redirect() defaults to 302 — pinning the status code
         # ensures we don't silently accept e.g. a 308 (permanent route change)
@@ -64,8 +62,9 @@ class TestServersPage:
         assert response.status_code == 200
         body = response.get_data(as_text=True)
         # Key landmarks of the rendered page.
-        assert "Media Servers" in body
-        assert "Add Server" in body
+        assert "Connections" in body
+        assert "Add server" in body
+        assert 'id="webhookSecretPanel"' in body
         # The webhook URL placeholder is now the per-server pinned form
         # (multi-server-safe). Either landmark proves the Webhook & Scanner
         # tab rendered.
@@ -74,7 +73,7 @@ class TestServersPage:
         assert 'data-type="emby"' in body
         assert 'data-type="jellyfin"' in body
 
-    def test_navbar_includes_servers_link(self, authenticated_client):
+    def test_sidebar_links_to_the_servers_page(self, authenticated_client):
         # Verify the rendered library page, not the root redirect.
         response = authenticated_client.get("/reprise")
         assert response.status_code == 200

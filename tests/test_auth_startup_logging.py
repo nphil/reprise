@@ -1,129 +1,241 @@
-"""Tests for the startup token banner (``log_token_on_startup``).
+"""Tests for the lines ``initialize_auth()`` logs at startup.
 
-The banner is the only place an operator sees *which* token the app actually
-uses. Issue #263: a user set ``WEB_AUTH_TOKEN`` but the generic banner still
-said "Check /config/auth.json for the full token", making it look like the env
-var was ignored. These tests pin the banner to the real token source for every
-combination of (env var set?) × (auth.json present?).
+They are the one place an operator is told how sign-in works after an upgrade or on a first start. Issue #263: a
+user set ``WEB_AUTH_TOKEN`` but the generic banner made it look like the variable was ignored. These tests pin the
+lines to what is really on disk and in the environment (first run, an existing account, the old token carried over
+as the webhook secret, a retired token, ``AUTH_METHOD=external``), and pin that no line ever carries a full secret:
+logs get pasted into bug reports.
 """
 
 import json
+from pathlib import Path
 
 import pytest
-from loguru import logger
+
+from media_preview_generator.web.auth import get_webhook_secret, initialize_auth, webhook_secret_matches
+from media_preview_generator.web.settings_manager import get_settings_manager, reset_settings_manager
+from tests.auth_helpers import OWNER_PASSWORD, OWNER_USERNAME, ensure_owner_account
+
+ENV_TOKEN = "env-secret-token-abcd1234"
+FILE_TOKEN = "saved-token-wxyz-56789"
+STORED_SECRET = "dedicated-secret-0123456789"
+
+FIRST_RUN = "FIRST RUN: open the web interface and create your username and password."
+CARRIED_OVER = "Carried the old sign-in token over as the webhook secret"
+VARIABLE_BECAME_THE_SECRET = "WEB_AUTH_TOKEN is set; its value became the webhook secret"
+VARIABLE_IGNORED = "WEB_AUTH_TOKEN is set but ignored"
 
 
 @pytest.fixture
-def mock_auth_config(tmp_path, monkeypatch):
-    """Point the auth module at a temp config dir."""
-    auth_file = str(tmp_path / "auth.json")
-    monkeypatch.setattr("media_preview_generator.web.auth.AUTH_FILE", auth_file)
-    monkeypatch.setattr("media_preview_generator.web.auth.CONFIG_DIR", str(tmp_path))
-    monkeypatch.setattr("media_preview_generator.web.auth.get_config_dir", lambda: str(tmp_path))
-    return auth_file
+def config_dir(mock_auth_config, monkeypatch):
+    """An empty config folder: auth.json and settings.json are made in it, and no variable from outside leaks in."""
+    monkeypatch.delenv("WEB_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("AUTH_METHOD", raising=False)
+    get_settings_manager(mock_auth_config)  # the webhook secret is saved in this folder's settings.json
+    yield Path(mock_auth_config)
+    reset_settings_manager()
 
 
-def _capture_banner(func) -> str:
-    """Run ``func`` and return everything it logged as one newline-joined string."""
-    messages: list[str] = []
-    sink_id = logger.add(messages.append, format="{message}", level="DEBUG")
-    try:
-        func()
-    finally:
-        logger.remove(sink_id)
-    return "\n".join(str(m) for m in messages)
+def _settings(config_dir: Path) -> dict:
+    return json.loads((config_dir / "settings.json").read_text())
 
 
-def _write_saved_token(auth_file: str, token: str) -> None:
-    with open(auth_file, "w") as f:
-        json.dump({"token": token}, f)
+def _auth_json(config_dir: Path) -> dict:
+    return json.loads((config_dir / "auth.json").read_text())
 
 
-class TestStartupBanner:
-    def test_env_only_reports_env_source(self, mock_auth_config, monkeypatch):
-        """Env var set, no auth.json: banner names env as the source, not auth.json."""
-        monkeypatch.setenv("WEB_AUTH_TOKEN", "env-secret-token-abcd")
-        from media_preview_generator.web.auth import log_token_on_startup
+def _write_auth_json(config_dir: Path, **extra) -> None:
+    path = config_dir / "auth.json"
+    current = json.loads(path.read_text()) if path.exists() else {}
+    path.write_text(json.dumps({**current, **extra}))
 
-        out = _capture_banner(log_token_on_startup)
 
-        assert "****abcd" in out, "masked env token should be shown"
-        assert "WEB_AUTH_TOKEN environment variable" in out
-        # The misleading line that caused #263 must NOT appear when env-controlled.
-        assert "Check /config/auth.json for the full token" not in out
-        assert "jq -r .token" not in out, "no jq/cat hint when the token isn't in auth.json"
+def _start(loguru_caplog) -> str:
+    """Run the startup step and return everything it logged as one string."""
+    loguru_caplog.clear()
+    initialize_auth()
+    return loguru_caplog.text
 
-    def test_env_overrides_saved_token_warns(self, mock_auth_config, monkeypatch):
-        """Env var AND a *different* saved token: banner shows the env token and warns the saved one is ignored."""
-        _write_saved_token(mock_auth_config, "saved-token-wxyz")
-        monkeypatch.setenv("WEB_AUTH_TOKEN", "env-secret-token-abcd")
-        from media_preview_generator.web.auth import log_token_on_startup
 
-        out = _capture_banner(log_token_on_startup)
+def _messages(loguru_caplog, level: str) -> list[str]:
+    return [r.getMessage() for r in loguru_caplog.records if r.levelname == level]
 
-        assert "****abcd" in out, "the env token (not the saved one) is the active token"
-        assert "****wxyz" not in out, "the shadowed saved token must not be presented as active"
-        assert mock_auth_config in out, "operator is told which file holds the ignored token"
-        assert "ignored" in out.lower() or "overrid" in out.lower()
 
-    def test_env_matches_saved_token_no_warning(self, mock_auth_config, monkeypatch):
-        """Env var equals the saved token: no 'ignored' noise, just the env source."""
-        _write_saved_token(mock_auth_config, "env-secret-token-abcd")
-        monkeypatch.setenv("WEB_AUTH_TOKEN", "env-secret-token-abcd")
-        from media_preview_generator.web.auth import log_token_on_startup
+def _assert_no_secret_logged(out: str, config_dir: Path, *seeded: str) -> None:
+    """No startup line carries a secret in full: not the one stored at the end, nor any that started the test."""
+    stored = _settings(config_dir).get("webhook_secret")
+    assert stored, "the startup step leaves a webhook secret behind"
+    for secret in {stored, *seeded}:
+        assert secret not in out
 
-        out = _capture_banner(log_token_on_startup)
 
-        assert "WEB_AUTH_TOKEN environment variable" in out
-        assert "ignored" not in out.lower()
+class TestFirstRun:
+    def test_no_account_yet_says_to_create_one_in_the_web_interface(self, config_dir, loguru_caplog):
+        out = _start(loguru_caplog)
 
-    def test_config_only_reports_config_source(self, mock_auth_config, monkeypatch):
-        """No env var, token in auth.json: banner names auth.json and gives the cat/jq hint."""
-        monkeypatch.delenv("WEB_AUTH_TOKEN", raising=False)
-        _write_saved_token(mock_auth_config, "saved-token-wxyz")
-        from media_preview_generator.web.auth import log_token_on_startup
+        assert FIRST_RUN in out
+        assert "Sign in as" not in out
+        assert "Made a webhook secret" in out, "a new install gets a secret of its own"
+        assert not _messages(loguru_caplog, "WARNING")
+        _assert_no_secret_logged(out, config_dir)
 
-        out = _capture_banner(log_token_on_startup)
 
-        assert "****wxyz" in out
-        assert mock_auth_config in out
-        assert "cat" in out, "config-sourced token should tell the user how to read it"
-        assert "WEB_AUTH_TOKEN" in out, "should hint at pinning via the env var"
+class TestExistingAccount:
+    def test_it_names_the_username_to_sign_in_as(self, config_dir, loguru_caplog):
+        ensure_owner_account()
 
-    def test_whitespace_padded_env_token_is_trimmed(self, mock_auth_config, monkeypatch):
+        out = _start(loguru_caplog)
+
+        assert f"Sign in as '{OWNER_USERNAME}'" in out
+        assert FIRST_RUN not in out
+        assert not _messages(loguru_caplog, "WARNING")
+        _assert_no_secret_logged(out, config_dir, OWNER_PASSWORD, _auth_json(config_dir)["account"]["password_hash"])
+
+
+class TestOldTokenCarriedOver:
+    def test_the_variable_becomes_the_webhook_secret_and_can_be_removed(self, config_dir, loguru_caplog, monkeypatch):
+        monkeypatch.setenv("WEB_AUTH_TOKEN", ENV_TOKEN)
+
+        out = _start(loguru_caplog)
+
+        assert _settings(config_dir)["webhook_secret"] == ENV_TOKEN, "Sonarr, Radarr and scripts keep working"
+        assert CARRIED_OVER in out
+        assert VARIABLE_BECAME_THE_SECRET in out
+        assert "remove the variable" in out
+        assert VARIABLE_IGNORED not in out
+        _assert_no_secret_logged(out, config_dir, ENV_TOKEN)
+
+    def test_a_whitespace_padded_variable_is_trimmed(self, config_dir, loguru_caplog, monkeypatch):
         """A trailing newline/space in WEB_AUTH_TOKEN must not break matching.
 
-        Headers are stripped on the way in, so the stored token must be too —
+        Headers are stripped on the way in, so the stored secret must be too —
         otherwise the env var silently 'doesn't work' (issue #263 shape).
         """
         monkeypatch.setenv("WEB_AUTH_TOKEN", "  padded-token-1234\n")
-        from media_preview_generator.web.auth import (
-            get_auth_token,
-            is_token_env_controlled,
-            validate_token,
-        )
 
-        assert get_auth_token() == "padded-token-1234"
-        assert is_token_env_controlled() is True
-        assert validate_token("padded-token-1234") is True
+        out = _start(loguru_caplog)
 
-    def test_whitespace_only_env_token_treated_as_unset(self, mock_auth_config, monkeypatch):
-        """A blank/whitespace WEB_AUTH_TOKEN must not lock auth to an unusable token."""
-        _write_saved_token(mock_auth_config, "saved-token-wxyz")
+        assert _settings(config_dir)["webhook_secret"] == "padded-token-1234"
+        assert get_webhook_secret() == "padded-token-1234"
+        assert webhook_secret_matches("padded-token-1234") is True
+        assert VARIABLE_BECAME_THE_SECRET in out
+        _assert_no_secret_logged(out, config_dir, "padded-token-1234")
+
+    def test_a_blank_variable_counts_as_unset(self, config_dir, loguru_caplog, monkeypatch):
+        """A blank/whitespace WEB_AUTH_TOKEN must not make the webhook secret blank or unusable."""
+        _write_auth_json(config_dir, token=FILE_TOKEN)
         monkeypatch.setenv("WEB_AUTH_TOKEN", "   ")
-        from media_preview_generator.web.auth import get_auth_token, is_token_env_controlled
 
-        assert is_token_env_controlled() is False
-        assert get_auth_token() == "saved-token-wxyz", "falls back to the saved token"
+        out = _start(loguru_caplog)
 
-    def test_external_auth_skips_token(self, mock_auth_config, monkeypatch):
-        """AUTH_METHOD=external: no token is printed at all."""
-        monkeypatch.setenv("WEB_AUTH_TOKEN", "env-secret-token-abcd")
+        assert _settings(config_dir)["webhook_secret"] == FILE_TOKEN, "falls back to the saved token"
+        assert CARRIED_OVER in out
+        assert "WEB_AUTH_TOKEN" not in out
+        _assert_no_secret_logged(out, config_dir, FILE_TOKEN)
+
+    def test_a_token_only_in_auth_json_is_carried_over_and_the_old_file_goes(self, config_dir, loguru_caplog):
+        _write_auth_json(config_dir, token=FILE_TOKEN)
+
+        out = _start(loguru_caplog)
+
+        assert _settings(config_dir)["webhook_secret"] == FILE_TOKEN
+        assert CARRIED_OVER in out
+        assert "WEB_AUTH_TOKEN" not in out
+        assert not (config_dir / "auth.json").exists(), "nothing else was in it, so the old token file is removed"
+        assert not _messages(loguru_caplog, "WARNING")
+        _assert_no_secret_logged(out, config_dir, FILE_TOKEN)
+
+    def test_the_account_stays_in_auth_json_when_the_old_token_is_removed(self, config_dir, loguru_caplog):
+        ensure_owner_account()
+        _write_auth_json(config_dir, token=FILE_TOKEN)
+
+        out = _start(loguru_caplog)
+
+        left = _auth_json(config_dir)
+        assert "token" not in left
+        assert left["account"]["username"] == OWNER_USERNAME
+        assert f"Sign in as '{OWNER_USERNAME}'" in out
+        _assert_no_secret_logged(out, config_dir, FILE_TOKEN)
+
+    def test_the_variable_wins_over_a_different_token_in_the_file_and_nobody_is_warned(
+        self, config_dir, loguru_caplog, monkeypatch
+    ):
+        # The live install: the variable was set (so it always won) and auth.json holds a different, never-used token.
+        _write_auth_json(config_dir, token=FILE_TOKEN)
+        monkeypatch.setenv("WEB_AUTH_TOKEN", ENV_TOKEN)
+
+        out = _start(loguru_caplog)
+
+        assert _settings(config_dir)["webhook_secret"] == ENV_TOKEN, "the secret is what senders already use"
+        assert VARIABLE_BECAME_THE_SECRET in out
+        assert not _messages(loguru_caplog, "WARNING"), "the file's token was never in use, so nothing was lost"
+        _assert_no_secret_logged(out, config_dir, ENV_TOKEN, FILE_TOKEN)
+
+
+class TestRetiredToken:
+    def test_a_token_in_auth_json_is_retired_with_a_warning_once_a_secret_was_set(self, config_dir, loguru_caplog):
+        get_settings_manager().set("webhook_secret", STORED_SECRET)
+        _write_auth_json(config_dir, token=FILE_TOKEN)
+
+        out = _start(loguru_caplog)
+
+        (warning,) = _messages(loguru_caplog, "WARNING")
+        assert "retired" in warning
+        assert str(config_dir / "auth.json") in warning, "the operator is told which file held the old token"
+        assert "webhook secret was already set" in warning
+        assert _settings(config_dir)["webhook_secret"] == STORED_SECRET, "the dedicated secret stays"
+        assert not (config_dir / "auth.json").exists()
+        _assert_no_secret_logged(out, config_dir, STORED_SECRET, FILE_TOKEN)
+
+    def test_a_token_equal_to_the_stored_secret_is_removed_without_a_warning(self, config_dir, loguru_caplog):
+        # Left behind by an earlier start that carried it over: nothing is lost by removing it.
+        get_settings_manager().set("webhook_secret", STORED_SECRET)
+        _write_auth_json(config_dir, token=STORED_SECRET)
+
+        out = _start(loguru_caplog)
+
+        assert not _messages(loguru_caplog, "WARNING")
+        assert not (config_dir / "auth.json").exists()
+        _assert_no_secret_logged(out, config_dir, STORED_SECRET)
+
+    def test_the_variable_is_ignored_once_a_secret_was_set(self, config_dir, loguru_caplog, monkeypatch):
+        get_settings_manager().set("webhook_secret", STORED_SECRET)
+        monkeypatch.setenv("WEB_AUTH_TOKEN", ENV_TOKEN)
+
+        out = _start(loguru_caplog)
+
+        assert VARIABLE_IGNORED in out
+        assert "remove the variable" in out
+        assert VARIABLE_BECAME_THE_SECRET not in out
+        assert _settings(config_dir)["webhook_secret"] == STORED_SECRET
+        _assert_no_secret_logged(out, config_dir, STORED_SECRET, ENV_TOKEN)
+
+
+class TestExternalAuth:
+    @pytest.fixture(autouse=True)
+    def _behind_a_proxy(self, config_dir, monkeypatch):
         monkeypatch.setenv("AUTH_METHOD", "external")
-        from media_preview_generator.web.auth import log_token_on_startup
 
-        out = _capture_banner(log_token_on_startup)
+    def test_it_says_sign_in_is_off_and_never_mentions_an_account(self, config_dir, loguru_caplog, monkeypatch):
+        """AUTH_METHOD=external: no account, no sign-in instructions, no word about the old variable."""
+        monkeypatch.setenv("WEB_AUTH_TOKEN", ENV_TOKEN)
 
+        out = _start(loguru_caplog)
+
+        assert "AUTH_METHOD=external" in out
         assert "authentication DISABLED" in out
-        assert "****abcd" not in out
-        assert "Token:" not in out
+        assert {r.levelname for r in loguru_caplog.records if "DISABLED" in r.getMessage()} == {"WARNING"}
+        assert FIRST_RUN not in out
+        assert "Sign in as" not in out
+        assert "WEB_AUTH_TOKEN is set" not in out
+        _assert_no_secret_logged(out, config_dir, ENV_TOKEN)
+
+    def test_webhook_senders_still_get_the_old_token_as_their_secret(self, config_dir, loguru_caplog, monkeypatch):
+        # Webhooks keep their own secret behind a proxy, so the upgrade carries the token over here too.
+        monkeypatch.setenv("WEB_AUTH_TOKEN", ENV_TOKEN)
+
+        out = _start(loguru_caplog)
+
+        assert _settings(config_dir)["webhook_secret"] == ENV_TOKEN
+        assert CARRIED_OVER in out
+        _assert_no_secret_logged(out, config_dir, ENV_TOKEN)

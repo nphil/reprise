@@ -14,6 +14,7 @@ from media_preview_generator.markers.models import FileIdentity, Marker, MarkerT
 from media_preview_generator.web.app import create_app
 from media_preview_generator.web.routes._helpers import limiter
 from media_preview_generator.web.settings_manager import get_settings_manager, reset_settings_manager
+from tests.auth_helpers import ensure_owner_account, sign_in
 from tests.conftest import write_bif as _write_bif
 
 TOKEN = "test-token-12345678"
@@ -60,7 +61,7 @@ def _reset_singletons():
 def app(tmp_path, monkeypatch):
     config_dir = tmp_path / "config"
     config_dir.mkdir()
-    (config_dir / "auth.json").write_text(json.dumps({"token": TOKEN}))
+    monkeypatch.setattr("media_preview_generator.web.auth.AUTH_FILE", str(config_dir / "auth.json"))
     (config_dir / "settings.json").write_text(
         json.dumps({"setup_complete": True, "plex_config_folder": str(tmp_path / "plex")})
     )
@@ -82,8 +83,7 @@ def client(app):
 
 @pytest.fixture
 def authed_client(client):
-    with client.session_transaction() as sess:
-        sess["authenticated"] = True
+    sign_in(client)
     return client
 
 
@@ -641,6 +641,7 @@ def test_inspector_page_renders(authed_client):
 
 
 def test_inspector_page_needs_a_login(client):
+    ensure_owner_account()
     resp = client.get("/inspector")
 
     assert resp.status_code == 302

@@ -15,6 +15,7 @@ from media_preview_generator.bif_reader import (
 )
 from media_preview_generator.web.app import create_app
 from media_preview_generator.web.settings_manager import reset_settings_manager
+from tests.auth_helpers import ensure_owner_account, sign_in
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -236,9 +237,7 @@ def _reset_singletons():
 def app(tmp_path, monkeypatch):
     config_dir = str(tmp_path / "config")
     os.makedirs(config_dir, exist_ok=True)
-    auth_file = os.path.join(config_dir, "auth.json")
-    with open(auth_file, "w") as f:
-        json.dump({"token": "test-token-12345678"}, f)
+    monkeypatch.setattr("media_preview_generator.web.auth.AUTH_FILE", os.path.join(config_dir, "auth.json"))
     settings_file = os.path.join(config_dir, "settings.json")
     with open(settings_file, "w") as f:
         json.dump({"setup_complete": True, "plex_config_folder": str(tmp_path / "plex")}, f)
@@ -259,8 +258,7 @@ def client(app):
 
 @pytest.fixture()
 def authed_client(client):
-    with client.session_transaction() as sess:
-        sess["authenticated"] = True
+    sign_in(client)
     return client
 
 
@@ -283,6 +281,7 @@ def sample_bif(tmp_path):
 
 class TestBifViewerPage:
     def test_requires_auth(self, client):
+        ensure_owner_account()
         # @login_required uses Flask's redirect() which is 302 by default —
         # pinning the status code catches a regression that flips to a 308
         # (permanent route move) where bookmarks would behave differently.

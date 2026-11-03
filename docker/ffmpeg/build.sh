@@ -22,12 +22,14 @@ cd "$ROOT/x264"
 # Retain the exact downloaded source package, including Ubuntu's patches.
 apt-get source x264
 cp ./*.dsc ./*.tar.* "$PREFIX/share/source/x264/"
-for package in chromaprint zimg; do
+for package in chromaprint zimg nv-codec-headers; do
     mkdir -p "$PREFIX/share/source/$package" "$ROOT/$package"
     cd "$ROOT/$package"
     case "$package" in
         chromaprint) binary=libchromaprint1 ;;
         zimg) binary=libzimg2 ;;
+        # Header-only NVIDIA codec API (MIT): FFmpeg loads libcuda/libnvcuvid at run time from the NVIDIA runtime.
+        nv-codec-headers) binary=libffmpeg-nvenc-dev ;;
     esac
     version="$(dpkg-query -W -f='${source:Version}' "$binary")"
     apt-get source "$package=$version"
@@ -69,6 +71,15 @@ ffmpeg_args=(
     --enable-zlib
     --enable-bzlib
     --enable-lzma
+    # Hardware decode, redistributable: NVDEC/CUVID through the MIT nv-codec-headers (libcuda and libnvcuvid are
+    # loaded at run time from the NVIDIA container runtime) and VA-API through libva. cuda-llvm compiles the CUDA
+    # filters (scale_cuda) with clang, so no nvcc/NPP and no --enable-nonfree. Encoders are deliberately left out.
+    --enable-ffnvcodec
+    --enable-cuda
+    --enable-cuda-llvm
+    --enable-cuvid
+    --enable-nvdec
+    --enable-vaapi
     --disable-shared
     --enable-static
     --disable-debug

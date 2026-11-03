@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}Webhook Activity - Media Preview Generator{% endblock %}
+{% block title %}Webhook activity · Reprise{% endblock %}
 
 {% block head %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/webhook_activity.css') }}">
@@ -10,8 +10,7 @@
 <div class="wh-page">
     <header class="page-header">
         <div>
-            <div class="wh-crumb">Tools › Webhook Activity</div>
-            <h1 class="page-title">Webhook Activity</h1>
+            <h1 class="page-title">Webhook activity</h1>
             <p class="page-subtitle mb-0">
                 Inbound webhook events. Set sources in
                 <a href="{{ url_for('main.automation_page') }}#section-webhooks-overview">Automation → Triggers</a>.

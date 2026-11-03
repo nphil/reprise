@@ -7,8 +7,9 @@ from functools import wraps
 
 from flask import Blueprint, Response, g, jsonify, request, stream_with_context
 
+from ...reprise import acceleration
 from ...reprise.api_auth import DEFAULT_SCOPES, SCOPES, bearer_secret, require_client
-from ...reprise.models import PlaybackIdentity
+from ...reprise.models import AnalysisRefused, PlaybackIdentity, ReviewRefused
 from ..auth import _check_token_headers, api_token_required
 
 _ID_FIELDS = (
@@ -166,6 +167,14 @@ def create_reprise_blueprint(service):
     def missing_file(_error):
         return jsonify(error="Not found"), 404
 
+    @bp.errorhandler(AnalysisRefused)
+    def refused(error):
+        return jsonify(error=str(error)), 409
+
+    @bp.errorhandler(ReviewRefused)
+    def review_refused(error):
+        return jsonify(error=str(error)), 400
+
     @bp.errorhandler(ValueError)
     def invalid(_error):
         return jsonify(error="Invalid request or operation"), 400
@@ -308,7 +317,17 @@ def create_reprise_blueprint(service):
             or not isinstance(data["edits"], list)
         ):
             raise ValueError("Invalid review")
-        allowed = {"range_id", "action", "kind", "start_ms", "end_ms", "review_status", "locked", "reason"}
+        allowed = {
+            "range_id",
+            "action",
+            "kind",
+            "start_ms",
+            "end_ms",
+            "review_status",
+            "locked",
+            "reason",
+            "acknowledge_plex_suggestion",
+        }
         if any(
             not isinstance(edit, dict)
             or set(edit) - allowed
@@ -345,14 +364,19 @@ def create_reprise_blueprint(service):
     @owner
     def settings():
         if request.method == "PATCH":
-            data = _body({"writes_enabled"}, {"writes_enabled"})
-            if type(data["writes_enabled"]) is not bool:
-                raise ValueError("Invalid publication setting")
-            service.set_writes_enabled(data["writes_enabled"])
+            data = _body({"writes_enabled", "gpu_decode"})
+            if not data or any(type(value) is not bool for value in data.values()):
+                raise ValueError("Invalid setting")
+            if "writes_enabled" in data:
+                service.set_writes_enabled(data["writes_enabled"])
+            if "gpu_decode" in data:
+                acceleration.set_enabled(data["gpu_decode"])
         publisher = service.publisher
         return jsonify(
             publication_available=publisher is not None,
             writes_enabled=bool(getattr(publisher, "writes_enabled", False)),
+            # What decodes analysis frames now: label (for display), active, per-device state and counters.
+            acceleration=acceleration.status(),
         )
 
     @bp.route("/api/reprise/clients", methods=["GET", "POST"])

@@ -7,9 +7,9 @@ URL their plugin should POST to.
 These routes return the per-server webhook URL + plugin install
 instructions for Emby and Jellyfin. The webhook secret is never
 returned; the UI renders a [YOUR WEBHOOK SECRET] placeholder and points
-the user at Automation → Triggers → Settings, where it is set (#432:
-the old text pointed at Settings → Authentication, which never shows
-the sign-in token, so users pasted the wrong value).
+the user at Settings → Connections, where it is shown masked and can be
+copied (#432: users used to paste the wrong value because the old text
+pointed at a screen that never displayed the secret).
 
 A companion ``/test`` endpoint that loopback-POSTed synthetic payloads
 was removed — it only proved auth + route worked locally, which is
@@ -29,12 +29,13 @@ from __future__ import annotations
 import pytest
 
 from media_preview_generator.web.app import create_app
+from tests.auth_helpers import sign_in
 
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     """Flask test client with a configured Emby + Jellyfin server."""
-    monkeypatch.setenv("WEB_AUTH_TOKEN", "test-token-123")
+    monkeypatch.setattr("media_preview_generator.web.auth.AUTH_FILE", str(tmp_path / "auth.json"))
     app = create_app(config_dir=str(tmp_path))
     app.config["TESTING"] = True
 
@@ -78,7 +79,7 @@ def client(tmp_path, monkeypatch):
 
 
 def _hdrs():
-    return {"X-Auth-Token": "test-token-123"}
+    return {"X-Auth-Token": "the-webhook-secret-456"}
 
 
 class TestVendorWebhookInfo:
@@ -105,7 +106,7 @@ class TestVendorWebhookInfo:
         # Header name is fine to expose (it's a constant). Value MUST NOT
         # be exposed: it would land in JS state, screen-shares, and any
         # screenshot of the modal. The user copies the secret from
-        # Automation → Triggers → Settings. Keep this assertion as a tripwire —
+        # Settings → Connections. Keep this assertion as a tripwire —
         # any future field that smuggles the secret back in will fail it.
         assert data["auth_header_name"] == "X-Auth-Token"
         assert data["auth_token_placeholder"] == "[YOUR WEBHOOK SECRET]", (
@@ -122,10 +123,9 @@ class TestVendorWebhookInfo:
         import json as _json
 
         body_text = _json.dumps(data)
-        assert "test-token-123" not in body_text, (
-            "The actual auth token must NOT appear anywhere in /info; only a placeholder + header name are surfaced"
+        assert "the-webhook-secret-456" not in body_text, (
+            "The webhook secret must NOT appear anywhere in /info; only a placeholder + header name are surfaced"
         )
-        assert "the-webhook-secret-456" not in body_text, "The webhook secret must NOT appear anywhere in /info"
 
         assert expected_plugin_substring in data["plugin"]["plugin_name"], (
             f"plugin info should reference {expected_plugin_substring}"
@@ -138,13 +138,10 @@ class TestVendorWebhookInfo:
             "Plugin steps MUST instruct the user to add the X-Auth-Token header"
         )
         assert any(
-            "[YOUR WEBHOOK SECRET]" in step and "Automation → Triggers → Settings" in step
+            "[YOUR WEBHOOK SECRET]" in step and "Settings → Connections" in step
             for step in data["plugin"]["config_steps"]
-        ), (
-            "Plugin steps must name the webhook secret and where to find it — Settings → Authentication "
-            "never displays the sign-in token, so pointing there left users with no copyable value (#432)"
-        )
-        assert not any("Settings → Authentication" in step for step in data["plugin"]["config_steps"])
+        ), "Plugin steps must name the webhook secret and where to copy it from (Settings → Connections)"
+        assert not any("Automation → Triggers" in step for step in data["plugin"]["config_steps"])
         assert data["plugin"].get("supports_custom_headers") is True, (
             "Both Emby's built-in Webhooks (4.6+) and the Jellyfin Webhook plugin support custom headers — "
             "this flag tells the UI not to render a fallback path"
@@ -157,7 +154,9 @@ class TestVendorWebhookInfo:
         from media_preview_generator.web.settings_manager import get_settings_manager
 
         get_settings_manager().set("webhook_secret", "")
-        resp = client.get("/api/settings/emby_webhook/info?server_id=emby-1", headers=_hdrs())
+        # Signed in by session: checking a header against the secret would make one, hiding "unset".
+        sign_in(client)
+        resp = client.get("/api/settings/emby_webhook/info?server_id=emby-1")
         assert resp.status_code == 200
         assert resp.get_json()["webhook_secret_set"] is False
 

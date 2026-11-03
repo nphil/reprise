@@ -104,6 +104,10 @@ jobs:
             echo 'Nonfree FFmpeg configuration must not be uploaded' >&2
             exit 1
           fi
+          docker run --rm --entrypoint /usr/local/bin/ffmpeg reprise-ci:local -hide_banner -hwaccels > ffmpeg-hwaccels.txt
+          cat ffmpeg-hwaccels.txt
+          grep -x cuda ffmpeg-hwaccels.txt
+          grep -x vaapi ffmpeg-hwaccels.txt
           docker create --name reprise-ci-export reprise-ci:local
           mkdir -p /tmp/reprise-ffmpeg/opt
           docker cp reprise-ci-export:/opt/ffmpeg-gpl /tmp/reprise-ffmpeg/opt/ffmpeg-gpl

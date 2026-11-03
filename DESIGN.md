@@ -4,30 +4,47 @@
 
 Reprise is an operating tool, not a promotional page. The user confirmed a **library-first, code-led** interface. There is no approved visual comp and no comp-fidelity claim.
 
-The shipped surface uses the existing Lucent v2 web adaptation, Rosé Pine dark/light roles and locally bundled Manrope. `media_preview_generator/web/static/css/reprise-tokens.css` is its token layer. Library browsing leads into episode review; queue, publication and client access remain separate sections.
+The surface uses the Lucent v2 web adaptation, Rosé Pine dark/light roles and locally bundled Manrope. `media_preview_generator/web/static/css/reprise-tokens.css` is the token layer.
 
-## Review behavior
+### One shell, two destinations
 
-- Existing ranges start collapsed in native `details` elements. Their summaries expose action, type, exact time bounds, decision and lock state. New unsaved manual keep ranges open immediately.
+Every signed-in page extends `base.html` and gets the same sidebar. It has two destinations, **Library** and **Settings**. Its footer holds, in order: the Plex safety chip ("Review only" or "Plex publishing is on", from `GET /api/reprise/settings`), notifications, theme, Help, the tour and Sign out. On phones the sidebar becomes a top bar with a menu button. Sign-in and the Welcome page are standalone (`_auth_page.html`); the setup wizard and the sign-out confirmation use the base without the sidebar (`rp_bare`).
+
+Everything administrative lives under Settings, reached by one tab strip: Connections, Sharing, Automation, Advanced, Jobs, Logs, Inspector and Library health. Nodes belongs to Advanced and Webhook activity to Automation, and highlight those tabs. Plex publication and playback API clients ("Add an app") are on Sharing, not on the Library page, so the Library page has one job.
+
+The inherited upstream pages keep their layouts. `reprise-shell.css`, loaded last, repaints them: it maps the upstream and Bootstrap variables (`--bs-*`, `--plex-orange*`, `--surface*`, `--t-*`) onto the `--lu-*` tokens and restyles cards, buttons, forms, modals, dropdowns, tables, badges and alerts. A page must never load the upstream navbar, its sponsor or "help the upstream project" links, or a "Media Preview Generator" page title. `tests/test_shared_shell.py` enforces this for every page.
+
+### The primary flow
+
+Library → pick an episode → Analyze → review the proposed intro and credits ranges → approve → save. Selecting several episodes analyzes them as one action. Approval stays separate from analysis and from publication.
+
+## Library behavior
+
+- The episode list is the left pane (sticky and bounded on wide screens, first in document order on narrow ones). Each row has a checkbox, the episode, and one plain status chip: Not analyzed, Waiting to analyze, Analyzing N%, N to review, Reviewed, Nothing to skip, Nothing found, Analysis failed, File changed, Cancelled, or Not supported. Counts reflect saved decisions only.
+- Plex, media, part and audio identifiers are hidden. They appear only under the collapsed **File details** disclosure of the open episode.
+- Every analysis outcome is a sentence with a next step, using the plain reasons the API returns (`reasons`, `outcome.message`, job `message`). The technical second line sits under **Details**. "Nothing found" says what was compared; a failure says why and offers Try again. A file that changed on disk offers Refresh library, not Analyze, because the backend refuses stale analysis.
+- Activity, in the library pane, shows analysis, previews and library refresh jobs with progress and Pause, Resume and Cancel. A pause request is labelled pending until confirmed and offers Resume; terminal states remove controls. Only a refresh observed active triggers a one-time list reload when it finishes. It polls every 2.5 seconds while something runs and every 10 seconds otherwise.
+- The page header says whether analysis decodes on a GPU or the CPU (`acceleration.label`) and offers "Use CPU only" or "Use GPU when available".
+- Existing ranges start collapsed in native `details`, sorted by start time. Their summaries expose action, type, time bounds, decision and lock state. Fine timing, action, type and lock sit under "Fine-tune this section". New unsaved manual keep ranges open immediately.
+- A section Plex suggested (`origin: "plex"`) is never presented as something Reprise found. It carries the badge "Plex suggestion" (after approval "Plex suggestion · approved by you"), an outlined, unfilled bar on the timeline, and its own count in the list ("N to review" counts Reprise-confirmed skips only; "N Plex suggestions" counts the rest, and both can show). Choosing Approve on it opens an inline question, "Plex found this, Reprise could not confirm it. Approve it only if it is right.", with "Approve it" and "Not now". Only after that answer does the save send `acknowledge_plex_suggestion: true`, and only for that range: editing an already approved Plex range counts as the same deliberate act, while ranges re-sent untouched, rejected or undecided carry no flag. There is no approve-all, so a bulk action can never approve a Plex suggestion.
 - Range objects retain their own view while editing; typing and native select changes do not replace the focused field. Unsaved identity does not depend on array position.
-- The selected episode is marked independently of focus, including after library reloads. Approval and saving remain separate from publication.
-- The timeline is a visual overview. Exact timings and decisions remain available in the range list and evidence disclosure.
-- The work queue distinguishes analysis, previews and library refresh. A pause request is labelled pending confirmation and offers Resume. Terminal states remove controls. Only refreshes observed active trigger a one-time library reload when they finish.
+- The save bar appears only when there are unsaved changes. The timeline is a visual overview; exact timings and decisions are in the range list.
+- The selected episode is marked independently of focus, including after library reloads. `?search=` opens the Library filtered to a title (the Inspector links here).
 
-## Intentional, verified decisions
+## Intentional decisions
 
-The master/detail review and lower administration sections scroll normally. They are not forced into a single desktop viewport. On narrow screens the library precedes review in document order; six range editors no longer all expand on arrival.
-
-The rendered Impeccable detector found one advisory: repeated em dashes in the explicitly synthetic episode/server names. These are library-provided names, not authored interface prose, and are preserved rather than rewritten to satisfy the detector. No ignore comments were added.
+- Navigation is two items on purpose. A third top-level item needs a task that Library and Settings cannot hold.
+- The Inspector's older "Check intro & credits" job is offered only when some server has that detector switched on. Otherwise it links to Analyze in Library, because that job checked nothing and looked as if it had.
+- The master/detail review and lower administration sections scroll normally. They are not forced into a single desktop viewport. On narrow screens the library precedes review, with an "All episodes" link back; six range editors no longer all expand on arrival.
+- Upstream documentation links (Nodes guide, Emby guide) still point at the preserved upstream guides. Reprise's own Help, release and update links point at `github.com/nphil/reprise`.
+- The rendered Impeccable detector found one advisory earlier: repeated em dashes in explicitly synthetic episode/server names. These are library-provided names, not authored interface prose, and are preserved rather than rewritten. No ignore comments were added.
 
 ## Verification boundary
 
-The 2026-11-02 pass used the existing visible Chromium browser and a throwaway local application with generated color-bar video and tone audio. It did not inspect production media or expose client secrets.
+The 2026-11-03 pass of the shared shell and rebuilt Library used a throwaway copy of the application with a seeded fixture library (synthetic shows, generated colour-bar video, one episode in each state: findings to review, reviewed, nothing found, failed, not analyzed, file changed) and headless Chromium. It did not inspect production media or expose any secret.
 
-Observed checks: real episode/reference playback; review edit saved and restored with the same range ID; the approved, locked 3–4 second keep preserved; native keyboard disclosure/select/input editing; two new unsaved ranges retaining identity after one is removed; filtered empty state; selected episode retained across reload; actual HTTP 202 refresh, pause request, resume, cancel and completion through a real localhost synthetic Plex protocol server. Completion caused one library fetch, with no additional fetch after three more queue refreshes.
+Observed: every sidebar-reachable page (Library with and without an open episode, Jobs, Connections, Sharing, Automation, Advanced, Nodes, Logs, Webhook activity, Inspector, Library health) captured before and after at 1440 and 390 CSS pixels in the dark theme; Library, the open review, Sharing and Connections also in the light theme. After the change none of them shows the upstream navbar, amber palette, sponsor links or "Media Preview Generator" title. `tests/test_shared_shell.py` checks that for each page; `tests/e2e/test_reprise_library.py` drives the Library against a mocked Reprise API (list and statuses, deep link, review and range decisions, save, analysis progress, failure and "nothing found" wording, Sharing switch, sidebar safety chip). Token text roles were checked for at least 4.5:1 against their surfaces in both themes by computing them from the tokens.
 
-At 1440, 390 and 320 CSS-pixel widths in both themes, document width stayed within the viewport. Doubled computed text sizes at those widths produced no overlapping visible text or horizontal overflow. Range summaries measured at least 44px high; expanded fields, buttons and checkbox labels measured at least 44px high. These are browser-emulated widths, **not physical-phone evidence**.
+Not repeated for this redesign: axe, the 320px width, doubled text sizes and the 44px target measurements recorded on 2026-11-02 for the earlier Library layout; real playback timing; any physical phone. The static Impeccable detector run over the changed templates reported nothing but cannot read Jinja-linked stylesheets, so it is not evidence for the colour and typography rules; a rendered run was not completed. The 2026-11-02 pass (keyboard range editing, range identity while editing, queue reload after a refresh, real Plex protocol refresh and pause/resume/cancel) exercised the previous Library implementation. The rewrite carries those behaviours forward, but only the end-to-end cases above exercise the rewrite.
 
-Axe 4.13.0 found no WCAG A/AA rule violations on the exercised review states in dark and light. Its remaining manual check is video captions: the synthetic fixture has no dialogue, and this check does not establish caption support for arbitrary library media. No full accessibility, device-performance or hardware-tier certification is claimed.
-
-PNG captures and the verification summary are local artifacts in `.impeccable/review/`; they are not published. They show the actual implementation, not an approved comp. An independent read-only finish reviewer inspected all 13 captures and returned a SHIP disposition.
+Captures are local artifacts, not published. They show the actual implementation, not an approved comp.

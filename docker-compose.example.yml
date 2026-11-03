@@ -20,3 +20,13 @@ services:
     volumes:
       - /path/to/reprise/config:/config:rw
       - /path/to/media:/media:ro
+    # Optional GPU decoding (README: Optional GPU decoding). Uncomment what your host has; CPU is the default.
+    # runtime: nvidia
+    # devices:
+    #   - /dev/dri/card1:/dev/dri/card1
+    #   - /dev/dri/renderD129:/dev/dri/renderD129
+    # group_add:
+    #   - "18"   # numeric group of the render node: ls -ln /dev/dri
+    # and under environment:
+    #   NVIDIA_VISIBLE_DEVICES: "GPU-<uuid from nvidia-smi -L>"
+    #   NVIDIA_DRIVER_CAPABILITIES: "compute,video,utility"

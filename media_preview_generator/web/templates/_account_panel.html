@@ -1,0 +1,72 @@
+{#- Settings > Advanced: who is signed in, changing the password, and re-opening the tour. -#}
+<div class="card section-card" id="section-auth">
+    <div role="heading" aria-level="2" class="card-header">
+        <i class="bi bi-person-circle sec-ico" aria-hidden="true"></i>
+        <div class="sec-title"><span class="sec-name">Account</span><span class="sec-desc">Who signs in to Reprise, and a short tour of how it works.</span></div>
+    </div>
+    <div class="card-body">
+        {% if auth_ui.external %}
+        <p class="sr-hint mb-3">Sign-in is handled by your reverse proxy or VPN (<code>AUTH_METHOD=external</code>), so Reprise has no password of its own.</p>
+        {% else %}
+        <div class="setting-row">
+            <div class="sr-label"><span class="sr-title">Signed in as</span></div>
+            <div class="sr-control"><strong id="accountUsername">{{ auth_ui.username }}</strong></div>
+        </div>
+
+        <h3 class="settings-subheading"><i class="bi bi-key" aria-hidden="true"></i>Change password</h3>
+        <form id="changePasswordForm" novalidate>
+            {# Lets a password manager tie the new password to this account. #}
+            <input type="text" value="{{ auth_ui.username }}" autocomplete="username" class="visually-hidden" tabindex="-1" aria-hidden="true" readonly>
+            <div class="setting-row">
+                <div class="sr-label"><label class="sr-title" for="currentPassword">Current password</label></div>
+                <div class="sr-control">
+                    <div class="secret-field">
+                        <input type="password" class="form-control" id="currentPassword" autocomplete="current-password" maxlength="256" required>
+                        <button type="button" class="btn btn-sm btn-icon" data-toggle-secret aria-label="Show current password" title="Show current password"><i class="bi bi-eye"></i></button>
+                    </div>
+                </div>
+            </div>
+            <div class="setting-row">
+                <div class="sr-label">
+                    <label class="sr-title" for="newPassword">New password</label>
+                    <div class="sr-hint">At least 8 characters.</div>
+                </div>
+                <div class="sr-control">
+                    <div class="secret-field">
+                        <input type="password" class="form-control" id="newPassword" autocomplete="new-password" minlength="8" maxlength="256" required>
+                        <button type="button" class="btn btn-sm btn-icon" data-toggle-secret aria-label="Show new password" title="Show new password"><i class="bi bi-eye"></i></button>
+                    </div>
+                </div>
+            </div>
+            <div class="setting-row">
+                <div class="sr-label"><label class="sr-title" for="newPasswordAgain">Type it again</label></div>
+                <div class="sr-control">
+                    <div class="secret-field">
+                        <input type="password" class="form-control" id="newPasswordAgain" autocomplete="new-password" maxlength="256" required>
+                        <button type="button" class="btn btn-sm btn-icon" data-toggle-secret aria-label="Show the repeated password" title="Show the repeated password"><i class="bi bi-eye"></i></button>
+                    </div>
+                </div>
+            </div>
+            <div class="form-actions">
+                <div id="passwordResult" class="small" role="status" aria-live="polite"></div>
+                <button type="submit" class="btn btn-outline-secondary" id="changePasswordBtn">
+                    <i class="bi bi-check-lg me-1" aria-hidden="true"></i>Change password
+                </button>
+            </div>
+        </form>
+        <p class="sr-hint mb-3">Changing it signs out every other browser. Forgot it instead? The sign-in page explains how to get back in.</p>
+        {% endif %}
+
+        <h3 class="settings-subheading"><i class="bi bi-compass" aria-hidden="true"></i>Quick tour</h3>
+        <div class="setting-row">
+            <div class="sr-label">
+                <span class="sr-title">Show the tour again</span>
+                <div class="sr-hint">Five short steps: the Library, Analyze, Review, and what leaves Reprise.</div>
+            </div>
+            <div class="sr-control">
+                <button type="button" class="btn btn-outline-secondary" data-tour-open><i class="bi bi-compass me-1" aria-hidden="true"></i>Take the tour</button>
+            </div>
+        </div>
+    </div>
+</div>
+<script src="{{ url_for('static', filename='js/account_panel.js') }}" defer></script>

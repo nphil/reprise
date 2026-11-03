@@ -30,6 +30,10 @@ runs:
           echo 'Nonfree FFmpeg configuration is not distributable' >&2
           exit 1
         fi
+        ffmpeg -hide_banner -hwaccels > ffmpeg-hwaccels.txt
+        cat ffmpeg-hwaccels.txt
+        grep -x cuda ffmpeg-hwaccels.txt
+        grep -x vaapi ffmpeg-hwaccels.txt
         ffmpeg -hide_banner -encoders > ffmpeg-encoders.txt
         grep -E '(^| )libx264 ' ffmpeg-encoders.txt
         grep -E '(^| )aac ' ffmpeg-encoders.txt

@@ -597,16 +597,14 @@ class TestNodeList:
         expect(authed_page.locator("#node-tab-media")).to_be_visible()
         assert authed_page.evaluate("() => window.location.hash") == "#node-n-nuc"
 
-    def test_settings_menu_opens_the_page(self, authed_page: Page, app_url: str) -> None:
+    def test_nodes_opens_from_the_advanced_sidebar_and_marks_advanced_current(
+        self, authed_page: Page, app_url: str
+    ) -> None:
         NodesApi(authed_page, [])
-        authed_page.goto(f"{app_url}/dashboard")
-        authed_page.locator("#navSettingsDropdown").hover()
-        authed_page.locator("#navSettingsMenu .dropdown-item", has_text="Nodes").click()
+        authed_page.goto(f"{app_url}/settings")
+        authed_page.locator("#settings-sidebar a.nav-link", has_text="Nodes").click()
         authed_page.wait_for_url(f"{app_url}/nodes")
-        expect(authed_page.locator("#navSettingsDropdown")).to_have_class("nav-link dropdown-toggle active")
-        expect(authed_page.locator('#navSettingsMenu .dropdown-item[href="/nodes"]')).to_have_attribute(
-            "aria-current", "page"
-        )
+        expect(authed_page.locator(".rp-subnav a[aria-current='true']")).to_have_text("Advanced")
 
     def test_phone_width_fits(self, authed_page: Page, app_url: str) -> None:
         authed_page.set_viewport_size(PHONE)

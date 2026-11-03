@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}Dashboard - Media Preview Generator{% endblock %}
+{% block title %}Jobs · Reprise{% endblock %}
 
 {% block head %}
 <link href="{{ url_for('static', filename='css/processing_jobs.css') }}" rel="stylesheet">
@@ -12,7 +12,12 @@
 
 {% block content %}
 <div class="dashboard-layout">
-<h1 class="visually-hidden">Dashboard</h1>
+<header class="page-header">
+    <div>
+        <h1 class="page-title">Jobs</h1>
+        <p class="page-subtitle mb-0">Everything queued or running, and the workers that process it.</p>
+    </div>
+</header>
 <!-- Setup Required Banner (hidden by default) -->
 <div id="setupRequiredBanner" class="alert alert-info d-none mb-4">
     <i class="bi bi-gear me-2"></i>
@@ -69,7 +74,7 @@
                 <code id="dashboardVersion"><span class="spinner-border spinner-border-sm" role="status"></span></code>
                 <span class="flex-fill"></span>
                 <a id="dashboardUpdateBadge" class="pill warn text-decoration-none d-none"
-                   href="https://github.com/stevezau/media_preview_generator/releases/latest"
+                   href="https://github.com/nphil/reprise/releases/latest"
                    target="_blank" rel="noopener noreferrer" title="View release notes">Update available</a>
             </div>
         </div>

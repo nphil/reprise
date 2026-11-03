@@ -70,10 +70,10 @@ def client(flask_app):
 
 
 @pytest.fixture
-def auth_headers():
-    from media_preview_generator.web.auth import get_auth_token
+def auth_headers(flask_app):
+    from media_preview_generator.web.auth import get_webhook_secret
 
-    return {"X-Auth-Token": get_auth_token()}
+    return {"X-Auth-Token": get_webhook_secret()}
 
 
 def _seed_jellyfin_server(server_id: str = "jelly-1") -> None:

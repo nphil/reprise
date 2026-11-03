@@ -1,10 +1,10 @@
-"""Jellyfin happy-path wizard flow through all 5 steps.
+"""Jellyfin happy-path wizard flow through all 4 steps.
 
 The audit identified this gap explicitly: existing wizard tests cover
 Plex (test_wizard_full_flows.py::TestPlexHappyPath) and Emby
 (test_wizard_full_flows.py::TestEmbyHappyPath) but **NO Jellyfin** full
 walk through every step. The Quick-Connect inline test only verifies
-the step-1 to step-4 jump, not the full step-5 token + complete flow.
+the step-1 to step-4 jump, not the full walk through to "Finish setup".
 
 Pattern follows TestEmbyHappyPath (Jellyfin also skips steps 2+3 because
 those are Plex-specific) — but uses the Quick Connect device-code flow
@@ -27,26 +27,23 @@ from playwright.sync_api import Page, expect
 from ._mocks import (
     capture_servers_save,
     capture_settings_save,
-    capture_setup_set_token,
     mock_jellyfin_quick_connect,
     mock_servers_test_connection,
     mock_settings_get,
     mock_setup_complete,
     mock_setup_status,
-    mock_setup_token_info,
     mock_system_status,
 )
 
 
 @pytest.mark.e2e
 class TestJellyfinFullWizard:
-    def test_jellyfin_quick_connect_full_5_step_flow(self, wizard_page: Page, app_url_wizard: str) -> None:
+    def test_jellyfin_quick_connect_full_4_step_flow(self, wizard_page: Page, app_url_wizard: str) -> None:
         # Mock every endpoint the Jellyfin wizard touches.
         capture_settings_save(wizard_page)
         mock_setup_status(wizard_page, complete=False)
         mock_settings_get(wizard_page)
         mock_system_status(wizard_page)
-        mock_setup_token_info(wizard_page, env_controlled=False)
         mock_jellyfin_quick_connect(
             wizard_page,
             code="JFCODE7",
@@ -54,7 +51,6 @@ class TestJellyfinFullWizard:
         )
         mock_servers_test_connection(wizard_page, ok=True, server_name="Test Jellyfin")
         captured_servers = capture_servers_save(wizard_page, vendor="jellyfin")
-        captured_token = capture_setup_set_token(wizard_page, ok=True)
         called_complete = mock_setup_complete(wizard_page, redirect="/")
 
         # Stub the literal "/" navigation to keep the wizard test isolated
@@ -94,25 +90,14 @@ class TestJellyfinFullWizard:
         expect(wizard_page.locator("#step3PlexConfigSection")).to_be_hidden()
         wizard_page.locator("#step3Next").click()
 
-        # Step 4 — GPU + processing options.
+        # Step 4 — GPU + processing options; "Finish setup" saves them and completes setup.
         expect(wizard_page.locator('div.setup-step[data-step="4"]')).to_have_class("setup-step active", timeout=5000)
         expect(wizard_page.locator("#gpuDetecting")).to_be_hidden(timeout=3000)
         wizard_page.locator("#step4Next").click()
-
-        # Step 5 — security token.
-        expect(wizard_page.locator('div.setup-step[data-step="5"]')).to_have_class("setup-step active")
-        wizard_page.locator("#newToken").fill("jf-flow-token-42")
-        wizard_page.locator("#confirmToken").fill("jf-flow-token-42")
-        wizard_page.locator("#finishSetup").click()
         wizard_page.wait_for_url("**/", timeout=5000)
 
         # Assertions on the contract the wizard is supposed to satisfy.
         assert captured_servers, "POST /api/servers never fired during Jellyfin wizard"
         assert captured_servers[0]["type"] == "jellyfin", f"Server save sent wrong type: {captured_servers[0]}"
         assert captured_servers[0].get("name") == "Test Jellyfin", f"Server save sent wrong name: {captured_servers[0]}"
-        assert captured_token, "POST /api/setup/set-token never fired"
-        # The token POSTed must match what we typed.
-        assert captured_token[0].get("token") == "jf-flow-token-42", (
-            f"Token captured was {captured_token[0]} — wizard sent the wrong value."
-        )
         assert called_complete, "POST /api/setup/complete never fired"

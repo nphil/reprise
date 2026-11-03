@@ -1,5 +1,7 @@
 """Review is independent of publication; legacy marker writes are not authorization."""
 
+from .models import ORIGIN_PLEX
+
 
 def reject_legacy_publication() -> None:
     """Stop all old marker publishers, including requests arriving at a Plex node."""
@@ -17,15 +19,18 @@ def plex_projection(result, identity, eligible):
     """Return exact approved skips Plex can represent, otherwise refuse.
 
     ``eligible`` must come from the central policy for this exact identity.
-    A trimmed or split decision is not the approved representation.
+    A trimmed or split decision is not the approved representation. A range Plex itself suggested is already in
+    Plex, so it is neither published nor counted: only what Reprise confirmed is a projection.
     """
     if result.analysis_status != "complete" or result.freshness != "current":
         raise ValueError("Analysis is not complete and current")
     approved = sorted(
-        (r for r in result.ranges if r.action == "skip" and r.review_status == "approved"),
+        (r for r in result.ranges if r.action == "skip" and r.review_status == "approved" and r.origin != ORIGIN_PLEX),
         key=lambda r: (r.start_ms, r.end_ms, r.id),
     )
-    eligible = sorted(eligible, key=lambda r: (r.start_ms, r.end_ms, r.id))
+    eligible = sorted((r for r in eligible if r.origin != ORIGIN_PLEX), key=lambda r: (r.start_ms, r.end_ms, r.id))
+    if not approved and any(r.review_status == "approved" and r.origin == ORIGIN_PLEX for r in result.ranges):
+        raise ValueError("Plex's own suggestions are already in Plex; there is nothing to publish")
     if not approved or approved != eligible:
         raise ValueError("Approved skips are not fully eligible for this playback identity")
     seen = set()

@@ -14,6 +14,7 @@ import pytest
 
 from media_preview_generator.web.app import create_app
 from media_preview_generator.web.settings_manager import reset_settings_manager
+from tests.auth_helpers import ensure_owner_account, sign_in
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -74,9 +75,7 @@ def app(tmp_path, monkeypatch):
     config_dir = str(tmp_path / "config")
     os.makedirs(config_dir, exist_ok=True)
 
-    auth_file = os.path.join(config_dir, "auth.json")
-    with open(auth_file, "w") as f:
-        json.dump({"token": "test-token-12345678"}, f)
+    monkeypatch.setattr("media_preview_generator.web.auth.AUTH_FILE", os.path.join(config_dir, "auth.json"))
 
     settings_file = os.path.join(config_dir, "settings.json")
     with open(settings_file, "w") as f:
@@ -98,8 +97,7 @@ def client(app):
 
 @pytest.fixture()
 def authed_client(client):
-    with client.session_transaction() as sess:
-        sess["authenticated"] = True
+    sign_in(client)
     return client
 
 
@@ -1215,6 +1213,7 @@ def test_plex_library_new_schedules_all_paths_regardless_of_return_value(
 
 def test_webhooks_page_requires_login(client):
     """GET /webhooks without session → redirect to login."""
+    ensure_owner_account()
     resp = client.get("/webhooks")
     assert resp.status_code == 302
     assert "/login" in resp.headers.get("Location", "")

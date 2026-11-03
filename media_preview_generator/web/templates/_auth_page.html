@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Reprise{% endblock %}</title>
+
+    <!-- Apply the saved theme before the CSS loads so the page doesn't flash the wrong one (same script as base.html). -->
+    <script>
+        (function () {
+            try {
+                var saved = localStorage.getItem('theme');
+                if (saved === 'light' || saved === 'dark') {
+                    document.documentElement.setAttribute('data-bs-theme', saved);
+                }
+            } catch (e) { /* localStorage blocked — stay on the default */ }
+        })();
+    </script>
+
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/reprise.svg') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/reprise-tokens.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/reprise.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/auth.css') }}">
+</head>
+<body class="auth-page">
+    <main class="reprise auth-shell">
+        <div class="auth-card">
+            <header class="auth-brand">
+                <img src="{{ url_for('static', filename='images/reprise.svg') }}" alt="" width="44" height="44">
+                <h1>{% block heading %}{% endblock %}</h1>
+                <p>{% block lede %}{% endblock %}</p>
+            </header>
+            {% block body %}{% endblock %}
+        </div>
+    </main>
+    <script src="{{ url_for('static', filename='js/auth.js') }}" defer></script>
+</body>
+</html>

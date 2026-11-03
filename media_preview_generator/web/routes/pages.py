@@ -6,9 +6,25 @@ from flask import redirect, render_template, request, session, url_for
 from loguru import logger
 
 from ...config import MAX_CPU_THREADS
-from ..auth import is_auth_external, is_authenticated, login_required, start_signed_in_session, validate_token
+from ..auth import (
+    AccountError,
+    AccountExistsError,
+    auth_file_unreadable,
+    create_account,
+    is_auth_external,
+    is_authenticated,
+    is_setup_required,
+    login_required,
+    start_signed_in_session,
+    verify_login,
+)
 from . import main
 from ._helpers import limiter
+
+
+def _login_page(**context):
+    """The sign-in page; says so when the account file can't be read, since nobody can sign in until it is fixed."""
+    return render_template("login.html", account_unreadable=auth_file_unreadable(), **context)
 
 
 @main.route("/")
@@ -28,10 +44,54 @@ def reprise_page():
     return render_template("reprise.html")
 
 
+@main.route("/reprise/sharing")
+@login_required
+def reprise_sharing_page():
+    """What Reprise shares with Plex and other apps: the Plex publication switch and API clients."""
+    return render_template("reprise_sharing.html")
+
+
 @main.route("/dashboard")
 @login_required
 def dashboard_page():
     return render_template("index.html")
+
+
+@main.route("/welcome", methods=["GET", "POST"])
+@limiter.limit("10 per minute", methods=["POST"])
+def first_run():
+    """First-run page: make the one owner account, sign in as it, and land on the library (where the tour opens).
+
+    Closed for good once an account exists: nothing here can create or change one then (and a damaged account file
+    counts as an account that exists).
+    """
+    if not is_setup_required():
+        if request.method == "POST":
+            return _login_page(setup_closed=True), 403
+        return redirect(url_for("main.index"))
+
+    if request.method == "POST":
+        username = request.form.get("username", "")
+        password = request.form.get("password", "")
+        error = None
+        if password != request.form.get("confirm_password", ""):
+            error = "The two passwords don't match."
+        else:
+            try:
+                create_account(username, password)
+            except AccountExistsError:
+                return _login_page(setup_closed=True), 403
+            except AccountError as exc:
+                error = str(exc)
+            except OSError:
+                logger.exception("Could not save the owner account")
+                error = "Reprise couldn't save your account. Check that its config folder is writable, then try again."
+        if error:
+            return render_template("welcome.html", error=error, username=username), 400
+        start_signed_in_session(remember=True)
+        return redirect(url_for("main.index"))
+
+    return render_template("welcome.html")
 
 
 @main.route("/login", methods=["GET", "POST"])
@@ -39,16 +99,17 @@ def dashboard_page():
 def login():
     """Login page. Rate limited to 5 POST requests per minute."""
     if request.method == "POST":
-        token = request.form.get("token", "")
-        if validate_token(token):
-            start_signed_in_session()
+        username = request.form.get("username", "")
+        if verify_login(username, request.form.get("password", "")):
+            start_signed_in_session(remember=request.form.get("remember") == "1")
             logger.info("User logged in successfully")
             return redirect(url_for("main.index"))
-        return render_template("login.html", error="Invalid token")
+        logger.warning("Failed sign-in from {}", request.remote_addr)
+        return _login_page(error=True, username=username), 401
 
     if is_authenticated():
         return redirect(url_for("main.index"))
-    return render_template("login.html")
+    return _login_page()
 
 
 @main.route("/logout", methods=["GET", "POST"])

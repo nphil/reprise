@@ -12,7 +12,7 @@ This module exposes:
   returns the per-server webhook URL plus plugin-specific install
   instructions. The secret is never returned; the UI renders a
   ``[YOUR WEBHOOK SECRET]`` placeholder and points the user at
-  Automation → Triggers → Settings, where the secret is set.
+  Settings → Connections, where the secret is shown.
 
 A previous ``/test`` endpoint that loopback-POSTed at our own
 ``/incoming`` route was removed: the only thing it verified was that
@@ -42,7 +42,7 @@ _PLUGIN_INSTRUCTIONS = {
         "config_steps": [
             "In Emby: Settings → Notifications → Add Webhook (Emby 4.6+ ships this built-in; no plugin install required).",
             "Set 'Url' to the Webhook URL shown above.",
-            "Expand 'Request Headers' and add a header — Name: 'X-Auth-Token', Value: [YOUR WEBHOOK SECRET] (set or generate it under Automation → Triggers → Settings).",
+            "Expand 'Request Headers' and add a header — Name: 'X-Auth-Token', Value: [YOUR WEBHOOK SECRET] (copy it from Settings → Connections).",
             "Tick 'New Media Added' under Events. Add any other events you want to forward.",
             "Save.",
         ],
@@ -58,7 +58,7 @@ _PLUGIN_INSTRUCTIONS = {
             "In Jellyfin: Dashboard → Plugins → Catalog → install 'Webhook' (restart Jellyfin if prompted).",
             "Dashboard → Plugins → Webhook → 'Add Generic Destination'.",
             "Set 'Webhook Url' to the address shown above.",
-            "Expand 'Headers', click 'Add Header', set Key: 'X-Auth-Token', Value: [YOUR WEBHOOK SECRET] (set or generate it under Automation → Triggers → Settings).",
+            "Expand 'Headers', click 'Add Header', set Key: 'X-Auth-Token', Value: [YOUR WEBHOOK SECRET] (copy it from Settings → Connections).",
             "Under 'Notification Type', tick 'Item Added'.",
             "Set 'Item Type' to Movie + Episode at minimum.",
             "Save.",
@@ -122,9 +122,8 @@ def _info_handler(vendor: str):
     # The plugin authenticates via the X-Auth-Token header. The value
     # (the webhook secret) is never returned by this endpoint — surfacing
     # it would put it in JS state, HTML inspector output, and any
-    # screen-share of the Edit modal. The user sets or generates it under
-    # Automation → Triggers → Settings. Not the sign-in token: although
-    # webhooks accept it, Settings → Authentication never displays it (#432).
+    # screen-share of the Edit modal. The user copies it from
+    # Settings → Connections, which shows it masked until asked.
     from ..settings_manager import get_settings_manager
 
     secret_set = bool((get_settings_manager().get("webhook_secret") or "").strip())
@@ -140,7 +139,7 @@ def _info_handler(vendor: str):
             "auth_token_placeholder": "[YOUR WEBHOOK SECRET]",
             "auth_token_required": True,
             "webhook_secret_set": secret_set,
-            "auth_token_source": "Automation → Triggers → Settings → Webhook Secret",
+            "auth_token_source": "Settings → Connections → Webhook secret",
             "plugin": instructions,
             # Surfaces the auto-register deferral so the UI can render a
             # "Coming soon" hint instead of pretending the button does

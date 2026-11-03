@@ -7,13 +7,13 @@ real-time job update events using flask-socketio's test client.
 Requires flask-socketio's built-in test client (no browser needed).
 """
 
-import json
 import os
 
 import pytest
 
 from media_preview_generator.web.app import create_app, socketio
 from media_preview_generator.web.settings_manager import reset_settings_manager
+from tests.auth_helpers import ensure_owner_account, sign_in
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -51,12 +51,8 @@ def app(tmp_path, monkeypatch):
     config_dir = str(tmp_path / "config")
     os.makedirs(config_dir, exist_ok=True)
 
-    auth_file = os.path.join(config_dir, "auth.json")
-    with open(auth_file, "w") as f:
-        json.dump({"token": "test-token-12345678"}, f)
-
+    monkeypatch.setattr("media_preview_generator.web.auth.AUTH_FILE", os.path.join(config_dir, "auth.json"))
     monkeypatch.setenv("CONFIG_DIR", config_dir)
-    monkeypatch.setenv("WEB_AUTH_TOKEN", "test-token-12345678")
     monkeypatch.setenv("WEB_PORT", "8099")
     flask_app = create_app(config_dir=config_dir)
     flask_app.config["TESTING"] = True
@@ -71,10 +67,7 @@ def authed_socketio_client(app):
     Uses flask-socketio's built-in test_client which works synchronously
     in tests.
     """
-    flask_test_client = app.test_client()
-    # Authenticate via session
-    with flask_test_client.session_transaction() as sess:
-        sess["authenticated"] = True
+    flask_test_client = sign_in(app.test_client())
 
     sio_client = socketio.test_client(
         app,
@@ -89,9 +82,9 @@ def authed_socketio_client(app):
 
 @pytest.fixture()
 def unauthed_socketio_client(app):
-    """Create a SocketIO test client WITHOUT authentication."""
+    """Create a SocketIO test client WITHOUT authentication (the owner account exists, this browser never signed in)."""
+    ensure_owner_account()
     flask_test_client = app.test_client()
-    # Do NOT set session["authenticated"]
     sio_client = socketio.test_client(
         app,
         namespace="/jobs",
@@ -119,6 +112,16 @@ class TestSocketIOConnection:
         # The server calls disconnect() on auth failure, so the client
         # should not remain connected.
         assert not unauthed_socketio_client.is_connected(namespace="/jobs")
+
+    def test_session_from_before_a_password_change_is_rejected(self, app):
+        """A session whose epoch no longer matches the account's (another browser changed the password) gets no feed."""
+
+        flask_test_client = sign_in(app.test_client())
+        with flask_test_client.session_transaction() as sess:
+            sess["epoch"] = "epoch-from-before-the-password-change"
+        sio_client = socketio.test_client(app, namespace="/jobs", flask_test_client=flask_test_client)
+
+        assert not sio_client.is_connected(namespace="/jobs")
 
     def test_disconnect_works(self, authed_socketio_client):
         authed_socketio_client.disconnect(namespace="/jobs")

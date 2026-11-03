@@ -66,7 +66,7 @@ def _reset_singletons():
 @pytest.fixture()
 def app(tmp_path, monkeypatch):
     monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
-    monkeypatch.setenv("WEB_AUTH_TOKEN", "test-token-12345678")
+    monkeypatch.setattr("media_preview_generator.web.auth.AUTH_FILE", str(tmp_path / "auth.json"))
     return create_app(config_dir=str(tmp_path))
 
 
@@ -247,7 +247,7 @@ class TestPostSettingsTriggersReregistration:
                 response = client.post(
                     "/api/settings",
                     json={"webhook_secret": "brand-new-secret"},
-                    headers={"X-Auth-Token": "test-token-12345678"},
+                    headers={"X-Auth-Token": "rotated-token"},
                 )
 
         assert response.status_code == 200, f"Settings save should succeed; got {response.status_code}"

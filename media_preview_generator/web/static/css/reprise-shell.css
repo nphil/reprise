@@ -1,0 +1,234 @@
+/* The shared Reprise shell: sidebar, Settings tabs, and the bridge that repaints every inherited page in the Reprise
+   palette. Loaded last by base.html. Tokens come from reprise-tokens.css (--lu-*); nothing below hard-codes a colour
+   except the two on-colour inks used on solid danger/success fills in the light theme. */
+
+/* ── 1. Token bridge ───────────────────────────────────────────────────────────────────────────────────────────
+   The inherited pages (style.css and the per-page sheets) are driven by Bootstrap's --bs-* variables and by a small
+   set of their own tokens. Re-pointing those at the Reprise tokens recolours every page at once. */
+html[data-bs-theme]{
+  --bs-body-bg:var(--lu-canvas);--bs-body-color:var(--lu-ink);--bs-emphasis-color:var(--lu-ink);--bs-heading-color:var(--lu-ink);
+  --bs-secondary-color:var(--lu-ink-2);--bs-tertiary-color:var(--lu-ink-3);
+  --bs-secondary-bg:var(--lu-sheet);--bs-tertiary-bg:var(--lu-glass);
+  --bs-border-color:var(--lu-edge-soft);--bs-border-color-translucent:var(--lu-edge-soft);
+  --bs-link-color:var(--lu-accent-text);--bs-link-hover-color:var(--lu-ink);--bs-code-color:var(--lu-accent-text);
+  --bs-font-sans-serif:var(--lu-font);--bs-body-font-family:var(--lu-font);
+  --bs-primary:var(--lu-accent);--bs-secondary:var(--lu-ink-3);--bs-success:var(--lu-positive);--bs-info:var(--lu-info);
+  --bs-warning:var(--lu-warning);--bs-danger:var(--lu-danger);
+  --bs-primary-bg-subtle:var(--lu-accent-wash);--bs-primary-text-emphasis:var(--lu-accent-text);
+  --bs-secondary-bg-subtle:var(--lu-hover-wash);--bs-secondary-text-emphasis:var(--lu-ink-2);
+  --bs-success-bg-subtle:color-mix(in srgb,var(--lu-positive) 18%,transparent);--bs-success-text-emphasis:var(--lu-positive);
+  --bs-info-bg-subtle:color-mix(in srgb,var(--lu-info) 18%,transparent);--bs-info-text-emphasis:var(--lu-info);
+  --bs-warning-bg-subtle:color-mix(in srgb,var(--lu-warning) 20%,transparent);--bs-warning-text-emphasis:var(--lu-warning);
+  --bs-danger-bg-subtle:color-mix(in srgb,var(--lu-danger) 18%,transparent);--bs-danger-text-emphasis:var(--lu-danger);
+  --bs-border-radius:var(--lu-radius-control);--bs-border-radius-sm:8px;--bs-border-radius-lg:var(--lu-radius-card);
+  /* Inherited brand + dashboard tokens (style.css). */
+  --plex-orange:var(--lu-accent);--plex-orange-text:var(--lu-accent-text);--plex-orange-soft:var(--lu-accent-wash);
+  --plex-gray:var(--lu-canvas);--plex-dark:var(--lu-canvas);
+  --surface-1:color-mix(in srgb,var(--lu-ink) 4%,transparent);--surface-2:color-mix(in srgb,var(--lu-ink) 7%,transparent);
+  --surface-border:var(--lu-edge-soft);--inset:var(--surface-1);--line:var(--lu-edge-soft);--line-strong:var(--lu-edge);
+  --panel-2:var(--lu-glass);--muted:var(--lu-ink-2);--faint:var(--lu-ink-3);
+  --accent:var(--lu-accent);--accent-text:var(--lu-accent-text);--accent-ink:var(--lu-accent-ink);--accent-fill:var(--lu-accent);
+  --accent-soft:var(--lu-accent-wash);
+  --ok:var(--lu-positive);--ok-soft:color-mix(in srgb,var(--lu-positive) 16%,transparent);
+  --bad:var(--lu-danger);--bad-soft:color-mix(in srgb,var(--lu-danger) 16%,transparent);
+  --run:var(--lu-info);--run-soft:color-mix(in srgb,var(--lu-info) 16%,transparent);
+  --warn:var(--lu-warning);--warn-soft:color-mix(in srgb,var(--lu-warning) 18%,transparent);
+  --t-previews:var(--lu-positive);--t-previews-soft:color-mix(in srgb,var(--lu-positive) 16%,transparent);
+  --t-intro:var(--lu-info);--t-intro-soft:color-mix(in srgb,var(--lu-info) 16%,transparent);
+  --t-loud:var(--lu-warning);--t-loud-soft:color-mix(in srgb,var(--lu-warning) 16%,transparent);
+  --t-chapters:var(--lu-danger);
+  --radius-sm:8px;--radius:10px;--radius-lg:var(--lu-radius-card);--radius-card:var(--lu-radius-card);--radius-ctl:var(--lu-radius-control);
+  --focus-ring:0 0 0 3px color-mix(in srgb,var(--lu-accent) 60%,transparent);
+  --shadow-1:0 1px 2px #0a07104d;--shadow-2:var(--lu-shadow-raised);
+  --page-gutter:24px;--page-max:1440px;
+}
+html[data-bs-theme=dark]{--bs-body-color-rgb:242,239,246;--bs-emphasis-color-rgb:242,239,246;--bs-secondary-color-rgb:212,207,223;
+  --bs-link-color-rgb:167,155,245;--bs-link-hover-color-rgb:242,239,246;--bs-primary-rgb:167,155,245;--bs-success-rgb:156,207,216;
+  --bs-info-rgb:196,167,231;--bs-warning-rgb:246,193,119;--bs-danger-rgb:235,111,146;--bs-secondary-rgb:170,164,189}
+html[data-bs-theme=light]{--bs-body-color-rgb:23,19,31;--bs-emphasis-color-rgb:23,19,31;--bs-secondary-color-rgb:87,82,121;
+  --bs-link-color-rgb:107,90,138;--bs-link-hover-color-rgb:23,19,31;--bs-primary-rgb:144,122,169;--bs-success-rgb:40,105,131;
+  --bs-info-rgb:109,90,154;--bs-warning-rgb:134,90,17;--bs-danger-rgb:156,62,90;--bs-secondary-rgb:95,91,122;
+  --shadow-1:0 1px 2px #57527926}
+/* Inspector, Logs and the server dialog carry their own local token sets; they follow the same palette. */
+html[data-bs-theme] .insp{
+  --insp-panel:var(--lu-sheet);--insp-ground:var(--lu-canvas);--insp-sunk:color-mix(in srgb,var(--lu-ink) 3%,transparent);
+  --insp-text:var(--lu-ink);--insp-text-2:var(--lu-ink-2);--insp-text-3:var(--lu-ink-2);
+  --insp-amber-hover:color-mix(in srgb,var(--lu-accent) 82%,var(--lu-ink));--insp-amber-fg:var(--lu-accent-text);--insp-amber-text:var(--lu-accent-text);
+  --insp-amber-tint:color-mix(in srgb,var(--lu-accent) 30%,transparent);--insp-amber-band:color-mix(in srgb,var(--lu-accent) 28%,transparent);
+  --insp-amber-line:color-mix(in srgb,var(--lu-accent) 50%,transparent);
+  --insp-blue-ink:var(--lu-accent-ink);--insp-blue-tint:color-mix(in srgb,var(--lu-info) 30%,transparent);
+  --insp-blue-band:color-mix(in srgb,var(--lu-info) 28%,transparent);--insp-slate-tint:color-mix(in srgb,var(--lu-ink) 8%,transparent);
+  --insp-slate-flag-text:var(--lu-ink-2);--insp-banner-line:color-mix(in srgb,var(--lu-info) 40%,transparent);--insp-banner-link:var(--lu-accent-text);
+  --insp-overlay:var(--lu-scrim);--insp-now:var(--lu-ink);--insp-bubble-bg:var(--lu-ink);--insp-bubble-text:var(--lu-canvas);
+  --insp-glow:color-mix(in srgb,var(--lu-ink) 25%,transparent)}
+html[data-bs-theme] #logContainer{--log-text:var(--lu-ink);--log-faint:var(--lu-ink-3);--log-muted:var(--lu-ink-2);--log-info:var(--lu-info);
+  --log-warn:var(--lu-warning);--log-bad:var(--lu-danger);--log-bg:var(--lu-canvas)}
+
+/* ── 2. Page surface and browser surfaces ─────────────────────────────────────────────────────────────────── */
+html{scrollbar-color:var(--lu-edge) transparent}
+body.rp-app{background:var(--lu-canvas);color:var(--lu-ink);font-family:var(--lu-font);caret-color:var(--lu-accent);-webkit-font-smoothing:antialiased}
+body.rp-app ::selection{background:var(--lu-accent);color:var(--lu-accent-ink)}
+body.rp-app :is(input[type=checkbox],input[type=radio],input[type=range],progress){accent-color:var(--lu-accent)}
+body.rp-app :is(h1,h2,h3,h4,h5,h6,.h1,.h2,.h3,.h4,.h5,.h6){font-family:var(--lu-font);color:var(--lu-ink);letter-spacing:-.01em}
+body.rp-app a:not(.btn):not(.dropdown-item):not(.nav-link){text-underline-offset:.2em}
+body.rp-app :focus-visible{outline:3px solid var(--lu-accent);outline-offset:2px}
+body.rp-app .skip-link{background:var(--lu-sheet);color:var(--lu-ink);border:1px solid var(--lu-accent)}
+body.rp-app :is(.tabular,table,.badge,time,output){font-variant-numeric:tabular-nums}
+
+/* ── 3. Shell: sidebar, Settings tabs, content column ─────────────────────────────────────────────────────── */
+:root{--rp-rail-w:232px;--rp-subnav-h:56px}
+html.rp-rail-collapsed{--rp-rail-w:72px}
+.rp-stage{margin-left:var(--rp-rail-w);min-width:0;min-height:100vh}
+.rp-bare .rp-stage{margin-left:0}
+.rp-rail{position:fixed;inset:0 auto 0 0;width:var(--rp-rail-w);z-index:1030;display:flex;flex-direction:column;background:var(--lu-sheet);
+  border-right:1px solid var(--lu-edge-soft);color:var(--lu-ink)}
+.rp-rail-head{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:76px;padding:12px 8px 12px 16px;flex:0 0 auto}
+.rp-rail-brand{display:flex;align-items:center;gap:10px;min-width:0;color:var(--lu-ink);font-size:18px;font-weight:800;letter-spacing:-.01em;line-height:1.15;text-decoration:none}
+.rp-rail-brand small{display:block;margin-top:2px;font-size:11px;font-weight:500;letter-spacing:0;line-height:1.35;color:var(--lu-ink-3)}
+.rp-rail-toggle{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:var(--lu-target);height:var(--lu-target);border:0;border-radius:var(--lu-radius-control);
+  background:transparent;color:var(--lu-ink-2);font-size:20px}
+.rp-rail-toggle:hover{background:var(--lu-hover-wash);color:var(--lu-ink)}
+.rp-rail-panel{display:flex;flex-direction:column;flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain}
+.rp-rail-nav{display:grid;gap:4px;padding:4px 12px 12px}
+.rp-rail-nav a{display:flex;align-items:center;gap:12px;min-height:var(--lu-target);padding:8px 12px;border-radius:var(--lu-radius-row);color:var(--lu-ink-2);
+  font-size:15px;font-weight:700;text-decoration:none}
+.rp-rail-nav a i{flex:0 0 auto;font-size:19px}
+.rp-rail-nav a:hover{background:var(--lu-hover-wash);color:var(--lu-ink)}
+.rp-rail-nav a[aria-current]{background:var(--lu-selected-wash);color:var(--lu-ink)}
+.rp-rail-nav a[aria-current] i{color:var(--lu-accent-text)}
+.rp-rail-foot{display:grid;gap:2px;margin-top:auto;padding:12px;border-top:1px solid var(--lu-edge-soft)}
+.rp-safety{display:flex;align-items:flex-start;gap:10px;margin-bottom:8px;padding:10px 12px;border:1px solid var(--lu-edge-soft);border-radius:var(--lu-radius-row);
+  background:var(--lu-glass);color:var(--lu-ink);text-decoration:none}
+.rp-safety:hover{border-color:var(--lu-edge);color:var(--lu-ink)}
+.rp-safety i{flex:0 0 auto;margin-top:2px;font-size:18px;color:var(--lu-ink-3)}
+.rp-safety[data-state=off] i{color:var(--lu-positive)}
+.rp-safety[data-state=on]{border-color:var(--lu-warning)}.rp-safety[data-state=on] i{color:var(--lu-warning)}
+.rp-safety b{display:block;font-size:13px;line-height:1.3}
+.rp-safety small{display:block;margin-top:1px;font-size:12px;line-height:1.35;color:var(--lu-ink-2)}
+.rp-rail-btn{position:relative;display:flex;align-items:center;gap:12px;width:100%;min-height:var(--lu-target);padding:6px 12px;border:0;border-radius:var(--lu-radius-row);
+  background:transparent;color:var(--lu-ink-2);font:inherit;font-size:14px;font-weight:650;text-align:left;text-decoration:none;cursor:pointer}
+.rp-rail-btn i{flex:0 0 auto;font-size:18px}
+.rp-rail-btn:hover,.rp-rail-btn.show{background:var(--lu-hover-wash);color:var(--lu-ink)}
+.rp-rail-btn .badge{margin-left:auto;position:static;transform:none;background:var(--lu-accent)!important;color:var(--lu-accent-ink)!important}
+.rp-rail-version{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;padding:8px 12px 0;color:var(--lu-ink-3);font-size:12px;text-decoration:none}
+.rp-rail-version:hover{color:var(--lu-ink)}
+.rp-rail-update{padding:1px 8px;border-radius:var(--lu-radius-pill);background:var(--lu-accent-wash);color:var(--lu-accent-text);font-weight:700}
+.rp-rail .dropdown-menu.notification-dropdown{position:fixed;inset:auto auto 12px calc(var(--rp-rail-w) + 8px);transform:none;margin:0;
+  width:min(380px,calc(100vw - var(--rp-rail-w) - 24px));max-height:min(72vh,560px);overflow:auto}
+html.rp-rail-collapsed .rp-rail-brand span,html.rp-rail-collapsed .rp-rail-nav a span,html.rp-rail-collapsed .rp-rail-btn span:not(.badge),
+html.rp-rail-collapsed .rp-rail-version,html.rp-rail-collapsed .rp-safety span{display:none}
+html.rp-rail-collapsed .rp-rail-head{flex-direction:column;justify-content:center;padding:12px 0;gap:4px}
+html.rp-rail-collapsed .rp-rail-nav a,html.rp-rail-collapsed .rp-rail-btn,html.rp-rail-collapsed .rp-safety{justify-content:center;padding-inline:0}
+html.rp-rail-collapsed .rp-rail-btn .badge{position:absolute;top:4px;right:10px;margin:0}
+.rp-subnav{position:sticky;top:0;z-index:20;height:var(--rp-subnav-h);background:var(--lu-canvas);border-bottom:1px solid var(--lu-edge-soft)}
+.rp-subnav-scroll{display:flex;align-items:center;gap:4px;height:100%;max-width:var(--page-max);margin:0 auto;padding-inline:var(--page-gutter);
+  overflow-x:auto;scrollbar-width:none}
+.rp-subnav-scroll::-webkit-scrollbar{display:none}
+.rp-subnav a{display:inline-flex;align-items:center;gap:8px;flex:0 0 auto;min-height:40px;padding:0 14px;border-radius:var(--lu-radius-control);
+  color:var(--lu-ink-2);font-size:14px;font-weight:650;white-space:nowrap;text-decoration:none}
+.rp-subnav a i{font-size:16px}
+.rp-subnav a:hover{background:var(--lu-hover-wash);color:var(--lu-ink)}
+.rp-subnav a[aria-current]{background:var(--lu-selected-wash);color:var(--lu-ink)}
+.rp-subnav a[aria-current] i{color:var(--lu-accent-text)}
+
+@media (max-width:899.98px){
+  .rp-stage{margin-left:0}
+  .rp-rail{position:relative;inset:auto;width:auto;border-right:0;border-bottom:1px solid var(--lu-edge-soft)}
+  .rp-rail-head{min-height:64px}
+  .rp-rail-panel{display:none;overflow:visible}
+  .rp-rail-open .rp-rail-panel{display:flex}
+  html.rp-rail-collapsed .rp-rail-brand span,html.rp-rail-collapsed .rp-rail-nav a span,html.rp-rail-collapsed .rp-rail-btn span:not(.badge),
+  html.rp-rail-collapsed .rp-rail-version,html.rp-rail-collapsed .rp-safety span{display:revert}
+  html.rp-rail-collapsed .rp-rail-head{flex-direction:row;justify-content:space-between;padding:12px 8px 12px 16px}
+  html.rp-rail-collapsed .rp-rail-nav a,html.rp-rail-collapsed .rp-rail-btn,html.rp-rail-collapsed .rp-safety{justify-content:flex-start;padding-inline:12px}
+  html.rp-rail-collapsed .rp-rail-btn .badge{position:static;margin-left:auto}
+  .rp-rail .dropdown-menu.notification-dropdown{position:fixed;inset:72px 8px auto 8px;width:auto;max-height:calc(100vh - 88px)}
+  :root,html.rp-rail-collapsed{--rp-rail-w:0px}
+  .rp-subnav-scroll{padding-inline:12px}
+}
+@media (max-width:575.98px){:root{--page-gutter:16px}}
+@media (prefers-reduced-motion:reduce){body.rp-app *{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
+
+/* ── 4. Inherited components, repainted ───────────────────────────────────────────────────────────────────── */
+body.rp-app .card,body.rp-app .section-card{--bs-card-bg:var(--lu-sheet);--bs-card-border-color:var(--lu-edge-soft);--bs-card-cap-bg:transparent;
+  background:var(--lu-sheet);border:1px solid var(--lu-edge-soft);border-radius:var(--lu-radius-card);box-shadow:none;color:var(--lu-ink)}
+body.rp-app .card-header,body.rp-app .card-footer{background:transparent;border-color:var(--lu-edge-soft);color:var(--lu-ink)}
+body.rp-app .card-header .bi{color:var(--lu-accent-text)}
+body.rp-app .btn{border-radius:var(--lu-radius-control);font-weight:650}
+body.rp-app .btn-primary{background-color:var(--lu-accent);border-color:var(--lu-accent);color:var(--lu-accent-ink)}
+body.rp-app .btn-primary:is(:hover,:focus,:active,:focus-visible),body.rp-app .btn-check:checked+.btn-primary{background-color:color-mix(in srgb,var(--lu-accent) 84%,var(--lu-ink));
+  border-color:color-mix(in srgb,var(--lu-accent) 84%,var(--lu-ink));color:var(--lu-accent-ink)}
+body.rp-app .btn-outline-primary{color:var(--lu-accent-text);border-color:var(--lu-accent)}
+body.rp-app .btn-outline-primary:is(:hover,:focus,:active),body.rp-app .btn-check:checked+.btn-outline-primary{background-color:var(--lu-accent);border-color:var(--lu-accent);color:var(--lu-accent-ink)}
+body.rp-app .btn-secondary,body.rp-app .btn-outline-secondary{--bs-btn-color:var(--lu-ink);--bs-btn-bg:var(--lu-glass);--bs-btn-border-color:var(--lu-edge);--bs-btn-hover-color:var(--lu-ink);
+  --bs-btn-hover-bg:color-mix(in srgb,var(--lu-ink) 9%,var(--lu-glass));--bs-btn-hover-border-color:var(--lu-edge);--bs-btn-active-bg:color-mix(in srgb,var(--lu-ink) 12%,var(--lu-glass));
+  --bs-btn-active-color:var(--lu-ink);--bs-btn-active-border-color:var(--lu-edge);--bs-btn-disabled-color:var(--lu-ink-3);--bs-btn-disabled-bg:var(--lu-glass);--bs-btn-disabled-border-color:var(--lu-edge-soft)}
+body.rp-app .btn-outline-secondary{--bs-btn-bg:transparent}
+body.rp-app .btn-danger{--bs-btn-bg:var(--lu-danger);--bs-btn-border-color:var(--lu-danger);--bs-btn-color:var(--lu-accent-ink);--bs-btn-hover-bg:color-mix(in srgb,var(--lu-danger) 86%,var(--lu-ink));
+  --bs-btn-hover-border-color:color-mix(in srgb,var(--lu-danger) 86%,var(--lu-ink));--bs-btn-hover-color:var(--lu-accent-ink);--bs-btn-active-bg:color-mix(in srgb,var(--lu-danger) 80%,var(--lu-ink));--bs-btn-active-color:var(--lu-accent-ink)}
+body.rp-app .btn-outline-danger{--bs-btn-color:var(--lu-danger);--bs-btn-border-color:var(--lu-danger);--bs-btn-hover-bg:var(--lu-danger);--bs-btn-hover-border-color:var(--lu-danger);--bs-btn-hover-color:var(--lu-accent-ink);--bs-btn-active-bg:var(--lu-danger);--bs-btn-active-color:var(--lu-accent-ink)}
+body.rp-app .btn-success,body.rp-app .btn-warning,body.rp-app .btn-info{--bs-btn-color:var(--lu-accent-ink);--bs-btn-hover-color:var(--lu-accent-ink);--bs-btn-active-color:var(--lu-accent-ink)}
+html[data-bs-theme=light] body.rp-app :is(.btn-danger,.btn-success,.btn-warning,.btn-info){--bs-btn-color:#fff;--bs-btn-hover-color:#fff;--bs-btn-active-color:#fff}
+html[data-bs-theme=light] body.rp-app .btn-outline-danger{--bs-btn-hover-color:#fff;--bs-btn-active-color:#fff}
+body.rp-app .btn-link{color:var(--lu-accent-text)}
+body.rp-app .btn:is(:disabled,.disabled){opacity:.55}
+body.rp-app :is(.form-control,.form-select,.input-group-text){background-color:var(--lu-canvas);color:var(--lu-ink);border:1px solid var(--lu-edge);border-radius:var(--lu-radius-control)}
+body.rp-app .input-group-text{background-color:var(--lu-glass);color:var(--lu-ink-2)}
+body.rp-app :is(.form-control,.form-select):focus{border-color:var(--lu-accent);box-shadow:var(--focus-ring);background-color:var(--lu-canvas);color:var(--lu-ink)}
+body.rp-app :is(.form-control,.form-select):disabled{background-color:var(--lu-glass);color:var(--lu-ink-3)}
+body.rp-app .form-control::placeholder{color:var(--lu-ink-3);opacity:1}
+body.rp-app :is(.form-text,.text-muted,.text-body-secondary){color:var(--lu-ink-2)!important}
+body.rp-app .form-check-input:not(:checked){background-color:var(--lu-canvas);border-color:var(--lu-edge)}
+body.rp-app .form-check-input:focus{box-shadow:var(--focus-ring);border-color:var(--lu-accent)}
+body.rp-app .nav-pills .nav-link.active,body.rp-app .nav-pills .show>.nav-link{background-color:var(--lu-selected-wash)!important;color:var(--lu-ink)!important}
+body.rp-app .nav-tabs{border-bottom-color:var(--lu-edge-soft)}
+body.rp-app .nav-tabs .nav-link{color:var(--lu-ink-2)}
+body.rp-app .nav-tabs .nav-link.active{background:transparent;color:var(--lu-ink);border-bottom-color:var(--lu-accent)}
+body.rp-app .modal-content{background:var(--lu-sheet);color:var(--lu-ink);border:1px solid var(--lu-edge);border-radius:var(--lu-radius-card);box-shadow:var(--lu-shadow-raised)}
+body.rp-app :is(.modal-header,.modal-footer){background:transparent;border-color:var(--lu-edge-soft)}
+body.rp-app .modal-backdrop{--bs-backdrop-bg:var(--lu-scrim);--bs-backdrop-opacity:1}
+body.rp-app .btn-close{filter:none;opacity:.8;color:var(--lu-ink);background:transparent url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23aaa4bd' stroke-width='2' stroke-linecap='round'%3e%3cpath d='m3 3 10 10M13 3 3 13'/%3e%3c/svg%3e") center/1em auto no-repeat}
+body.rp-app .dropdown-menu{--bs-dropdown-bg:var(--lu-glass);--bs-dropdown-color:var(--lu-ink);--bs-dropdown-border-color:var(--lu-edge);--bs-dropdown-link-color:var(--lu-ink);
+  --bs-dropdown-link-hover-color:var(--lu-ink);--bs-dropdown-link-hover-bg:var(--lu-hover-wash);--bs-dropdown-link-active-color:var(--lu-ink);--bs-dropdown-link-active-bg:var(--lu-selected-wash);
+  --bs-dropdown-divider-bg:var(--lu-edge-soft);--bs-dropdown-header-color:var(--lu-ink-3);border-radius:var(--lu-radius-card);box-shadow:var(--lu-shadow-raised)}
+body.rp-app .table{--bs-table-color:var(--lu-ink);--bs-table-bg:transparent;--bs-table-border-color:var(--lu-edge-soft);--bs-table-hover-bg:var(--lu-hover-wash);--bs-table-hover-color:var(--lu-ink);--bs-table-striped-bg:var(--surface-1)}
+body.rp-app .list-group{--bs-list-group-bg:transparent;--bs-list-group-color:var(--lu-ink);--bs-list-group-border-color:var(--lu-edge-soft);--bs-list-group-action-hover-bg:var(--lu-hover-wash);--bs-list-group-action-hover-color:var(--lu-ink);--bs-list-group-active-bg:var(--lu-selected-wash);--bs-list-group-active-color:var(--lu-ink);--bs-list-group-active-border-color:var(--lu-edge-soft)}
+body.rp-app .progress{--bs-progress-bg:var(--surface-2);--bs-progress-bar-bg:var(--lu-accent);--bs-progress-bar-color:var(--lu-accent-ink);border-radius:var(--lu-radius-pill)}
+body.rp-app .toast{--bs-toast-bg:var(--lu-glass);--bs-toast-color:var(--lu-ink);--bs-toast-border-color:var(--lu-edge);--bs-toast-header-bg:transparent;--bs-toast-header-color:var(--lu-ink);--bs-toast-header-border-color:var(--lu-edge-soft);border-radius:var(--lu-radius-card)}
+body.rp-app :is(.tooltip,.popover){--bs-tooltip-bg:var(--lu-ink);--bs-tooltip-color:var(--lu-canvas);--bs-popover-bg:var(--lu-glass);--bs-popover-border-color:var(--lu-edge);--bs-popover-body-color:var(--lu-ink);--bs-popover-header-bg:var(--lu-glass);--bs-popover-header-color:var(--lu-ink)}
+/* Badges and alerts: one tinted pattern in both themes (the inherited sheet only did this for light). */
+body.rp-app .badge.bg-primary,body.rp-app .alert-primary{background-color:var(--bs-primary-bg-subtle)!important;color:var(--bs-primary-text-emphasis)!important;border-color:transparent}
+body.rp-app .badge.bg-secondary,body.rp-app .alert-secondary{background-color:var(--bs-secondary-bg-subtle)!important;color:var(--bs-secondary-text-emphasis)!important;border-color:transparent}
+body.rp-app .badge.bg-success,body.rp-app .alert-success{background-color:var(--bs-success-bg-subtle)!important;color:var(--bs-success-text-emphasis)!important;border-color:transparent}
+body.rp-app .badge.bg-info,body.rp-app .alert-info{background-color:var(--bs-info-bg-subtle)!important;color:var(--bs-info-text-emphasis)!important;border-color:transparent}
+body.rp-app .badge.bg-warning,body.rp-app .alert-warning{background-color:var(--bs-warning-bg-subtle)!important;color:var(--bs-warning-text-emphasis)!important;border-color:transparent}
+body.rp-app .badge.bg-danger,body.rp-app .alert-danger{background-color:var(--bs-danger-bg-subtle)!important;color:var(--bs-danger-text-emphasis)!important;border-color:transparent}
+body.rp-app .badge.text-dark{color:inherit!important}
+body.rp-app .alert{border-radius:var(--lu-radius-control)}
+body.rp-app .progress-bar:is(.bg-success,.bg-warning,.bg-danger,.bg-info,.bg-secondary,.bg-primary){color:var(--lu-accent-ink)}
+body.rp-app .progress-bar.bg-success{background-color:var(--lu-positive)!important}
+body.rp-app .progress-bar.bg-warning{background-color:var(--lu-warning)!important}
+body.rp-app .progress-bar.bg-danger{background-color:var(--lu-danger)!important}
+body.rp-app .progress-bar.bg-info{background-color:var(--lu-info)!important}
+body.rp-app .progress-bar.bg-secondary{background-color:var(--lu-ink-3)!important}
+body.rp-app .progress-bar.bg-primary{background-color:var(--lu-accent)!important}
+html[data-bs-theme=light] body.rp-app .progress-bar:is(.bg-success,.bg-warning,.bg-danger,.bg-info){color:#fff}
+body.rp-app :is(.bg-primary){background-color:var(--lu-accent)!important;color:var(--lu-accent-ink)!important}
+
+/* ── 5. One title style on every inherited page ───────────────────────────────────────────────────────────── */
+body.rp-app :is(.page-header:not(.settings-header) .page-title,.page-header:not(.settings-header) h1,.insp-search-title){font-size:30px;font-weight:800;letter-spacing:-.02em;line-height:1.15;color:var(--lu-ink)}
+body.rp-app :is(.page-header:not(.settings-header) .page-subtitle,.insp-lead){color:var(--lu-ink-2);font-size:15px}
+body.rp-app .page-header:not(.settings-header){margin-bottom:20px}
+body.rp-app .settings-header .page-title{color:var(--lu-ink)}
+body.rp-app .settings-header .page-subtitle{color:var(--lu-ink-2)}
+@media (max-width:899.98px){.rp-subnav-scroll{-webkit-mask-image:linear-gradient(to right,#000 calc(100% - 32px),transparent);mask-image:linear-gradient(to right,#000 calc(100% - 32px),transparent)}}
+
+/* ── 6. Status without side stripes ────────────────────────────────────────────────────────────────────────── */
+/* Worker-group members, node rows and the upgrade callout marked status with a thick coloured left edge. The same
+   status colour now tints a full 1px border and a faint wash. */
+body.rp-app :is(.wg-mem,.mrow){border:1px solid color-mix(in srgb,var(--c,var(--ok)) 42%,var(--lu-edge-soft));background:color-mix(in srgb,var(--c,var(--ok)) 6%,var(--lu-glass))}
+body.rp-app .nd-row{border:1px solid var(--lu-edge-soft)}
+body.rp-app .nd-row[data-tone=ok]{border-color:color-mix(in srgb,var(--ok) 45%,var(--lu-edge-soft))}
+body.rp-app .nd-row[data-tone=warn]{border-color:color-mix(in srgb,var(--warn) 50%,var(--lu-edge-soft))}
+body.rp-app .nd-row[data-tone=bad]{border-color:color-mix(in srgb,var(--bad) 50%,var(--lu-edge-soft))}
+body.rp-app .upgrade-caveat{border:1px solid color-mix(in srgb,var(--warn) 45%,var(--lu-edge-soft));background:color-mix(in srgb,var(--warn) 8%,transparent)}

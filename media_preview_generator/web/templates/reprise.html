@@ -3,36 +3,121 @@
 {% block head %}<link rel="stylesheet" href="{{ url_for('static', filename='css/reprise.css') }}">{% endblock %}
 {% block content %}
 <div class="reprise" id="repriseApp">
-  <header class="rp-header"><div><h1>Library</h1><p>Find an episode, then review what stays and what can be skipped.</p></div><div class="rp-actions"><button type="button" id="rpRefresh">Refresh library</button><a href="{{ url_for('main.servers_page') }}">Connections</a></div></header>
+  <header class="rp-header">
+    <div>
+      <h1>Library</h1>
+      <p>Pick episodes, analyze them, then review the intros and credits Reprise finds.</p>
+      <p class="rp-hardware" id="rpHardware" hidden><i class="bi bi-cpu" aria-hidden="true"></i><span id="rpHardwareLabel"></span><button type="button" class="rp-btn quiet" id="rpHardwareToggle"></button></p>
+    </div>
+    <div class="rp-actions"><button type="button" class="rp-btn" id="rpRefresh"><i class="bi bi-arrow-repeat" aria-hidden="true"></i>Refresh library</button></div>
+  </header>
   <div id="rpMessage" class="rp-message" role="status" aria-live="polite" hidden></div>
-  <form id="rpRefreshForm" class="rp-message" hidden><label>Configured library<select id="rpLibraryChoice" required></select></label><div class="rp-actions"><button type="submit">Refresh</button><button type="button" id="rpRefreshCancel">Cancel</button></div><p class="rp-note" id="rpRefreshState"></p></form>
+  <form id="rpRefreshForm" class="rp-message" hidden>
+    <label>Which library should Reprise refresh?<select id="rpLibraryChoice" required></select></label>
+    <div class="rp-actions"><button type="submit" class="rp-btn primary">Refresh</button><button type="button" class="rp-btn" id="rpRefreshCancel">Cancel</button></div>
+    <p class="rp-note" id="rpRefreshState"></p>
+  </form>
+
+
   <div class="rp-layout">
-    <section class="rp-library" aria-labelledby="rpLibraryTitle">
-      <div class="rp-section-head"><h2 id="rpLibraryTitle">Your library</h2><button type="button" id="rpAnalyze" disabled>Analyze selected</button></div>
-      <label class="rp-search">Search<input id="rpSearch" type="search" autocomplete="off" placeholder="Search shows and episodes"></label>
+    <section class="rp-library" aria-labelledby="rpLibraryTitle" data-tour="library-list">
+      <div class="rp-section-head"><h2 id="rpLibraryTitle">Episodes</h2></div>
+      <label class="rp-search" data-tour="library-search"><span class="rp-sr">Search shows and episodes</span><i class="bi bi-search" aria-hidden="true"></i><input id="rpSearch" type="search" autocomplete="off" placeholder="Search shows and episodes"></label>
       <div class="rp-filter-row"><label>Show<select id="rpShow"><option value="">All shows</option></select></label><label>Season<select id="rpSeason"><option value="">All seasons</option></select></label></div>
-      <div id="rpLibraryState" class="rp-state" role="status">Loading library…</div><div id="rpLibraryList" class="rp-episodes"></div>
-      <button type="button" id="rpMore" hidden>Load more</button>
+      <p class="rp-hint" id="rpLibraryHint">Tick the episodes you want analyzed, or open one to see its results.</p>
+      <div id="rpLibraryState" class="rp-state" role="status" aria-live="polite">Loading library…</div>
+      <div id="rpLibraryList" class="rp-episodes"></div>
+      <button type="button" class="rp-btn" id="rpMore" hidden>Show more episodes</button>
+      <section class="rp-activity" id="rpActivity" aria-labelledby="rpActivityTitle" data-tour="activity" hidden>
+        <div class="rp-section-head"><h2 id="rpActivityTitle">Activity</h2><button type="button" class="rp-btn quiet" id="rpActivityToggle" aria-expanded="true" aria-controls="rpQueue">Hide</button></div>
+        <div id="rpQueue" class="rp-jobs"></div>
+      </section>
+      <div class="rp-selectbar" id="rpSelectBar" hidden>
+        <div class="rp-selectbar-row"><span id="rpSelectCount" aria-live="polite"></span><button type="button" class="rp-btn quiet" id="rpSelectClear">Clear</button></div>
+        <button type="button" class="rp-btn primary" id="rpAnalyze" data-tour="analyze">Analyze</button>
+      </div>
     </section>
-    <section class="rp-workspace" aria-labelledby="rpReviewTitle"><div class="rp-section-head"><div><h2 id="rpReviewTitle">Episode review</h2><p id="rpReviewVersion" class="rp-note"></p><p id="rpReviewSubtitle">Choose an episode from your library.</p></div></div>
-      <div id="rpReviewEmpty" class="rp-state">Your selected episode and its evidence will appear here.</div>
+
+    <section class="rp-workspace" aria-labelledby="rpReviewTitle" data-tour="review">
+      <div id="rpReviewEmpty" class="rp-intro">
+        <h2 id="rpReviewTitle">Review</h2>
+        <p>Reprise finds intros and credits by comparing an episode with other episodes of the same season.</p>
+        <ol class="rp-steps">
+          <li><b>Pick an episode</b> from your library.</li>
+          <li><b>Analyze it.</b> This can take a few minutes, and you can leave the page.</li>
+          <li><b>Review what Reprise found.</b> Nothing is skipped until you approve it, and nothing is changed in Plex.</li>
+        </ol>
+      </div>
+
       <div id="rpReview" hidden>
-        <div class="rp-status-row"><span id="rpAnalysisStatus"></span><span id="rpFreshness"></span></div>
-        <div class="rp-filter-row"><label>Episode audio for preview<select id="rpVideoAudio"><option value="">Select audio</option></select></label><label>Reference audio for preview<select id="rpReferenceAudio"><option value="">Select audio</option></select></label></div>
-        <div class="rp-video-grid"><div><h3>Episode</h3><video id="rpVideo" controls preload="metadata"></video><p id="rpVideoError" class="rp-error" hidden>This file cannot be played directly by your browser.</p><button type="button" id="rpVideoPreview" hidden>Create playable preview</button><p id="rpVideoOrigin" class="rp-note"></p></div><div><h3>Reference episode</h3><label>Reference<select id="rpReference"><option value="">Choose an episode</option></select></label><video id="rpReferenceVideo" controls preload="metadata" hidden></video><p id="rpReferenceState" class="rp-note">Choose an episode to compare.</p><button type="button" id="rpReferencePreview" hidden>Create playable preview</button><p id="rpReferenceOrigin" class="rp-note"></p></div></div>
-        <div class="rp-section-head rp-timeline-heading"><h3>Timeline</h3><span id="rpDuration"></span></div><p class="rp-note">Skip · Keep · Evidence. Times are file-relative; the end is excluded.</p><p class="rp-note"><strong>Preview before approval.</strong> Small or quiet changes can be missed. Keep/unknown sections block skips. Recheck approvals after edits.</p><div id="rpTimeline" class="rp-timeline" role="img" aria-label="Skip, keep and evidence timeline; exact times are listed in Ranges and Evidence below."></div>
-        <div class="rp-section-head"><h3>Ranges</h3><button type="button" id="rpAddKeep">Add protected range</button></div><div id="rpRanges"></div><div class="rp-actions"><button type="button" id="rpSave">Save review</button><button type="button" id="rpDiscard">Discard changes</button></div><p id="rpSaveState" class="rp-note" aria-live="polite"></p>
-        <details><summary>Evidence</summary><p class="rp-note">Signal comparison does not understand the story or guarantee every gag is found. Scores rank suggestions; they are not probabilities. Only selected audio is compared; subtitles and player overlays are not analyzed.</p><p class="rp-note">The active verification profile compares native video components and every channel of selected audio at stable offsets, without time warping. It tolerates encoding noise, so tiny visual edits and quiet or brief changes can be missed. Preview every proposed skip before approval and add protected ranges for scenes you want to keep. Known interpretation metadata must match; unspecified color fields stay unknown, not assumed BT.709. No RGB conversion is performed.</p><div id="rpEvidence"></div></details>
-        <details><summary>Publication and recovery</summary><p class="rp-note">Saving a review never writes to Plex. Publication is a separate action.</p><div id="rpPublication"></div></details>
+        <a class="rp-back" href="#rpLibraryTitle"><i class="bi bi-arrow-left" aria-hidden="true"></i>All episodes</a>
+        <header class="rp-ep-head">
+          <div class="rp-ep-title">
+            <h2 id="rpReviewHeading"></h2>
+            <p class="rp-note" id="rpReviewContext"></p>
+          </div>
+          <div class="rp-actions"><span class="rp-chip" id="rpStatusChip"></span><button type="button" class="rp-btn primary" id="rpAnalyzeOne">Analyze</button></div>
+        </header>
+        <div class="rp-outcome" id="rpOutcome" data-state="idle" role="status" aria-live="polite"></div>
+
+        <div class="rp-player">
+          <video id="rpVideo" controls preload="metadata"></video>
+          <p id="rpVideoError" class="rp-error" hidden>Your browser can't play this file directly.</p>
+          <div class="rp-actions"><button type="button" class="rp-btn" id="rpVideoPreview" hidden>Create a playable preview</button></div>
+          <p id="rpVideoOrigin" class="rp-note"></p>
+          <label class="rp-inline-field" id="rpVideoAudioWrap" hidden>Audio track for preview<select id="rpVideoAudio"><option value="">Select audio</option></select></label>
+        </div>
+
+        <div class="rp-timeline-block">
+          <div class="rp-section-head"><h3>Timeline</h3><span id="rpDuration" class="rp-note"></span></div>
+          <div id="rpTimeline" class="rp-timeline" role="img" aria-label="Skip, keep and evidence timeline; exact times are listed under What Reprise found and in the evidence."></div>
+          <ul class="rp-legend" aria-label="Timeline key"><li><i class="skip"></i>Skip: can be skipped once approved</li><li><i class="suggested"></i>Plex suggestion: not confirmed by Reprise</li><li><i class="keep"></i>Keep: protected, never skipped</li><li><i class="evidence"></i>Evidence</li></ul>
+        </div>
+
+        <section class="rp-ranges-block" aria-labelledby="rpRangesTitle">
+          <div class="rp-section-head"><h3 id="rpRangesTitle">What Reprise found</h3><button type="button" class="rp-btn" id="rpAddKeep"><i class="bi bi-shield-plus" aria-hidden="true"></i>Protect a scene</button></div>
+          <p class="rp-note">Preview each section before you approve it. Quiet or very short changes can be missed, and anything marked Keep is never skipped. Saving a review never changes Plex.</p>
+          <div id="rpRanges"></div>
+        </section>
+
+        <div class="rp-savebar" id="rpSaveBar">
+          <p id="rpSaveState" class="rp-note" aria-live="polite"></p>
+          <div class="rp-actions"><button type="button" class="rp-btn" id="rpDiscard">Discard changes</button><button type="button" class="rp-btn primary" id="rpSave">Save review</button></div>
+        </div>
+
+        <details class="rp-disclosure" id="rpCompare">
+          <summary>Compare with another episode</summary>
+          <div class="rp-disclosure-body">
+            <label>Reference episode<select id="rpReference"><option value="">Choose an episode</option></select></label>
+            <label class="rp-inline-field">Audio track for preview<select id="rpReferenceAudio"><option value="">Select audio</option></select></label>
+            <video id="rpReferenceVideo" controls preload="metadata" hidden></video>
+            <p id="rpReferenceState" class="rp-note">Choose an episode to compare.</p>
+            <div class="rp-actions"><button type="button" class="rp-btn" id="rpReferencePreview" hidden>Create a playable preview</button></div>
+            <p id="rpReferenceOrigin" class="rp-note"></p>
+          </div>
+        </details>
+        <details class="rp-disclosure" id="rpEvidenceBox">
+          <summary>How Reprise decided</summary>
+          <div class="rp-disclosure-body">
+            <p class="rp-note">Reprise compares the picture and every channel of the selected audio between episodes. It does not understand the story, so a skip is only a suggestion. Scores rank suggestions; they are not probabilities. Subtitles and player overlays are not analyzed.</p>
+            <p class="rp-note">The comparison tolerates normal encoding noise, so tiny visual edits and quiet or brief changes can be missed. Preview every proposed skip and protect any scene you want to keep. Known colour and format details must match between files; they are never assumed.</p>
+            <div id="rpEvidence"></div>
+          </div>
+        </details>
+        <details class="rp-disclosure" id="rpPublicationBox">
+          <summary>Send to Plex</summary>
+          <div class="rp-disclosure-body">
+            <p class="rp-note">Saving a review never changes Plex. Sending results to Plex is a separate step, and it is switched off unless you turn it on under <a href="{{ url_for('main.reprise_sharing_page') }}">Settings, Sharing</a>.</p>
+            <div id="rpPublication"></div>
+          </div>
+        </details>
+        <details class="rp-disclosure" id="rpFileDetails">
+          <summary>File details</summary>
+          <div class="rp-disclosure-body"><dl class="rp-facts" id="rpFacts"></dl></div>
+        </details>
       </div>
     </section>
   </div>
-  <section class="rp-secondary" aria-labelledby="rpQueueTitle"><div class="rp-section-head"><h2 id="rpQueueTitle">Work queue</h2><button type="button" id="rpQueueRefresh">Refresh</button></div><div id="rpQueue" class="rp-state">Loading queue…</div></section>
-  <section class="rp-secondary" aria-labelledby="rpWriteTitle"><div class="rp-section-head"><div><h2 id="rpWriteTitle">Plex publication</h2><p>Off by default. Changes still require a separate review and confirmation.</p></div><label><input id="rpWritesEnabled" type="checkbox" disabled> Allow publication</label></div><p id="rpWriteState" class="rp-note" aria-live="polite">Checking publication availability…</p></section>
-  <section class="rp-secondary" aria-labelledby="rpClientsTitle"><div class="rp-section-head"><div><h2 id="rpClientsTitle">API clients</h2><p>Give a client its own limited access.</p></div><button type="button" id="rpClientOpen">Add client</button></div>
-    <form id="rpClientForm" hidden><label>Name<input name="name" required maxlength="100" autocomplete="off"></label><fieldset><legend>Permissions</legend><label><input type="checkbox" checked disabled> Read results and job status</label><label><input type="checkbox" name="analysis"> Request analysis</label></fieldset><div class="rp-actions"><button type="submit">Create token</button><button type="button" id="rpClientCancel">Cancel</button></div></form>
-    <div id="rpSecret" class="rp-secret" hidden><strong>Copy this token now. It will not be shown again.</strong><output id="rpSecretValue"></output><div class="rp-actions"><button type="button" id="rpSecretCopy">Copy token</button><button type="button" id="rpSecretClose">Done</button></div></div><div id="rpClients" class="rp-state">Loading clients…</div>
-  </section>
 </div>
 {% endblock %}
 {% block scripts %}<script src="{{ url_for('static', filename='js/reprise.js') }}" defer></script>{% endblock %}

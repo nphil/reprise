@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Sharing · Reprise{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ url_for('static', filename='css/reprise.css') }}">{% endblock %}
+{% block content %}
+<div class="reprise" id="repriseSharing">
+  <header class="rp-header">
+    <div>
+      <h1>Sharing</h1>
+      <p>Decide what leaves Reprise. Everything starts switched off, and saving a review never changes anything outside Reprise.</p>
+    </div>
+  </header>
+  <div id="rpMessage" class="rp-message" role="status" aria-live="polite" hidden></div>
+
+  <section class="rp-panel" aria-labelledby="rpWriteTitle">
+    <div class="rp-section-head rp-split">
+      <div><h2 id="rpWriteTitle">Plex</h2><p>Let Reprise write approved intro and credits markers into Plex. Off by default; every change still needs its own review and confirmation.</p></div>
+      <div class="form-check form-switch rp-switch"><input class="form-check-input" id="rpWritesEnabled" type="checkbox" role="switch" disabled><label class="form-check-label" for="rpWritesEnabled">Allow sending to Plex</label></div>
+    </div>
+    <p id="rpWriteState" class="rp-note" aria-live="polite">Checking whether sending to Plex is available…</p>
+  </section>
+
+  <section class="rp-panel" aria-labelledby="rpClientsTitle">
+    <div class="rp-section-head rp-split">
+      <div><h2 id="rpClientsTitle">Apps that read your results</h2><p>Give an app such as Marquee its own limited access to the saved skip and keep ranges.</p></div>
+      <button type="button" class="rp-btn" id="rpClientOpen"><i class="bi bi-plus-lg" aria-hidden="true"></i>Add an app</button>
+    </div>
+    <form id="rpClientForm" hidden>
+      <label>Name of the app<input name="name" required maxlength="100" autocomplete="off"></label>
+      <fieldset>
+        <legend>What it may do</legend>
+        <label class="rp-toggle"><input type="checkbox" checked disabled> Read results and job status</label>
+        <label class="rp-toggle"><input type="checkbox" name="analysis"> Ask Reprise to analyze episodes</label>
+      </fieldset>
+      <div class="rp-actions"><button type="submit" class="rp-btn primary">Create access key</button><button type="button" class="rp-btn" id="rpClientCancel">Cancel</button></div>
+    </form>
+    <div id="rpSecret" class="rp-secret" hidden>
+      <strong>Copy this key now. It will not be shown again.</strong>
+      <output id="rpSecretValue"></output>
+      <div class="rp-actions"><button type="button" class="rp-btn" id="rpSecretCopy">Copy key</button><button type="button" class="rp-btn" id="rpSecretClose">Done</button></div>
+    </div>
+    <div id="rpClients" class="rp-state">Loading apps…</div>
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='js/reprise-sharing.js') }}" defer></script>{% endblock %}

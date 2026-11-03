@@ -19,7 +19,6 @@ from ._mocks import (
 )
 from .conftest import expect_modal_shown, watch_modal_shown
 from .test_intro_credits_server_tab import _mock_server_page, _plex_server, _status
-from .test_navbar_menus import _expect_landed
 from .test_wizard_step3_paths import _drive_to_step3
 
 pytestmark = pytest.mark.e2e
@@ -52,26 +51,6 @@ def test_first_tab_skips_navigation_and_moves_focus_to_main(settings_page: Page)
     expect(settings_page.get_by_role("main")).to_be_focused()
 
 
-def test_mobile_settings_selection_and_hash_navigation_agree(settings_page: Page) -> None:
-    page = settings_page
-    page.set_viewport_size(PHONE)
-    selector = page.locator("#settingsMobileSection")
-    selector.select_option("section-logging")
-    expect(page).to_have_url(re.compile(r"#section-logging$"))
-    _expect_landed(page, "section-logging")
-    destination = page.locator("#section-logging").bounding_box()
-    navigation = page.locator(".settings-mobile-nav").bounding_box()
-    assert destination and navigation
-    assert destination["y"] >= navigation["y"] + navigation["height"]
-    expect(page.locator("#settingsMobileSectionFeedback")).to_contain_text("Logging")
-
-    page.goto(page.url.split("#")[0] + "#section-backups")
-    expect(selector).to_have_value("section-backups")
-    expect(page.locator("#settingsMobileSectionFeedback")).to_contain_text("Backups")
-    page.go_back()
-    expect(selector).to_have_value("section-logging")
-
-
 def test_mobile_settings_picker_has_a_nodes_entry_that_opens_the_nodes_page(settings_page: Page) -> None:
     page = settings_page
     page.set_viewport_size(PHONE)
@@ -100,19 +79,6 @@ def test_compact_settings_help_keeps_full_guidance_in_its_dialog(settings_page: 
     expect(page.locator("#globalInfoModal")).to_be_visible()
     expect(page.locator("#globalInfoBody")).to_contain_text("Max requeue age")
     expect(page.locator("#globalInfoBody")).to_contain_text("Paused jobs are exempt")
-
-
-def test_mobile_automation_jumps_switch_panes_and_follow_hash(authed_page: Page, app_url: str) -> None:
-    page = authed_page
-    page.set_viewport_size(PHONE)
-    page.goto(f"{app_url}/automation")
-    page.locator('[data-automation-mobile-target="quiet-hours"]').click()
-    expect(page).to_have_url(re.compile(r"/settings#section-worker-quiet-hours$"))
-    _expect_landed(page, "section-worker-quiet-hours")
-    expect(page.locator("#quietHoursSaveBtn")).to_be_visible()
-    page.goto(f"{app_url}/automation#section-schedules-list")
-    expect(page.locator("#pane-schedules")).to_be_visible()
-    expect(page.locator("#automationMobileFeedback")).to_contain_text("Schedules")
 
 
 def test_server_section_selector_tracks_tabs_when_viewport_changes(authed_page: Page, app_url: str) -> None:
@@ -144,13 +110,13 @@ def test_setup_progress_name_updates_after_forward_and_back(wizard_page: Page, a
     mock_setup_status(page, complete=False)
     _drive_to_step3(page, app_url_wizard)
     progress = page.get_by_role("progressbar")
-    expect(progress).to_have_accessible_name("Setup progress: step 3 of 5, Paths")
+    expect(progress).to_have_accessible_name("Setup progress: step 3 of 4, Paths")
     expect(progress).to_have_attribute("aria-valuenow", "3")
     page.locator("#step3Back").click()
-    expect(progress).to_have_accessible_name("Setup progress: step 2 of 5, Connect")
+    expect(progress).to_have_accessible_name("Setup progress: step 2 of 4, Connect")
     expect(progress).to_have_attribute("aria-valuenow", "2")
     expect(progress.locator('[data-step="2"] span')).to_have_text("Connect")
-    expect(page.locator("#setupProgressCurrent")).to_have_text("Step 2 of 5 · Connect")
+    expect(page.locator("#setupProgressCurrent")).to_have_text("Step 2 of 4 · Connect")
     page.set_viewport_size({"width": 768, "height": 900})
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1")
 
@@ -168,19 +134,3 @@ def test_mobile_inspector_jumps_only_offer_sections_present_in_the_file(authed_p
     expect(nav.get_by_role("link", name="Loudness")).to_be_hidden()
     nav.get_by_role("link", name="Servers").click()
     expect(page.locator("#inspServers")).to_be_in_viewport()
-
-
-def test_mobile_help_opens_documentation_in_a_separate_tab(authed_page: Page, app_url: str) -> None:
-    page = authed_page
-    page.set_viewport_size(PHONE)
-    page.context.route("https://github.com/**", lambda route: route.fulfill(body="Documentation fixture"))
-    page.goto(f"{app_url}/settings")
-    page.locator(".navbar-toggler").click()
-    expect(page.locator("#helpMenuBtn")).to_be_visible()
-    page.locator("#helpMenuBtn").click()
-    with page.expect_popup() as opened:
-        page.locator('[aria-labelledby="helpMenuBtn"]').get_by_role("link", name="Documentation").click()
-    popup = opened.value
-    expect(popup.locator("body")).to_have_text("Documentation fixture")
-    expect(page).to_have_url(f"{app_url}/settings")
-    popup.close()

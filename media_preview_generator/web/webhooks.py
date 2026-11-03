@@ -9,7 +9,6 @@ import base64
 import json
 import os
 import re
-import secrets
 import threading
 from collections import deque
 from collections.abc import Callable
@@ -22,7 +21,7 @@ from flask import Blueprint, g, jsonify, request
 from loguru import logger
 
 from ..processing.retry_queue import retry_policy
-from .auth import api_token_required, validate_token
+from .auth import api_token_required, webhook_secret_matches
 from .jobs import Job, JobStatus, get_job_manager, incoming_job_priority
 from .settings_manager import get_settings_manager
 
@@ -150,18 +149,11 @@ def _save_history_to_disk() -> None:
         logger.debug("Failed to persist webhook history: {}", exc)
 
 
-def _tokens_match(supplied: str, expected: str) -> bool:
-    """Constant-time token comparison that is False, not an exception, for non-ASCII or non-str input."""
-    if not isinstance(supplied, str) or not isinstance(expected, str):
-        return False
-    return secrets.compare_digest(supplied.encode(), expected.encode())
-
-
 def _authenticate_webhook(f):
     """Check X-Auth-Token, Authorization Bearer, Basic auth, or ``?token=`` query param.
 
     Collects candidate tokens from all sources and tries each against the
-    webhook secret and app auth token.  ``X-Auth-Token`` is checked first
+    webhook secret (Settings > Connections).  ``X-Auth-Token`` is checked first
     because it is the dedicated webhook header; ``Authorization`` (Bearer /
     Basic) is a fallback.  This prevents browser-injected JWTs (e.g. from
     Tdarr's session) from shadowing the explicit webhook token.
@@ -212,24 +204,18 @@ def _authenticate_webhook(f):
             )
             return jsonify({"error": "Authentication required"}), 401
 
-        settings = get_settings_manager()
-        webhook_secret = settings.get("webhook_secret", "")
-
         # The inbound URL may carry ?server_id=<id> for routing (Plex Direct
         # registrations embed it so the dispatcher knows which configured
-        # Plex sent the event). Auth itself uses only the global webhook
-        # secret, then falls back to the API auth token.
+        # Plex sent the event). Auth itself uses only the webhook secret.
         for _method, token in candidates:
-            if webhook_secret and _tokens_match(token, webhook_secret):
-                return f(*args, **kwargs)
-            if validate_token(token):
+            if webhook_secret_matches(token):
                 return f(*args, **kwargs)
 
         logger.warning(
             "Webhook from {} rejected: token did not match (URL={}, supplied via {}). "
             "Other webhooks with the correct secret are still being accepted. "
-            "Check the webhook secret under Automation → Triggers → Settings matches what your sender is sending; "
-            "regenerate the secret on this page if you need to rotate it.",
+            "Check the webhook secret under Settings > Connections matches what your sender is sending; "
+            "regenerate it there if you need to rotate it.",
             request.remote_addr,
             request.path,
             candidates[0][0],

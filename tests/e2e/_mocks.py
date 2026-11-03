@@ -317,36 +317,18 @@ def mock_servers_refresh_libraries(page: Page, count: int = 2) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def mock_setup_token_info(page: Page, *, env_controlled: bool = False) -> None:
-    """GET /api/setup/token-info."""
-    body = {
-        "env_controlled": env_controlled,
-        "token": "****wxyz",
-        "token_length": 32,
-        "source": "environment" if env_controlled else "config",
-        "auth_method": "internal",
-    }
-
-    def handler(route: Route) -> None:
-        _fulfill_json(route, body)
-
-    page.route("**/api/setup/token-info", handler)
-
-
-def capture_setup_set_token(page: Page, *, ok: bool = True, error: str | None = None) -> list[dict]:
-    """POST /api/setup/set-token — capture submitted tokens."""
+def capture_account_password(page: Page, *, ok: bool = True, error: str | None = None, status: int = 400) -> list[dict]:
+    """POST /api/account/password: capture the submitted passwords, so the real owner account is never changed."""
     captured: list[dict] = []
-    body = {"success": ok} if ok else {"success": False, "error": error or "Token rejected"}
-    status = 200 if ok else 400
 
     def handler(route: Route) -> None:
-        try:
-            captured.append(route.request.post_data_json or {})
-        except Exception:
-            captured.append({})
-        _fulfill_json(route, body, status=status)
+        captured.append(route.request.post_data_json or {})
+        if ok:
+            _fulfill_json(route, {"success": True})
+        else:
+            _fulfill_json(route, {"success": False, "error": error or "Could not change the password."}, status=status)
 
-    page.route("**/api/setup/set-token", handler)
+    page.route("**/api/account/password", handler)
     return captured
 
 
@@ -627,35 +609,6 @@ def mock_browse_directories(page: Page, entries: list[dict] | None = None, path:
         )
 
     page.route("**/api/system/browse**", handler)
-
-
-def mock_token_set(page: Page, *, ok: bool = True, error: str | None = None) -> list[dict]:
-    """POST /api/token/set."""
-    captured: list[dict] = []
-    body = {"success": ok} if ok else {"success": False, "error": error or "Bad token"}
-    status = 200 if ok else 400
-
-    def handler(route: Route) -> None:
-        try:
-            captured.append(route.request.post_data_json or {})
-        except Exception:
-            captured.append({})
-        _fulfill_json(route, body, status=status)
-
-    page.route("**/api/token/set", handler)
-    return captured
-
-
-def mock_token_regenerate(page: Page) -> list[bool]:
-    """POST /api/token/regenerate."""
-    called: list[bool] = []
-
-    def handler(route: Route) -> None:
-        called.append(True)
-        _fulfill_json(route, {"success": True})
-
-    page.route("**/api/token/regenerate", handler)
-    return called
 
 
 # ---------------------------------------------------------------------------

@@ -131,19 +131,13 @@ def _plex_webhook_auth_token() -> str:
     the legacy ``/api/webhooks/plex`` endpoint is kept around for
     installs that registered before the unified router landed.
 
-    Returns the global ``webhook_secret`` (or the API auth token as a
-    fallback). Per-server secrets were removed — every Plex server
-    in a multi-Plex install shares the same URL token, rotated by
-    changing the global secret.
+    Returns the webhook secret (made on first use). Per-server secrets were
+    removed — every Plex server in a multi-Plex install shares the same URL
+    token, rotated by regenerating the secret in Settings > Connections.
     """
-    from ..auth import get_auth_token
-    from ..settings_manager import get_settings_manager
+    from ..auth import get_webhook_secret
 
-    settings = get_settings_manager()
-    secret = (settings.get("webhook_secret") or "").strip()
-    if secret:
-        return secret
-    return get_auth_token() or ""
+    return get_webhook_secret()
 
 
 @api.route("/settings/plex_webhook/status")

@@ -9,14 +9,16 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-PROFILE_ID = "native-signal-review-first-v3"
+PROFILE_ID = "native-signal-review-first-v4"
 PROFILE_SPEC: dict[str, Any] = {
     "id": PROFILE_ID,
     "admission_revision": "episode-provenance-1",
-    "decoder_semantic_revision": "native-ordered-complete-context-final-declarations-2",
+    "decoder_semantic_revision": "native-ordered-complete-context-final-declarations-3",
     "scope": "Codec-tolerant native signal repetition proposals requiring owner review; not semantic, rendered or audibility equivalence. Tiny visual edits may be missed.",
     "candidate": {
         "max_ms": 180000,
+        "max_references": 3,
+        "reference_order": "nearest episode number to the target first, the lower number on a tie; one file per episode; same show and season only",
         "reference_radius_ms": 30000,
         "context_ms": 2000,
         "maximum_scan_frames": 40000,
@@ -167,6 +169,7 @@ PROFILE_SPEC: dict[str, Any] = {
         "resources": "one analysis CPU/FFmpeg threads1; bounded retained frames/chunks, not a universal2GiB whole-app guarantee; late audio prefix is linear work, not fast seeking",
     },
     "limitations": "Magnitude4x masks same-bin additions; equal-amplitude phase dead zone through60degrees; floors/persistence miss sufficiently brief,weak,drifting changes; no semantic guarantee; new protected failure remains failure",
+    "suggestions": "Plex's own intro and credits markers for the exact file that no comparison confirmed are stored as proposed skips with origin plex; never eligible until the owner approves that exact range with an explicit acknowledgment; keep vetoes, freshness and review rules unchanged",
 }
 ADMISSION_REVISION = PROFILE_SPEC["admission_revision"]
 PROFILE_FINGERPRINT = hashlib.sha256(

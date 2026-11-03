@@ -107,6 +107,12 @@ _NO_RETRY_SOURCES = _USER_PICKED_SOURCES | {
     RECONCILE_SOURCE,
 }
 
+# What a job says when no file in it belongs to a server with Intro & Credits turned on: it checked nothing.
+NOTHING_CHECKED = (
+    "Nothing was checked: Intro & Credits is turned off for these files. "
+    "To find intros and credits, analyze the episode in Reprise's Library."
+)
+
 
 def server_pin(config: object) -> str | None:
     """The one server a job publishes to (its config's ``server_id``), or None for every server with markers on.
@@ -953,7 +959,11 @@ def finish_job(
         _log_summary(jm, job_id, outcome, ctx)
     failed = outcome.get(FileOutcome.FAILED.value, 0)
     missing = 0 if retried else outcome.get(FileOutcome.FILE_NOT_FOUND.value, 0)
-    succeeded = sum(outcome.values()) - failed - missing
+    total = sum(outcome.values())
+    succeeded = total - failed - missing
+    if total and outcome.get(FileOutcome.NO_OWNERS.value, 0) == total:
+        # Every file was turned away: a green "completed successfully" would read as "checked, found nothing".
+        warnings = [NOTHING_CHECKED, *warnings]
     if (failed or missing) and not succeeded:
         if not missing:
             message = f"All {failed} file(s) failed — see the Files panel"

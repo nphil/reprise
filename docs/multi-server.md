@@ -491,5 +491,5 @@ first. Each server gets its own entry with a distinct `server_identity`
 | POST | `/api/webhooks/server/<id>` | Per-server fallback webhook URL |
 
 All endpoints (except `/api/webhooks/*` which use the webhook secret) accept
-the same `X-Auth-Token` / `Authorization: Bearer` headers as the rest of
-the REST API.
+the same `X-Auth-Token` / `Authorization: Bearer` headers (carrying your webhook
+secret) as the rest of the REST API.

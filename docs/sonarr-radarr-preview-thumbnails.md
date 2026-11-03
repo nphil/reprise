@@ -17,10 +17,10 @@ In Sonarr or Radarr, add a **Webhook** connection that points at Media Preview G
 3. Paste the URL and enable the events:
    - **Radarr:** On Import and On Upgrade.
    - **Sonarr:** On File Import and On File Upgrade.
-4. **Authentication:** leave **Username** empty and put your API token or webhook secret in **Password**. If the form has a Headers section, you can use an `X-Auth-Token` header instead.
+4. **Authentication:** leave **Username** empty and put your webhook secret in **Password**. You find it in **Settings → Connections**, on the **Webhook secret** card. If the form has a Headers section, you can use an `X-Auth-Token` header instead.
 5. Click **Test**, then **Save**. The test shows up under **Tools → Webhook Activity**.
 
-Field-by-field steps: [Configure Radarr](guides.md#configure-radarr) and [Configure Sonarr](guides.md#configure-sonarr). To use a separate secret for webhooks, see [Webhook Secret](guides.md#webhook-secret).
+Field-by-field steps: [Configure Radarr](guides.md#configure-radarr) and [Configure Sonarr](guides.md#configure-sonarr). To learn more about the webhook secret, see [Webhook Secret](guides.md#webhook-secret).
 
 > [!TIP]
 > Sonarr and Radarr often see paths differently from your media server and from this container, for example `/tv/...` against `/data/tv/...`. Fill in the webhook column of the server's path mapping so the paths line up. See the FAQ entry on the [webhook path column](faq.md#what-is-the-webhook--sonarr--radarr-path-column-for) and [Path Mappings](reference.md#path-mappings).
@@ -70,7 +70,7 @@ The Plex direct webhook and the Recently Added poll only see new library items, 
 
 ## Troubleshooting
 
-- **401 from the webhook:** the token is wrong or missing. Leave Username empty and put the token in Password.
+- **401 from the webhook:** the webhook secret is wrong or missing. Leave Username empty and put the secret in Password. If you regenerated it in **Settings → Connections**, update Sonarr and Radarr too.
 - **Radarr or Sonarr can't reach the URL:** use the host's IP or a Docker hostname they can resolve, not `localhost`.
 - **The test works but imports do nothing:** check that the import events are ticked, and that **Enable webhook processing** is on under **Automation → Triggers**.
 - **The job sits in Pending:** check that **Incoming job priority** is **High**, that processing is not paused (the Workers header shows **Resume** while it is), and that a worker group allowed to run previews is available (not outside its hours).

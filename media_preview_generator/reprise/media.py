@@ -20,8 +20,11 @@ import time
 from dataclasses import dataclass
 from fractions import Fraction
 
+from loguru import logger
+
 from ..gpu.ffmpeg_capabilities import ffmpeg_binary
 from ..markers.probe import ffprobe_path_for
+from . import acceleration
 from .identity import is_current
 
 MAX_OUTPUT = 128 * 1024 * 1024
@@ -47,6 +50,21 @@ def paired_ffprobe(ffmpeg_path):
 def check_current(media):
     if not is_current(media):
         raise DecodeError("Media changed since registration")
+
+
+_DIAGNOSTIC = re.compile(r"^(?:\[[^\]\r\n]*\]\s*)?\[(?:warning|error|fatal|panic)\]")
+_UNSIZED_SUBTITLE = re.compile(
+    r"^\[[^\]\r\n]*\]\s*\[warning\]\s*Could not find codec parameters for stream (\d+) \(Subtitle: "
+)
+
+
+def is_fatal_diagnostic(line, decoded_stream):
+    """Whether an FFmpeg log line fails a decode: every warning and error does, except the demuxer saying it could
+    not size a subtitle stream this command never decodes (a Blu-ray rip's PGS subtitles)."""
+    if not _DIAGNOSTIC.match(line):
+        return False
+    unsized = _UNSIZED_SUBTITLE.match(line)
+    return not (unsized and int(unsized.group(1)) != decoded_stream)
 
 
 def run(command, cancel_check, pause_check, limit=MAX_OUTPUT, *, reject_stderr=False, capture_stderr=False):
@@ -443,7 +461,22 @@ def _native_audit(media, stream, start, end, cancel, pause, threads, ffmpeg_path
     if not pts:
         raise DecodeError("Empty native video chroma audit")
     check_current(media)
-    return pix, width, height, sample, cw, ch, size, chroma, sar, flags, pts, tb
+    return (
+        pix,
+        width,
+        height,
+        sample,
+        cw,
+        ch,
+        size,
+        chroma,
+        sar,
+        flags,
+        pts,
+        tb,
+        selected.get("codec_name"),
+        selected.get("profile"),
+    )
 
 
 def _bounded_log_lines(pipe, total_limit=16 * 1024 * 1024):
@@ -481,7 +514,7 @@ class NativeFrameReader:
     iterator leaves termination unset and kills/reaps the decoder on exit.
     """
 
-    def __init__(self, media, stream, start, end, cancel, pause, threads, ffmpeg_path):
+    def __init__(self, media, stream, start, end, cancel, pause, threads, ffmpeg_path, accel=None, audit=None):
         if not (0 <= start < end) or threads < 1:
             raise DecodeError("Invalid native frame window")
         self.media, self.stream = media, stream
@@ -503,6 +536,12 @@ class NativeFrameReader:
         self.previous = None
         self.color = None
         self.seen_pts = set()
+        # The GPU decode to try (acceleration.Accelerator) and whether this stream actually uses it: a codec,
+        # profile or size the hardware is not verified for decodes on the CPU exactly as before.
+        self.accel = accel
+        self.accelerated = False
+        self.showinfo = {"0": "0", "2": "2"}  # FFmpeg's showinfo instance numbers -> the reader's pre/post labels
+        self.audit = audit  # _native_audit's answer when a wrapper already ran it: its repeats must not run it again
 
     def __enter__(self):
         (
@@ -518,7 +557,9 @@ class NativeFrameReader:
             self.interpretation_flags,
             self.audit_pts,
             self.time_base,
-        ) = _native_audit(
+            codec,
+            profile,
+        ) = self.audit or _native_audit(
             self.media,
             self.stream,
             self.request_start_ms,
@@ -530,6 +571,18 @@ class NativeFrameReader:
         )
         check_current(self.media)
         cap = (self.request_end_ms + 2000) / 1000
+        self.codec, self.profile = codec, profile
+        graph = f"showinfo,trim=end={cap:.3f},showinfo"
+        hardware = []
+        if self.accel is not None and acceleration.eligible(
+            self.accel, self.ffmpeg_path, codec, profile, self.pix, self.width, self.height
+        ):
+            # Same command, GPU decoder: FFmpeg downloads each surface and the native-format conversion runs ahead of
+            # both showinfo taps (they number 1 and 3 then), so every GPU frame meets the CPU frame's checks.
+            self.accelerated = True
+            hardware = list(self.accel.args)
+            graph = f"format={self.pix},{graph}"
+            self.showinfo = {"1": "0", "3": "2"}
         command = [
             self.ffmpeg_path,
             "-nostdin",
@@ -545,6 +598,7 @@ class NativeFrameReader:
             "-copyts",
             "-start_at_zero",
             "-noautorotate",
+            *hardware,
             "-ss",
             f"{self.request_start_ms / 1000:.3f}",
             "-i",
@@ -555,7 +609,7 @@ class NativeFrameReader:
             "-sn",
             "-dn",
             "-vf",
-            f"showinfo,trim=end={cap:.3f},showinfo",
+            graph,
             "-fps_mode",
             "passthrough",
             "-enc_time_base",
@@ -602,14 +656,14 @@ class NativeFrameReader:
                 if self.stop.is_set():
                     return
                 line = raw.decode("utf-8", "replace")
-                if re.match(r"^(?:\[[^\]\r\n]*\]\s*)?\[(?:warning|error|fatal|panic)\]", line):
+                if is_fatal_diagnostic(line, self.stream):
                     raise DecodeError("Native decoder reported a diagnostic")
-                source = re.match(r"^\[Parsed_showinfo_([02])\s+@[^]]+\]\s+\[info\]\s?(.*)$", line)
-                if not source:
+                source = re.match(r"^\[Parsed_showinfo_(\d+)\s+@[^]]+\]\s+\[info\]\s?(.*)$", line)
+                if not source or source.group(1) not in self.showinfo:
                     if line.startswith("[Parsed_showinfo_"):
                         raise DecodeError("Malformed native showinfo record")
                     continue
-                number, text = source.groups()
+                number, text = self.showinfo[source.group(1)], source.group(2)
                 text = text.strip()
                 if text.startswith("config in time_base:"):
                     match = re.fullmatch(r"config in time_base:\s*(\d+/\d+),\s*frame_rate:\s*\d+/\d+", text)
@@ -840,8 +894,130 @@ class NativeFrameReader:
         return False
 
 
+class _FallbackFrames:
+    """The native frame reader on the first usable GPU, with the CPU as the repeat.
+
+    A decode that fails on the GPU, at the start or half way, is repeated on the CPU, which also settles whose fault
+    it was: a file the CPU cannot decode either fails with the CPU's error as without a GPU and costs the device
+    nothing, and the window is not spent again on a second GPU first. Frames already handed to the consumer are never
+    delivered twice: the repeat's first frames must equal them (timestamp and plane checksums) and are skipped, so the
+    consumer sees one decode whichever decoder finished it. A repeat that disagrees fails the analysis, stops using
+    the device involved for that codec, and leaves the CPU to decode the next window.
+    """
+
+    def __init__(self, media, stream, start_ms, end_ms, cancel, pause, threads, ffmpeg_path, attempts):
+        self._args = (media, stream, start_ms, end_ms, cancel, pause, threads, ffmpeg_path)
+        self._attempts = [*attempts, None]
+        self._step = 0
+        self._reader = None
+        self._delivered = []  # (timestamp, plane checksums) of every frame already handed on
+        self._replay = 0  # delivered frames the current reader must still reproduce
+        self._failed = []  # (device, reason) of the GPU decodes that did not finish this window
+        self._audit = None
+        self._closed = False
+
+    def __getattr__(self, name):
+        # Only reached for names this wrapper lacks: the reader's own (proc, termination, observed_end, ...).
+        reader = self.__dict__.get("_reader")
+        if reader is None:
+            raise AttributeError(name)
+        return getattr(reader, name)
+
+    def _open(self):
+        reader = NativeFrameReader(*self._args, accel=self._attempts[self._step], audit=self._audit)
+        reader.__enter__()  # a failure here is the file's (spawn) and would be the CPU's too
+        self._reader = reader
+
+    def __enter__(self):
+        # The audit decodes the whole window in ffprobe once; the repeat reuses it. It also names the stream's codec,
+        # so only a device verified for that codec is tried, the best one first.
+        audit = self._audit = _native_audit(*self._args)
+        pix, width, height, codec, profile = audit[0], audit[1], audit[2], audit[12], audit[13]
+        ffmpeg = self._args[7]
+        usable = [
+            a
+            for a in self._attempts
+            if a is not None and acceleration.eligible(a, ffmpeg, codec, profile, pix, width, height)
+        ]
+        self._attempts = [*usable[:1], None]
+        self._open()
+        return self
+
+    def __iter__(self):
+        return self
+
+    def _disagree(self, why):
+        reader = self._reader
+        family = acceleration.family_of(reader.codec, reader.profile, reader.pix, reader.width, reader.height)
+        for accel in [a for a, _ in self._failed] + ([reader.accel] if reader.accelerated else []):
+            acceleration.withdraw(accel, self._args[7], family, why)
+        raise DecodeError("GPU and CPU decodes of the same window disagree: " + why)
+
+    def _retry(self, exc):
+        failed = self._attempts[self._step]
+        self._failed.append((failed, str(exc)))
+        reader, self._reader = self._reader, None
+        reader.__exit__(type(exc), exc, exc.__traceback__)  # kills and reaps the failed decoder
+        self._step += 1  # the one GPU is followed by the CPU
+        logger.warning(
+            "Reprise decode on {} failed ({}); repeating the window on the CPU", failed.label, str(exc)[:200]
+        )
+        self._replay = len(self._delivered)
+        self._open()
+
+    def __next__(self):
+        import zlib
+
+        while True:
+            try:
+                frame = next(self._reader)
+            except StopIteration:
+                if self._replay:
+                    self._disagree("the repeat ended before reproducing the frames already delivered")
+                raise
+            except Cancelled:
+                raise
+            except DecodeError as exc:
+                if not self._reader.accelerated:
+                    raise
+                self._retry(exc)
+                continue
+            seen = (frame.pts_ms, tuple(zlib.adler32(plane.data) for plane in frame.planes))
+            if self._replay:
+                if seen != self._delivered[len(self._delivered) - self._replay]:
+                    self._disagree("a repeated frame differs from the one already delivered")
+                self._replay -= 1
+                continue
+            self._delivered.append(seen)
+            return frame
+
+    def __exit__(self, exc_type, exc, traceback):
+        reader = self._reader
+        if reader is None or self._closed:
+            return False
+        self._closed = True
+        result = reader.__exit__(exc_type, exc, traceback)
+        if exc_type is None:
+            # Finished and exhausted. Whoever completed it, the devices that failed first are at fault, not the file.
+            if reader.accelerated:
+                acceleration.record_gpu(
+                    reader.accel,
+                    acceleration.family_of(reader.codec, reader.profile, reader.pix, reader.width, reader.height),
+                )
+            else:
+                acceleration.record_cpu()
+            for accel, reason in self._failed:
+                acceleration.record_fallback(accel, reason)
+        return result
+
+
 def native_frames(media, stream, start_ms, end_ms, cancel_check, pause_check, threads, *, ffmpeg_path=None):
-    return NativeFrameReader(media, stream, start_ms, end_ms, cancel_check, pause_check, threads, ffmpeg_path)
+    selected = ffmpeg_path if ffmpeg_path is not None else ffmpeg_binary()
+    attempts = acceleration.plan(selected)
+    if not attempts:
+        acceleration.record_cpu()
+        return NativeFrameReader(media, stream, start_ms, end_ms, cancel_check, pause_check, threads, selected)
+    return _FallbackFrames(media, stream, start_ms, end_ms, cancel_check, pause_check, threads, selected, attempts)
 
 
 @dataclass(frozen=True)
@@ -1403,7 +1579,10 @@ def _native_audio_stream(media, stream_index, start_ms, end_ms, cancel_check, pa
                         first = pts
                         if (first * rate).denominator != 1:
                             raise DecodeError("Native audio start is not on the media sample grid")
-                    if abs(pts - (first + Fraction(count, rate))) > tb / 2:
+                    # Container timestamps are whole ticks while samples sit on an exact grid, and the first
+                    # frame is itself a rounded observation, so a gapless stream may stray by one full tick
+                    # (real MKV AC3 files alternate between 0 and -1 ms). A real gap or overlap is a whole frame.
+                    if abs(pts - (first + Fraction(count, rate))) > tb:
                         raise DecodeError("Native audio timestamps are discontinuous")
                     count += n
                     yield pts, n
@@ -1480,7 +1659,7 @@ def _native_audio_stream(media, stream_index, start_ms, end_ms, cancel_check, pa
             if raw is None:
                 break
             line = raw.decode("utf-8", "replace")
-            if re.match(r"^(?:\[[^\]\r\n]*\]\s*)?\[(?:warning|error|fatal|panic)\]", line):
+            if is_fatal_diagnostic(line, stream_index):
                 raise DecodeError("Native audio decoder reported an error")
             if "Parsed_ashowinfo_" not in line:
                 other_bytes += len(raw)

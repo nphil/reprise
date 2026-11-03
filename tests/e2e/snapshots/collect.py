@@ -19,9 +19,7 @@ Requires: ``playwright install chromium`` (one-time setup).
 from __future__ import annotations
 
 import argparse
-import http.cookiejar
 import os
-import re
 import socket
 import subprocess
 import sys
@@ -99,30 +97,11 @@ def _start_app(config_dir: str, port: int) -> subprocess.Popen:
 
 
 def _login_and_get_cookie(app_url: str) -> dict:
-    jar = http.cookiejar.CookieJar()
-    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
-    with opener.open(f"{app_url}/login", timeout=10) as resp:  # noqa: S310 (localhost-only)
-        csrf_token = re.search(r'name="csrf_token" value="([^"]+)"', resp.read().decode()).group(1)
-    data = urllib.parse.urlencode({"token": TOKEN, "csrf_token": csrf_token}).encode()
-    req = urllib.request.Request(
-        f"{app_url}/login",
-        data=data,
-        method="POST",
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-    )
-    opener.open(req, timeout=10)  # noqa: S310 (localhost-only)
-    for c in jar:
-        if c.name == "session":
-            return {
-                "name": "session",
-                "value": c.value,
-                "domain": "localhost",
-                "path": "/",
-                "httpOnly": True,
-                "secure": False,
-                "sameSite": "Lax",
-            }
-    raise RuntimeError("Login produced no session cookie")
+    """Make the owner account through the real Welcome page (or sign in when it exists), skip the tour, and return the
+    session cookie. Shared with the e2e suite so the two never drift apart."""
+    from tests.e2e.conftest import _capture_session_cookie
+
+    return _capture_session_cookie(app_url)
 
 
 def _mark_setup_complete(app_url: str) -> None:

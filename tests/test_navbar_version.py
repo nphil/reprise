@@ -14,7 +14,7 @@ import pytest
 from media_preview_generator.web.routes import api_system
 from media_preview_generator.web.settings_manager import get_settings_manager
 
-RELEASES = "https://github.com/stevezau/media_preview_generator/releases/latest"
+RELEASES = "https://github.com/nphil/reprise/releases/latest"
 
 
 def _no_github(*_args, **_kwargs):
@@ -91,13 +91,15 @@ class TestNavbarVersionInfo:
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    monkeypatch.setattr("media_preview_generator.web.auth.AUTH_FILE", str(tmp_path / "auth.json"))
-    monkeypatch.setattr("media_preview_generator.web.auth.get_config_dir", lambda: str(tmp_path))
-    # The startup pre-warm would race these tests for the cache.
-    monkeypatch.setattr("media_preview_generator.web.app._prewarm_caches", lambda: None)
-    from media_preview_generator.web.auth import get_auth_token
+    from media_preview_generator.web import auth
     from media_preview_generator.web.routes import clear_gpu_cache
     from media_preview_generator.web.settings_manager import reset_settings_manager
+    from tests.auth_helpers import sign_in
+
+    monkeypatch.setattr(auth, "AUTH_FILE", str(tmp_path / "auth.json"))
+    monkeypatch.setattr(auth, "CONFIG_DIR", str(tmp_path))
+    # The startup pre-warm would race these tests for the cache.
+    monkeypatch.setattr("media_preview_generator.web.app._prewarm_caches", lambda: None)
 
     reset_settings_manager()
     clear_gpu_cache()
@@ -107,14 +109,12 @@ def client(tmp_path, monkeypatch):
     app.config["TESTING"] = True
     app.config["WTF_CSRF_ENABLED"] = False
     get_settings_manager().set("setup_complete", True)
-    test_client = app.test_client()
-    test_client.post("/login", data={"token": get_auth_token()}, follow_redirects=False)
-    return test_client
+    return sign_in(app.test_client())
 
 
 def _version_link(html: str) -> str:
-    match = re.search(r'<a class="navbar-version"[^>]*>.*?</a>', html, re.S)
-    assert match, "navbar version link missing"
+    match = re.search(r'<a class="rp-rail-version"[^>]*>.*?</a>', html, re.S)
+    assert match, "sidebar version link missing"
     return match.group(0)
 
 
@@ -130,25 +130,24 @@ class TestNavbarVersionRendering:
         link = _version_link(response.get_data(as_text=True))
         assert f'href="{RELEASES}"' in link
         assert 'target="_blank" rel="noopener noreferrer"' in link
-        assert '<span id="navVersionText">dev@a9c8177</span>' in link
-        assert 'title="Release notes"' in link
-        assert 'aria-label="Version dev@a9c8177. Release notes, opens in a new tab"' in link
-        assert "navVersionDot" not in link
+        assert '<span id="navVersionText">Reprise dev@a9c8177</span>' in link
+        assert 'aria-label="Reprise dev@a9c8177. Release notes, opens in a new tab"' in link
+        assert "rp-rail-update" not in link
 
-    def test_an_available_update_adds_the_dot_and_says_which_version(self, client):
+    def test_an_available_update_adds_the_pill_and_says_which_version(self, client):
         _cache(
             {"current_version": "3.4.0", "latest_version": "3.4.1", "update_available": True, "install_type": "docker"}
         )
 
         link = _version_link(client.get("/reprise").get_data(as_text=True))
 
-        assert '<span id="navVersionText">v3.4.0</span>' in link
-        assert 'id="navVersionDot"' in link
+        assert '<span id="navVersionText">Reprise v3.4.0</span>' in link
+        assert 'class="rp-rail-update"' in link and "Update available" in link
         assert 'title="Version 3.4.1 is available"' in link
-        assert 'aria-label="Version v3.4.0. Version 3.4.1 is available, opens in a new tab"' in link
+        assert 'aria-label="Reprise v3.4.0. Version 3.4.1 is available, opens in a new tab"' in link
 
     @pytest.mark.parametrize("install_type,label", [("local_docker", "local build"), ("pr_build", "PR-12")])
-    def test_builds_that_never_flag_updates_show_no_dot(self, client, install_type, label):
+    def test_builds_that_never_flag_updates_show_no_pill(self, client, install_type, label):
         _cache(
             {
                 "current_version": label,
@@ -160,5 +159,5 @@ class TestNavbarVersionRendering:
 
         link = _version_link(client.get("/reprise").get_data(as_text=True))
 
-        assert f'<span id="navVersionText">{label}</span>' in link
-        assert "navVersionDot" not in link
+        assert f'<span id="navVersionText">Reprise {label}</span>' in link
+        assert "rp-rail-update" not in link

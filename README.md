@@ -4,7 +4,7 @@ Reprise is a review-first, self-hosted media analysis application built on Media
 
 ## Review your library
 
-Start in the library-first interface: connect a Plex server, refresh a library, choose an episode and its exact media version, and explicitly request analysis. Refresh indexes the library; it does not implicitly start analysis. Analysis, video comparison previews and refresh run as queued jobs with pause, resume and cancel controls. CPU-only operation is supported; no GPU or language model is required.
+Start in the library-first interface: connect a Plex server, refresh a library, choose an episode and its exact media version, and explicitly request analysis. Refresh indexes the library; it does not implicitly start analysis. Analysis, video comparison previews and refresh run as queued jobs with pause, resume and cancel controls. CPU-only operation is supported and no language model is required; a GPU passed to the container decodes the analysed video when it checks out ([Optional GPU decoding](#optional-gpu-decoding)).
 
 Detection proposes ranges; it does not approve them. Inspect the evidence and original video, adjust keep and skip ranges, and approve or lock decisions yourself. A keep range vetoes overlapping skips; eligible skips remain separate rather than being joined across protected material. Native signal matching tolerates encoding differences and does not guarantee that every unique scene is found. Uncertain or changed evidence is not approval.
 
@@ -16,6 +16,8 @@ Synthetic checks exercise detection and preservation using reproducible generate
 
 The detector compares native decoded video and every selected audio channel at fixed offsets, with explicit uncovered gaps and inward range bounds. Unknown evidence, keep vetoes and owner approval remain in force. Unmarked color fields are accepted as-is only under matching native declarations: Reprise does not invent a BT.709 profile, convert color, or claim rendered or semantic equivalence. Tiny visual edits can be missed because the comparison tolerates normal encoding noise; quiet or brief story changes can also be missed. Review every proposed skip and add protected ranges for scenes you want to retain. Subtitles and player overlays are not covered; unsupported formats or stream mappings remain inert. Synthetic checks are not a general narrative-safety guarantee.
 
+The one exception to protecting unconfirmed content is Plex's own intro or credits marker for the exact file. When comparing episodes cannot confirm it, Reprise lists it as a clearly labelled Plex suggestion instead of a protective keep. It skips nothing until you approve that exact range yourself, in a separate and deliberate step for each range, and keep ranges still veto it. Reprise compares at most the three nearest episodes of the season.
+
 
 ## Quick start
 
@@ -23,15 +25,30 @@ An unsigned image is published on GitHub Container Registry. The examples pin th
 
 1. Replace the host paths in `docker-compose.example.yml`. For production, set `IMAGE` to the independently accepted image digest described below.
 2. Run `docker compose -f docker-compose.example.yml up -d`.
-3. Visit port 8080. Sign in with the token in the persistent config directory's `auth.json`, or set `WEB_AUTH_TOKEN` securely before starting. Connect your media server and review the configuration.
+3. Visit port 8080. On first run the "Welcome to Reprise" page asks you to choose a username and a password (at least 8 characters); you are signed in right away. Then connect your media server and review the configuration. If you forget the password, see [I forgot my password](docs/faq.md#i-forgot-my-password).
 
 Do not expose the interface publicly without appropriate authentication and transport security.
 
-The image stores settings and results in `/config`, reads media from `/media`, and listens on TCP 8080 by default. The example runs on CPU, mounts media read-only and does not mount Plex's database. Other inherited features can write to server APIs or paths if configured: a read-only media mount is not an authorization boundary for a connected server. A writable Plex database mount is **not** a default; grant one only for an explicitly authorized publishing operation, after backups and validation. The pinned image uses CPU-focused FFmpeg 8.1.2 and matching ffprobe on PATH, with a separate patched loudness binary. Its FFmpeg has no enabled GPU backends. Dolby Vision Profile 5 colour accuracy is not established.
+The image stores settings and results in `/config`, reads media from `/media`, and listens on TCP 8080 by default. The example runs on CPU, mounts media read-only and does not mount Plex's database. Other inherited features can write to server APIs or paths if configured: a read-only media mount is not an authorization boundary for a connected server. A writable Plex database mount is **not** a default; grant one only for an explicitly authorized publishing operation, after backups and validation. Images built from this source use FFmpeg 8.1.2 (GPL, no non-free components) with the matching ffprobe on PATH, NVDEC and VA-API hardware decoding compiled in, and a separate patched CPU-only loudness binary; an image published before GPU decoding was added reports no hardware accelerators in `ffmpeg -hwaccels`. Dolby Vision Profile 5 colour accuracy is not established.
 
 The container media mount target must match the local path in the configured path mapping so Reprise can find the files. When installing with the Unraid template, you can override the media mount Target to match that mapping.
 
 The Unraid template in `unraid-templates/reprise.xml` pins the same accepted image digest as Compose. Configure an internal reverse proxy separately.
+
+## Sign in and your account
+
+The first visit shows a "Welcome to Reprise" page where you choose a username and a password (at least 8 characters). That is the only account, and the page never appears again once it exists. Until then anyone who can open the page can make it, so do it right after the first start. A short tour of the Library, Analyze and Review follows; Skip closes it for good, and **Take the tour** in the sidebar or under Settings → Advanced → Account opens it again. The same Account section changes the password.
+
+Forgot the password? There is no email reset. Open a console in the container (Unraid: Docker tab, the Reprise icon, **Console**; elsewhere `docker exec -it <container> sh`) and run one of these:
+
+```bash
+python3 -m media_preview_generator.web.account_cli reset-password   # a new password for the same account
+python3 -m media_preview_generator.web.account_cli reset-account    # start over: the welcome page asks again
+```
+
+Both apply at once and sign every browser out. Deleting `auth.json` from the config folder does the same as `reset-account`. Neither touches the webhook secret, your servers or your results.
+
+Sonarr, Radarr, Plex and your own scripts use a separate **webhook secret** (Settings → Connections: show, copy, regenerate). Upgrading from the old token login changes nothing for them: the first start copies the old token (`WEB_AUTH_TOKEN` if it was set, otherwise the one in `auth.json`) into the webhook secret unchanged, and the welcome page then asks for your account. `WEB_AUTH_TOKEN` no longer signs anyone in and can be removed. With `AUTH_METHOD=external` (a proxy or VPN does the signing in) there is no account.
 
 ## Plex and Sonarr/Radarr setup
 
@@ -43,17 +60,39 @@ Sonarr/Radarr integration uses authenticated webhooks, not stored arr API client
 
 Use storage-backed scratch space with at least 1 GiB free: `TMP_FOLDER=/config/tmp` avoids the example's deliberately small `/tmp` tmpfs. Configuration validation creates the configured folder if needed. Python temporary files use the separate `TMPDIR` setting; to redirect those too, create the writable config-volume `tmp` directory with the application user's ownership before starting the container, then set `TMPDIR=/config/tmp`. Do not rely on changing this variable after Python has already selected its temporary directory.
 
-Known follow-on work is tracked separately: [GPU-assisted analysis](https://github.com/nphil/reprise/issues/1) and [consistent Reprise navigation across retained pages](https://github.com/nphil/reprise/issues/2). Neither is claimed as implemented.
+Known follow-on work is tracked separately: [consistent Reprise navigation across retained pages](https://github.com/nphil/reprise/issues/2) is not claimed as implemented. GPU-assisted analysis ([issue 1](https://github.com/nphil/reprise/issues/1)) is limited to decoding the video that is analysed; see [Optional GPU decoding](#optional-gpu-decoding).
 
-## Optional GPU access on Unraid
+## Optional GPU decoding
 
-GPU visibility is separate from GPU acceleration. The accepted image detects NVIDIA and Intel devices, but its FFmpeg reports no hardware accelerators. The inherited preview pipeline has CUDA/VAAPI selection code; it cannot use those backends with this binary. Native intro/credits analysis currently uses software decoding and CPU comparisons, independently of preview worker selections. Passing GPUs through does not change that. Leave GPU workers disabled until a GPU-capable image and the relevant processing path have been verified.
+A GPU passed into the container decodes the video that analysis compares and the comparison previews. Everything else (audio, the ffprobe audit, the comparisons and every decision) stays on the CPU, so results do not change. With no GPU, or after any GPU failure, the same window decodes on the CPU.
 
-For optional device access, preserve the existing resource/security flags and add `--runtime=nvidia` to Extra Parameters. Set `NVIDIA_VISIBLE_DEVICES` to the chosen GPU UUID and `NVIDIA_DRIVER_CAPABILITIES` to `compute,video,utility` using the dedicated environment-variable fields. The public template defaults to `void` (no NVIDIA device). Never enter a bare `NVIDIA_DRIVER_CAPABILITIES=...` assignment in Extra Parameters: it is not a Docker option.
+- **What uses the GPU.** H.264 in 8-bit 4:2:0 (Baseline, Main, High) and HEVC in 8-bit or 10-bit 4:2:0 (Main, Main 10), from 144 to 4096 pixels on a side. Everything else (MPEG-2, MPEG-4, VC-1, VP9, AV1, 4:2:2, 4:4:4, H.264 Hi10P) decodes on the CPU.
+- **It must match the CPU.** At startup each detected GPU decodes two packaged reference clips and has to match the CPU frame for frame: timestamps, pixel format, colour declarations and every plane checksum. A GPU that differs is not used for that codec and the log says why.
+- **It always falls back.** A decode that fails on the GPU is repeated on the CPU, which shows whether the GPU or the file was at fault; a file the CPU cannot decode either fails exactly as it did before. Frames already read are checked against the repeat rather than repeated, so a window is never half one decoder and half another unseen. Five failures in a row pause that GPU for ten minutes.
+- **You can see and switch it.** The Library page shows one line under its title, for example `Analysis uses GPU: NVIDIA Tesla P40 (NVDEC decode), then Intel UHD Graphics 630 (VAAPI decode).` or `Analysis uses CPU (no GPU found).`, with a button that turns GPU decoding off and on. The same text is `acceleration.label` in `GET /api/reprise/settings`, and `PATCH /api/reprise/settings` with `{"gpu_decode": false}` does what the button does. A GPU turned off (or given no workers) in the inherited GPU settings is not used here either.
+- **What it saves.** Only the video decoder moves. The ffprobe audit decodes the same window again on the CPU and costs about as much as the decoder, so a whole analysis speeds up less than its decode does. Measured on the host above (container limited to one CPU, host busy with other work; 11 episodes from 1080p to 4K, each decoded identically on CPU, NVDEC and VA-API): the P40 cut the decoder's CPU time by 26% (46% for 4K H.264, 10% for 10-bit HEVC) and the windows' wall time by 15%, and one whole analysis finished about 4% sooner. The Intel iGPU did not beat the CPU: 7% more CPU time overall and 12% less at 4K, because every frame is copied back through memory. The P40 is tried first, so the iGPU decodes only what the P40 cannot; to keep the iGPU free for other work, turn that GPU off in the GPU settings.
 
-Add the actual Intel card and render nodes as Device fields after identifying their PCI device on the host. Do not assume `renderD128` is Intel: on the verified dual-GPU host, NVIDIA owns that node and Intel uses `card1`/`renderD129`. Add the nodes' numeric group using `--group-add=<device-group-id>` and verify access as the actual application user, including its supplementary groups. Do not use privileged mode or change host device permissions.
+Settings that work (verified on an Unraid host with a Tesla P40 and an Intel UHD Graphics 630). Preserve the existing resource and security flags and add:
 
-Verify both device discovery and actual FFmpeg hardware decoding separately. Restoring a missing asset/runtime/device mapping cannot add missing FFmpeg capabilities. Accelerating native analysis requires a GPU-enabled FFmpeg build plus an explicit analysis decoding path and end-to-end timing/preservation checks; it does not require an LLM.
+| Setting | Value |
+|---|---|
+| Extra Parameters | `--runtime=nvidia --group-add=<GID>` (the `GID` is the numeric group of the Intel render node: `ls -ln /dev/dri`; it was 18 here) |
+| Variable `NVIDIA_VISIBLE_DEVICES` | the P40's UUID from `nvidia-smi -L` (the template default `void` means no NVIDIA GPU) |
+| Variable `NVIDIA_DRIVER_CAPABILITIES` | `compute,video,utility`; `video` supplies the NVDEC library. Never enter a bare `NVIDIA_DRIVER_CAPABILITIES=...` assignment in Extra Parameters: it is not a Docker option |
+| Device | `/dev/dri/card1` and `/dev/dri/renderD129`, the Intel nodes on that host. Do not assume `renderD128` is Intel: NVIDIA owns it there |
+
+Do not use privileged mode or change host device permissions. In Docker Compose the same settings are `runtime: nvidia`, the two environment variables, `devices:` for the nodes and `group_add:` (see the commented lines in `docker-compose.example.yml`). Either GPU works alone.
+
+Check it from the host once the container is up:
+
+```sh
+docker exec reprise ffmpeg -hide_banner -hwaccels                 # lists cuda and vaapi
+docker exec reprise nvidia-smi -L                                 # the NVIDIA GPU
+docker logs reprise 2>&1 | grep 'Reprise decodes on the GPU'      # one line per GPU that passed its check
+nvidia-smi dmon -s u                                              # on the host: `dec` rises while an analysis runs
+```
+
+Intel decoding needs the container's media driver to match its libva; images built from this source carry a matching pair. VA-API on other Intel generations depends on that driver's support for them, and AMD GPUs take the same VA-API path with the image's Mesa driver (not tested here). Whatever the hardware, a GPU is used only after it passes the startup check above. The preview and Intro & Credits workers inherited from the original project keep their own per-GPU worker settings, and they see these GPUs too: a newly detected GPU is enabled there by default with one worker.
 
 ## Image delivery and acceptance
 

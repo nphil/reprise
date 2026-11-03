@@ -157,6 +157,20 @@ def _clear_shutdown_flag():
 
 
 @pytest.fixture(autouse=True)
+def _fresh_auth_file(tmp_path, monkeypatch):
+    """Every test starts with no owner account, in its own folder.
+
+    ``auth.AUTH_FILE`` is fixed when the module is first imported, so without this an account made by one test would
+    still be there for the next test in the same process. It goes in ``tmp_path``, where tests already put the rest of
+    the config (``settings.json``), so ``sign_in()`` and ``create_app(config_dir=tmp_path)`` agree on one folder.
+    """
+    from media_preview_generator.web import auth
+
+    monkeypatch.setattr(auth, "AUTH_FILE", str(tmp_path / "auth.json"))
+    auth._warned_unreadable.clear()
+
+
+@pytest.fixture(autouse=True)
 def _fail_unmocked_network_fast(monkeypatch):
     """Make an unmocked outbound connection fail instantly instead of stalling.
 
@@ -420,11 +434,14 @@ def client(flask_app):
 
 
 @pytest.fixture
-def auth_headers():
-    """Valid ``X-Auth-Token`` header for the app built on ``mock_auth_config``."""
-    from media_preview_generator.web.auth import get_auth_token
+def auth_headers(mock_auth_config):
+    """Valid ``X-Auth-Token`` header (the webhook secret) for an app whose config folder is this test's ``tmp_path``."""
+    from media_preview_generator.web.auth import get_webhook_secret
+    from media_preview_generator.web.settings_manager import get_settings_manager
 
-    return {"X-Auth-Token": get_auth_token()}
+    # The secret is saved in settings.json, so the singleton must point at this test's folder before one is made.
+    get_settings_manager(mock_auth_config)
+    return {"X-Auth-Token": get_webhook_secret()}
 
 
 @pytest.fixture

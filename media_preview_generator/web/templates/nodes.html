@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% from "_settings_nav.html" import settings_mobile_nav, settings_sidebar %}
 
-{% block title %}Nodes · Media Preview Generator{% endblock %}
+{% block title %}Nodes · Reprise{% endblock %}
 
 {% block head %}
 {# server_modal.css carries the shared dialog parts (.sm-*) and the Setup Health buckets (.readiness-bucket, .rd-row). #}
@@ -18,7 +18,7 @@
     {{ settings_mobile_nav("nodes") }}
     <header class="page-header">
         <div>
-            <h1 class="page-title"><i class="bi bi-pc-display-horizontal me-2"></i>Nodes</h1>
+            <h1 class="page-title">Nodes</h1>
             <p class="page-subtitle mb-0">Other machines that lend this app their GPU or CPU, or open Plex's database where Plex runs.
                 <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="bottom"
                         title="This app still decides everything and does every write. A node only runs the heavy step it is handed."

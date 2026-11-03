@@ -391,7 +391,7 @@ class TestContrast:
         authed_page.evaluate("t => document.documentElement.setAttribute('data-bs-theme', t)", theme)
         failures = authed_page.evaluate(
             """() => {
-                const parse = c => c.match(/[\\d.]+/g).map(Number);
+                const parse = c => { const n = c.match(/[\\d.]+/g).map(Number); return c.startsWith('color(') ? n.map((v, i) => (i < 3 ? v * 255 : v)) : n; };
                 const lin = v => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
                 const lum = ([r, g, b]) => 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
                 const backdrop = el => {

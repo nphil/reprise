@@ -13,8 +13,10 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from loguru import logger
+
 from ..gpu.ffmpeg_capabilities import ffmpeg_binary
-from . import identity
+from . import acceleration, identity
 from . import media as decoder
 from .models import MediaVersion
 
@@ -103,7 +105,7 @@ def _encode(command: list[str], path: Path, cancel_check, pause_check) -> None:
 
 def _probe(
     media: MediaVersion, cache_dir: Path, cancel_check, pause_check, ffmpeg_path
-) -> tuple[int, list[tuple[str, int]]]:
+) -> tuple[int, list[tuple[str, int]], dict]:
     fd, name = tempfile.mkstemp(prefix=".reprise-probe-", suffix=".json", dir=cache_dir)
     os.close(fd)
     output = Path(name)
@@ -144,7 +146,7 @@ def _probe(
             or {idx for _, idx in tracks} != audio
         ):
             raise decoder.DecodeError("Ambiguous or invalid audio/video stream mapping")
-        return videos[0], tracks
+        return videos[0], tracks, next(s for s in streams if s["index"] == videos[0])
     except (KeyError, TypeError, ValueError) as exc:
         raise decoder.DecodeError("Invalid media stream information") from exc
     finally:
@@ -188,7 +190,7 @@ def build_preview(
     _current(media)
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    video, tracks = _probe(media, cache_dir, cancel, pause, ffmpeg_path)
+    video, tracks, stream = _probe(media, cache_dir, cancel, pause, ffmpeg_path)
     matches = [track for track in tracks if track[0] == audio_stream_id]
     if len(matches) != 1:
         raise decoder.DecodeError("Selected audio stream is not mapped to this media version")
@@ -208,13 +210,15 @@ def build_preview(
     os.close(fd)
     temp = Path(name)
     try:
-        command = [
+        base = [
             ffmpeg_path,
             "-nostdin",
             "-v",
             "error",
             "-threads",
             str(ffmpeg_threads),
+        ]
+        rest = [
             "-i",
             media.canonical_path,
             "-ss",
@@ -244,7 +248,35 @@ def build_preview(
             "-y",
             str(temp),
         ]
-        _encode(command, temp, cancel, pause)
+        # The picture is decoded on the best verified GPU that can decode this stream, and on the CPU when that fails
+        # (as for analysis): the clip is a re-encode for people to look at, so it does not need identical samples.
+        attempts: list = [
+            a
+            for a in acceleration.plan(ffmpeg_path)
+            if acceleration.eligible(
+                a,
+                ffmpeg_path,
+                stream.get("codec_name"),
+                stream.get("profile"),
+                str(stream.get("pix_fmt")),
+                int(stream.get("width") or 0),
+                int(stream.get("height") or 0),
+            )
+        ][:1]
+        failed = []
+        for accel in [*attempts, None]:
+            try:
+                _encode([*base, *(accel.args if accel else ()), *rest], temp, cancel, pause)
+                break
+            except decoder.Cancelled:
+                raise
+            except decoder.DecodeError as exc:
+                if accel is None:
+                    raise
+                failed.append((accel, str(exc)))
+                logger.warning("Reprise preview decode on {} failed ({}); retrying", accel.label, str(exc)[:200])
+        for accel, reason in failed:
+            acceleration.record_fallback(accel, reason)
         _current(media)
         _cancelled(cancel)
         os.replace(temp, target)

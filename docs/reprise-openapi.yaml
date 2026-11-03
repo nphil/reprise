@@ -152,9 +152,10 @@ paths:
                       review_status: {type: string, enum: [proposed, approved, rejected]}
                       locked: {type: boolean}
                       reason: {type: string}
+                      acknowledge_plex_suggestion: {type: boolean, description: "Required (true) on an edit that approves a range with origin plex, or changes one already approved; otherwise the whole review is refused with 400 and nothing is saved. Send it only for a range the owner deliberately approved."}
       responses:
         '200': {description: Saved revision}
-        '400': {$ref: '#/components/responses/BadRequest'}
+        '400': {description: "Invalid review, or a Plex suggestion approved without acknowledge_plex_suggestion; the body is {error: <plain sentence>}"}
         '409': {$ref: '#/components/responses/Conflict'}
   /api/reprise/analyses:
     post:
@@ -164,20 +165,21 @@ paths:
       responses:
         '202': {description: Queued or existing job}
         '400': {$ref: '#/components/responses/BadRequest'}
+        '409': {description: "The file is not in the library or changed on disk after the last refresh; the body is {error: <plain sentence to show the owner>}"}
   /api/reprise/settings:
     get:
-      summary: Read publication availability and write status
+      summary: Read publication availability, write status and the active video decoder
       security: [{owner: []}]
       responses:
         '200':
-          description: Publication availability and write status
-          content: {application/json: {schema: {type: object, required: [publication_available, writes_enabled], properties: {publication_available: {type: boolean}, writes_enabled: {type: boolean}}}}}
+          description: Publication availability, write status and what decodes analysed video (a verified GPU, or the CPU)
+          content: {application/json: {schema: {type: object, required: [publication_available, writes_enabled, acceleration], properties: {publication_available: {type: boolean}, writes_enabled: {type: boolean}, acceleration: {$ref: '#/components/schemas/Acceleration'}}}}}
     patch:
-      summary: Explicitly enable or disable Plex writes (disabled by default)
+      summary: Change a setting - Plex writes (disabled by default) and/or GPU decoding (on by default); send either or both
       security: [{owner: []}]
       requestBody:
         required: true
-        content: {application/json: {schema: {type: object, additionalProperties: false, required: [writes_enabled], properties: {writes_enabled: {type: boolean}}}}}
+        content: {application/json: {schema: {type: object, additionalProperties: false, minProperties: 1, properties: {writes_enabled: {type: boolean}, gpu_decode: {type: boolean}}}}}
       responses:
         '200': {description: Publication availability and write status}
         '400': {$ref: '#/components/responses/BadRequest'}
@@ -302,6 +304,31 @@ components:
               media_version_ids: {type: array, minItems: 1, maxItems: 100, items: {type: string}}
               idempotency_key: {type: string, maxLength: 256}
   schemas:
+    Acceleration:
+      type: object
+      description: What decodes the video that analysis compares. A GPU is used only after it matched the CPU frame for frame on packaged reference clips, only for H.264 and HEVC 4:2:0 streams, and any failed GPU decode is repeated on the CPU.
+      required: [enabled, active, label, devices, windows, last_problem]
+      properties:
+        enabled: {type: boolean, description: The owner's "use the GPU when available" switch (PATCH gpu_decode)}
+        active: {type: boolean, description: At least one verified GPU will decode now}
+        label: {type: string, description: "One display line, e.g. 'GPU: NVIDIA Tesla P40 (NVDEC decode)' or 'CPU (no GPU found)'"}
+        devices:
+          type: array
+          items:
+            type: object
+            required: [name, method, device, state, decodes]
+            properties:
+              name: {type: string}
+              method: {type: string, enum: [NVDEC, VAAPI]}
+              device: {type: string}
+              state: {type: string, enum: [ready, checking, unavailable, paused, "off"]}
+              decodes: {type: array, items: {type: string, enum: [h264, hevc]}}
+              detail: {type: string}
+        windows:
+          type: object
+          required: [gpu, cpu, gpu_fallbacks]
+          properties: {gpu: {type: integer}, cpu: {type: integer}, gpu_fallbacks: {type: integer}}
+        last_problem: {type: string, nullable: true}
     Identity:
       type: object
       additionalProperties: false
@@ -326,7 +353,7 @@ components:
         end_ms: {type: integer}
         review_status: {type: string, enum: [proposed, approved, rejected]}
         locked: {type: boolean}
-        origin: {type: string, enum: [detector, manual]}
+        origin: {type: string, enum: [detector, manual, plex], description: "plex marks Plex's own marker offered as a suggestion that comparing episodes did not confirm; it is never eligible until the owner approves that exact range"}
         reason_code: {type: string}
         reason: {type: string}
         evidence_ids: {type: array, items: {type: string}}
@@ -356,6 +383,23 @@ components:
         status: {type: string}
         progress: {type: number}
         created_at: {type: string}
+        message: {type: string, nullable: true, description: A plain sentence when the job failed or was cancelled}
+        media_version_ids: {type: array, items: {type: string}, description: The episodes an analysis job was asked to analyze}
+        outcome:
+          type: object
+          nullable: true
+          description: What a finished analysis ended with, in plain sentences
+          properties:
+            state: {type: string, enum: [found, suggested, nothing_found, failed, cancelled], description: "found = Reprise confirmed ranges to review; suggested = only Plex's markers, none confirmed"}
+            message: {type: string}
+            per_media:
+              type: array
+              items:
+                type: object
+                properties:
+                  id: {type: string}
+                  state: {type: string, enum: [found, suggested, nothing_found, failed, cancelled]}
+                  message: {type: string}
     ClientCreate:
       type: object
       additionalProperties: false

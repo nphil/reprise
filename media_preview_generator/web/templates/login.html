@@ -1,135 +1,52 @@
-<!DOCTYPE html>
-<html lang="en" data-bs-theme="dark">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Login - Reprise</title>
+{% extends "_auth_page.html" %}
 
-    <!-- Apply saved theme before CSS loads to avoid a flash of the wrong
-         theme. Mirrors the pre-paint script in base.html so the login page
-         respects the same localStorage.theme preference. -->
-    <script>
-        (function () {
-            try {
-                var saved = localStorage.getItem('theme');
-                if (saved === 'light' || saved === 'dark') {
-                    document.documentElement.setAttribute('data-bs-theme', saved);
-                }
-            } catch (e) { /* localStorage blocked — stay on the default */ }
-        })();
-    </script>
+{% block title %}Sign in · Reprise{% endblock %}
+{% block heading %}Sign in to Reprise{% endblock %}
+{% block lede %}Skip the repeat. Keep the story.{% endblock %}
 
-    <!-- Bootstrap 5 CSS -->
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN" crossorigin="anonymous">
-    <!-- Bootstrap Icons -->
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet" integrity="sha256-u2/YzYU5TLNn6KxY5HKS8taOsoj6Evq2jmVDCl3fzkg=" crossorigin="anonymous">
+{% block body %}
+{% if account_unreadable %}
+<div class="rp-message error" role="alert"><strong>Reprise can't read its account file.</strong> <code>auth.json</code> in its config folder exists but can't be opened, so nobody can sign in yet. Check its permissions (did PUID or PGID change?), or start over with the reset command below.</div>
+{% elif setup_closed %}
+<div class="rp-message error" role="alert"><strong>Setup is already done.</strong> Sign in with the account that was made. Nothing was changed.</div>
+{% elif rate_limited %}
+<div class="rp-message error" role="alert"><strong>Too many attempts.</strong> Wait a minute, then try again.</div>
+{% elif page_expired %}
+<div class="rp-message error" role="alert"><strong>This page expired.</strong> Sign in again. If this keeps happening, allow cookies for this site.</div>
+{% elif error %}
+<div class="rp-message error" role="alert"><strong>That username or password isn't right.</strong> Check them and try again.</div>
+{% endif %}
 
-    <!-- Design tokens + global styles so the login screen inherits the
-         same panel surface, focus rings, and form-control styling as the
-         rest of the app. login.css adds page-specific layout on top. -->
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/login.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/reprise-tokens.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/reprise-login.css') }}">
-    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/reprise.svg') }}">
-</head>
-<body>
-    <main class="form-signin w-100 m-auto">
-        <div class="card login-card">
-            <div class="card-body p-4">
-                <div class="logo-container">
-                    <img class="login-logo" src="{{ url_for('static', filename='images/reprise.svg') }}" alt="" width="44" height="44">
-                    <h1>Reprise</h1>
-                    <p class="text-muted mb-0">Enter your token to continue</p>
-                </div>
+<form method="post" action="{{ url_for('main.login') }}" class="auth-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
-                {% if rate_limited %}
-                <div class="alert alert-warning" role="alert">
-                    <i class="bi bi-hourglass-split" aria-hidden="true"></i>
-                    <div>
-                        <div class="fw-semibold">Too many attempts.</div>
-                        <div class="small">Wait a minute, then try again.</div>
-                    </div>
-                </div>
-                {% elif page_expired %}
-                <div class="alert alert-warning" role="alert">
-                    <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
-                    <div>
-                        <div class="fw-semibold">This sign-in page expired.</div>
-                        <div class="small">Enter your token again. If this keeps happening, allow cookies for this site.</div>
-                    </div>
-                </div>
-                {% elif error %}
-                <div class="alert alert-danger" role="alert">
-                    <i class="bi bi-exclamation-triangle" aria-hidden="true"></i>
-                    <div>
-                        <div class="fw-semibold">That token didn&rsquo;t work.</div>
-                        <div class="small">Check the token in your config volume or the configured WEB_AUTH_TOKEN, then try again.</div>
-                    </div>
-                </div>
-                {% endif %}
+    <label for="username">Username
+        <input id="username" name="username" type="text" value="{{ username or '' }}" required maxlength="64"
+               autocomplete="username" autocapitalize="none" spellcheck="false"{% if not username %} autofocus{% endif %}{% if error %} aria-invalid="true"{% endif %}>
+    </label>
 
-                <form method="POST" action="{{ url_for('main.login') }}">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-                    <label class="login-label" for="token">Authentication token</label>
-                    <div class="login-token-group">
-                        <i class="bi bi-key" aria-hidden="true"></i>
-                        <input type="password" id="token" name="token" required autofocus
-                               autocomplete="current-password" aria-describedby="loginTokenHelp"{% if error %} aria-invalid="true"{% endif %}>
-                        <button type="button" class="login-reveal" id="tokenReveal" aria-label="Show token"
-                                aria-pressed="false" title="Show token">
-                            <i class="bi bi-eye" aria-hidden="true"></i>
-                        </button>
-                    </div>
+    <label for="password">Password
+        <span class="auth-secret">
+            <input id="password" name="password" type="password" required maxlength="256"
+                   autocomplete="current-password"{% if username %} autofocus{% endif %}{% if error %} aria-invalid="true"{% endif %}>
+            <button type="button" class="auth-reveal" data-reveal="password" aria-pressed="false">Show</button>
+        </span>
+    </label>
 
-                    <button class="btn btn-lg btn-primary w-100 login-submit" type="submit">
-                        <i class="bi bi-box-arrow-in-right me-2"></i>Sign In
-                    </button>
-                </form>
+    <label class="rp-toggle"><input type="checkbox" name="remember" value="1" checked> Keep me signed in on this device</label>
 
-                <details class="login-help" id="loginTokenHelp"{% if error or rate_limited %} open{% endif %}>
-                    <summary>
-                        <i class="bi bi-question-circle" aria-hidden="true"></i>
-                        <span>How do I find my token?</span>
-                        <i class="bi bi-chevron-down login-chevron" aria-hidden="true"></i>
-                    </summary>
-                    <div class="login-help-body">
-                        <ul>
-                            <li>Check <code>/config/auth.json</code> in your config volume.</li>
-                            <li>Or run <code>docker logs &lt;container&gt;</code> for the file path.</li>
-                            <li>Or set <code>WEB_AUTH_TOKEN</code> in your environment / docker-compose.</li>
-                        </ul>
-                        <p class="login-help-sub">First time?</p>
-                        <p>
-                            A random token was generated on first startup and saved to
-                            <code>/config/auth.json</code> inside the container. This maps to
-                            whichever host path you mounted as <code>/config</code>.
-                        </p>
-                        <p>To use your own password instead, add this to your <code>docker-compose.yml</code>, then restart the container:</p>
-                        <pre class="login-help-snippet">environment:
-  - WEB_AUTH_TOKEN=your-password</pre>
-                    </div>
-                </details>
-            </div>
-        </div>
-    </main>
-    <script>
-        // The token field stays a password input by default; the eye button only reveals it while the user asks.
-        (function () {
-            var input = document.getElementById('token');
-            var btn = document.getElementById('tokenReveal');
-            if (!input || !btn) return;
-            btn.addEventListener('click', function () {
-                var show = input.type === 'password';
-                var label = show ? 'Hide token' : 'Show token';
-                input.type = show ? 'text' : 'password';
-                btn.setAttribute('aria-pressed', show ? 'true' : 'false');
-                btn.setAttribute('aria-label', label);
-                btn.title = label;
-                btn.firstElementChild.className = show ? 'bi bi-eye-slash' : 'bi bi-eye';
-                input.focus();
-            });
-        })();
-    </script>
-</body>
-</html>
+    <button type="submit" class="rp-btn primary auth-submit">Sign in</button>
+</form>
+
+<details class="auth-help"{% if error or rate_limited or account_unreadable %} open{% endif %}>
+    <summary>Forgot your password?</summary>
+    <div class="auth-help-body">
+        <p>There's no email reset: only someone with access to this server can get you back in. Open the container's console (on Unraid: Docker tab, the Reprise icon, <b>Console</b>) and run one of these:</p>
+        <p class="auth-code-label">Choose a new password for the same account</p>
+        <pre class="auth-code"><code>python3 -m media_preview_generator.web.account_cli reset-password</code></pre>
+        <p class="auth-code-label">Start over, with a new username too</p>
+        <pre class="auth-code"><code>python3 -m media_preview_generator.web.account_cli reset-account</code></pre>
+        <p class="rp-note">Both take effect straight away and sign every browser out. Your webhook secret, servers and results are not touched. Without a console, deleting <code>auth.json</code> from Reprise's config folder does the same as the second one.</p>
+    </div>
+</details>
+{% endblock %}

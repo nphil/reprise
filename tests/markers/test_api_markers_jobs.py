@@ -190,8 +190,9 @@ def test_intro_credits_routes_need_a_csrf_token_only_from_a_browser_session(app,
     client = app.test_client()
     headers = _api_headers()
     if auth == "session":
-        with client.session_transaction() as sess:
-            sess["authenticated"] = True
+        from tests.auth_helpers import sign_in
+
+        sign_in(client)
         headers = {"Content-Type": "application/json"}
     resp = client.post(url, json={"libraries": []}, headers=headers)
     body = resp.get_data(as_text=True)

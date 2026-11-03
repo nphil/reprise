@@ -821,6 +821,20 @@
         });
     }
 
+    // The older Intro & Credits detector runs only for servers that have it switched on. With none on, its buttons
+    // would queue a job that checks nothing, so the page points to Reprise's own analysis in Library instead. When the
+    // file's servers could not be read the answer is unknown: the old retry stays and Library is offered beside it.
+    function legacyDetectionOff() {
+        return !!state.item && !servers().some(function (s) { return s.markers_enabled; });
+    }
+
+    function libraryLink(className) {
+        const link = el('a', className, 'Analyze in Library');
+        link.id = 'inspAnalyzeInLibrary';
+        link.href = '/reprise' + (state.titleHint ? '?search=' + encodeURIComponent(state.titleHint) : '');
+        return link;
+    }
+
     function isChecked() {
         return !!(state.item && state.item.known && Object.values(state.item.decisions || {}).some(function (d) { return d && d.status; }));
     }
@@ -1037,9 +1051,11 @@
     function actions() {
         const list = [];
         list.push(actionButton('arrow-clockwise', 'Regenerate preview', 'btn insp-btn', regenerate, TIPS.regenerate, 'inspRegenerate'));
+        if (legacyDetectionOff()) { list.push(libraryLink('btn insp-btn-primary')); return list; }
         const analysed = !!(state.item && state.item.known && state.item.duration_ms);
         if (!isChecked()) {
             list.push(actionButton('', 'Check intro & credits now', 'btn insp-btn-primary', redetect, TIPS.redetect, 'inspRedetect'));
+            if (!state.item) list.push(libraryLink('btn insp-btn'));
             return list;
         }
         list.push(actionButton('search', 'Re-detect intro & credits', 'btn insp-btn', redetect, TIPS.redetect, 'inspRedetect'));
@@ -3055,6 +3071,14 @@
     }
 
     function notCheckedCard() {
+        if (legacyDetectionOff()) {
+            const note = el('div', 'insp-card insp-notchecked');
+            note.id = 'inspNotChecked';
+            note.append(cardTitle('insp-card-heading', 'Intro and credits are found in Library', 'search-heart'),
+                el('div', 'insp-notchecked-text', 'The older Intro & Credits detector is switched off for your servers, so it has nothing to check here. Reprise finds intros and credits by comparing an episode with the other episodes of its season, and you review the result in Library.'),
+                libraryLink('btn insp-btn-primary align-self-start'));
+            return note;
+        }
         const card = el('div', 'insp-card insp-notchecked');
         card.id = 'inspNotChecked';
         const b = button('Check intro & credits now', 'btn insp-btn-primary align-self-start', redetect);

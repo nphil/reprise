@@ -1,10 +1,12 @@
 """
-Tests for the settings, setup wizard, Plex server/PIN, auth-token and worker-status API routes.
+Tests for the settings, setup wizard, Plex server/PIN, API-credential and worker-status API routes.
 """
 
 import json
 
 import pytest
+
+from tests.auth_helpers import sign_in
 
 
 @pytest.fixture
@@ -338,6 +340,15 @@ class TestAuthRequired:
         response = client.get("/api/settings", headers={"X-Auth-Token": "invalid-token-12345"})
         assert response.status_code == 401
 
+    def test_signed_in_browser_is_accepted_without_the_webhook_secret(self, client):
+        """A browser signed in as the owner needs no X-Auth-Token header."""
+        sign_in(client)
+
+        response = client.get("/api/settings")
+
+        assert response.status_code == 200
+        assert "gpu_threads" in response.get_json()
+
 
 class TestJobLogsAndWorkers:
     """Tests for job logs and worker status endpoints."""
@@ -373,197 +384,4 @@ class TestJobLogsAndWorkers:
     def test_workers_requires_auth(self, client):
         """Test that workers endpoint requires authentication."""
         response = client.get("/api/jobs/workers")
-        assert response.status_code == 401
-
-
-class TestAuthTokenFunctions:
-    """Tests for authentication token management functions."""
-
-    def test_is_token_env_controlled_false(self, mock_auth_config, monkeypatch):
-        """Test is_token_env_controlled returns False when env var is not set."""
-        monkeypatch.delenv("WEB_AUTH_TOKEN", raising=False)
-        from media_preview_generator.web.auth import is_token_env_controlled
-
-        assert is_token_env_controlled() is False
-
-    def test_is_token_env_controlled_true(self, mock_auth_config, monkeypatch):
-        """Test is_token_env_controlled returns True when env var is set."""
-        monkeypatch.setenv("WEB_AUTH_TOKEN", "env-token-value")
-        from media_preview_generator.web.auth import is_token_env_controlled
-
-        assert is_token_env_controlled() is True
-
-    def test_set_auth_token_success(self, mock_auth_config, monkeypatch):
-        """Test setting a valid token succeeds."""
-        monkeypatch.delenv("WEB_AUTH_TOKEN", raising=False)
-        from media_preview_generator.web.auth import get_auth_token, set_auth_token
-
-        result = set_auth_token("my-new-secure-token")
-        assert result["success"] is True
-        assert get_auth_token() == "my-new-secure-token"
-
-    def test_set_auth_token_too_short(self, mock_auth_config, monkeypatch):
-        """Test setting a token that's too short fails."""
-        monkeypatch.delenv("WEB_AUTH_TOKEN", raising=False)
-        from media_preview_generator.web.auth import set_auth_token
-
-        result = set_auth_token("short")
-        assert result["success"] is False
-        assert "at least 8 characters" in result["error"]
-
-    def test_set_auth_token_env_locked(self, mock_auth_config, monkeypatch):
-        """Test setting token fails when WEB_AUTH_TOKEN env var is set."""
-        monkeypatch.setenv("WEB_AUTH_TOKEN", "env-controlled-token")
-        from media_preview_generator.web.auth import set_auth_token
-
-        result = set_auth_token("my-new-token-123")
-        assert result["success"] is False
-        assert "environment variable" in result["error"]
-
-    def test_set_auth_token_rejects_same_as_current(self, mock_auth_config, monkeypatch):
-        """Setup wizard step 5 forces a NEW token away from the auto-generated
-        one printed in Docker logs. The server enforces that by refusing to
-        save a token equal to the current one."""
-        monkeypatch.delenv("WEB_AUTH_TOKEN", raising=False)
-        from media_preview_generator.web.auth import get_auth_token, set_auth_token
-
-        current = get_auth_token()
-        result = set_auth_token(current)
-        assert result["success"] is False
-        assert "different from the current" in result["error"]
-
-    def test_get_token_info_structure(self, mock_auth_config, monkeypatch):
-        """``get_token_info`` returns a well-shaped dict AND the values are right.
-
-        Types are asserted, and the token must be masked (last 4 visible, the rest ``*``).
-        """
-        monkeypatch.delenv("WEB_AUTH_TOKEN", raising=False)
-        from media_preview_generator.web.auth import get_token_info
-
-        info = get_token_info()
-        # Shape assertions
-        assert isinstance(info["env_controlled"], bool), (
-            f"env_controlled must be bool, got {type(info['env_controlled']).__name__}"
-        )
-        assert isinstance(info["token"], str)
-        assert isinstance(info["token_length"], int)
-        assert info["env_controlled"] is False
-        assert info["source"] == "config"
-        # Token must be masked — never expose more than the last 4 chars.
-        assert info["token"].startswith("*"), f"token leaked unmasked: {info['token']!r}"
-        assert info["token_length"] >= 8, "auto-generated tokens are at least 8 chars"
-
-    def test_get_token_info_env_source(self, mock_auth_config, monkeypatch):
-        """Test get_token_info returns environment source when env var set."""
-        monkeypatch.setenv("WEB_AUTH_TOKEN", "env-token-12345")
-        from media_preview_generator.web.auth import get_token_info
-
-        info = get_token_info()
-        assert info["env_controlled"] is True
-        assert info["source"] == "environment"
-        # Token should be masked — only last 4 chars visible
-        assert info["token"] == "****2345"
-
-
-class TestTokenAPIEndpoints:
-    """Tests for token management API endpoints."""
-
-    def test_setup_token_info_endpoint(self, client, auth_headers):
-        """Test GET /api/setup/token-info returns token information.
-
-        Pin actual values, not just key presence. The fixture's auth token
-        is config-managed (no WEB_AUTH_TOKEN env var), so:
-        - ``env_controlled`` is False
-        - ``source`` is "config"
-        - ``token`` is masked (starts with "****")
-        - ``token_length`` matches the auto-generated token length
-
-        A regression that flipped ``env_controlled`` to True (or leaked the
-        raw token) would have passed the original key-presence assertion.
-        """
-        response = client.get("/api/setup/token-info", headers=auth_headers)
-
-        assert response.status_code == 200
-        data = json.loads(response.data)
-        assert data["env_controlled"] is False, "no WEB_AUTH_TOKEN env -> not env-controlled"
-        assert data["source"] == "config", "fixture stores token in auth.json -> config source"
-        assert isinstance(data["token"], str)
-        assert data["token"].startswith("****"), f"token must be masked, got {data['token']!r}"
-        assert isinstance(data["token_length"], int)
-        assert data["token_length"] >= 8, "auto-generated tokens are at least 8 chars"
-        # Auth method is also part of the contract — pin it so a regression
-        # that drops the field is caught.
-        assert "auth_method" in data
-
-    def test_setup_token_info_requires_auth(self, client):
-        """Test token-info endpoint requires authentication."""
-        response = client.get("/api/setup/token-info")
-        assert response.status_code == 401
-
-    def test_setup_set_token_success(self, client, auth_headers, monkeypatch):
-        """Test POST /api/setup/set-token with valid data succeeds.
-
-        Round-trip the saved token: ``success=True`` from the POST proves the
-        request was accepted, but only re-reading via ``get_auth_token``
-        proves the token actually replaced the previous one. A regression
-        that returned success without persisting would slip past the
-        original assertion.
-        """
-        monkeypatch.delenv("WEB_AUTH_TOKEN", raising=False)
-        from media_preview_generator.web.auth import get_auth_token
-
-        new_token = "my-new-password-123"
-        response = client.post(
-            "/api/setup/set-token",
-            headers={**auth_headers, "Content-Type": "application/json"},
-            data=json.dumps({"token": new_token, "confirm_token": new_token}),
-        )
-
-        assert response.status_code == 200
-        data = json.loads(response.data)
-        assert data["success"] is True
-
-        # The token must actually be persisted — read it back.
-        assert get_auth_token() == new_token, (
-            f"set-token returned success but did not persist: "
-            f"sent {new_token!r}, get_auth_token returned {get_auth_token()!r}"
-        )
-
-    def test_setup_set_token_mismatch(self, client, auth_headers, monkeypatch):
-        """Test set-token fails when tokens don't match."""
-        monkeypatch.delenv("WEB_AUTH_TOKEN", raising=False)
-
-        response = client.post(
-            "/api/setup/set-token",
-            headers={**auth_headers, "Content-Type": "application/json"},
-            data=json.dumps({"token": "password-one-123", "confirm_token": "password-two-456"}),
-        )
-
-        assert response.status_code == 400
-        data = json.loads(response.data)
-        assert data["success"] is False
-        assert "match" in data["error"].lower()
-
-    def test_setup_set_token_too_short(self, client, auth_headers, monkeypatch):
-        """Test set-token fails when token is too short."""
-        monkeypatch.delenv("WEB_AUTH_TOKEN", raising=False)
-
-        response = client.post(
-            "/api/setup/set-token",
-            headers={**auth_headers, "Content-Type": "application/json"},
-            data=json.dumps({"token": "short", "confirm_token": "short"}),
-        )
-
-        assert response.status_code == 400
-        data = json.loads(response.data)
-        assert data["success"] is False
-        assert "8 characters" in data["error"]
-
-    def test_setup_set_token_requires_auth(self, client):
-        """Test set-token endpoint requires authentication."""
-        response = client.post(
-            "/api/setup/set-token",
-            headers={"Content-Type": "application/json"},
-            data=json.dumps({"token": "test12345", "confirm_token": "test12345"}),
-        )
         assert response.status_code == 401

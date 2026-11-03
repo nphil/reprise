@@ -105,13 +105,33 @@ def test_hard_links_are_not_independent_references(catalog, tmp_path):
     assert not admit_references(target, [candidate], store)
 
 
-def test_deduplicate_episodes_before_six_reference_limit(catalog):
+def test_deduplicate_episodes_before_the_three_reference_limit(catalog):
     store, register = catalog
     target, _, _ = register("target", 1)
     alternatives = [register(f"alternate-{i}", 2)[0] for i in range(8)]
     others = [register(f"episode-{i}", i)[0] for i in range(3, 9)]
     result = admitted(store, target, alternatives + others)
-    assert result == [alternatives[0], *others[:5]]
+    assert result == [alternatives[0], *others[:2]]
+
+
+def test_the_three_nearest_episodes_are_used_in_a_stable_order(catalog):
+    store, register = catalog
+    target, _, _ = register("target", 5)
+    by_episode = {n: register(f"episode-{n}", n)[0] for n in (1, 2, 3, 4, 6, 7, 9, 10, 12)}
+    # as near as an episode can be (the same number), but of another season, so never a reference
+    next_season = register("next-season", 5, season=2)[0]
+    candidates = [*by_episode.values(), next_season]
+    # distance 1: episodes 4 and 6 (the lower number first on a tie); then distance 2: episodes 3 and 7 (3 first)
+    expected = [by_episode[4], by_episode[6], by_episode[3]]
+    assert admitted(store, target, candidates) == expected
+    assert admitted(store, target, candidates[::-1]) == expected
+
+
+def test_fewer_than_three_other_episodes_are_all_used_nearest_first(catalog):
+    store, register = catalog
+    target, _, _ = register("target", 4)
+    far, near = register("far", 9)[0], register("near", 3)[0]
+    assert admitted(store, target, [far, near]) == [near, far]
 
 
 def test_reference_binding_change_changes_snapshot(catalog):

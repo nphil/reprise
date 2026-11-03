@@ -1,0 +1,44 @@
+{% extends "_auth_page.html" %}
+
+{% block title %}Welcome · Reprise{% endblock %}
+{% block heading %}Welcome to Reprise{% endblock %}
+{% block lede %}Create the account you'll sign in with. It's the only one, and it stays on this server.{% endblock %}
+
+{% block body %}
+{% if rate_limited %}
+<div class="rp-message error" role="alert"><strong>Too many attempts.</strong> Wait a minute, then try again.</div>
+{% elif page_expired %}
+<div class="rp-message error" role="alert"><strong>This page expired.</strong> Fill it in again. If this keeps happening, allow cookies for this site.</div>
+{% elif error %}
+<div class="rp-message error" role="alert" id="authError">{{ error }}</div>
+{% endif %}
+
+<form method="post" action="{{ url_for('main.first_run') }}" class="auth-form" data-auth-form="create" novalidate>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    <label for="username">Username
+        <input id="username" name="username" type="text" value="{{ username or '' }}" required maxlength="64"
+               autocomplete="username" autocapitalize="none" spellcheck="false" autofocus>
+    </label>
+
+    <label for="password">Password
+        <span class="auth-secret">
+            <input id="password" name="password" type="password" required minlength="8" maxlength="256"
+                   autocomplete="new-password" aria-describedby="passwordHint">
+            <button type="button" class="auth-reveal" data-reveal="password confirm_password" aria-pressed="false">Show</button>
+        </span>
+    </label>
+    <p class="rp-note auth-hint" id="passwordHint">At least 8 characters. A short phrase you'll remember works well.</p>
+
+    <label for="confirm_password">Type the password again
+        <input id="confirm_password" name="confirm_password" type="password" required maxlength="256"
+               autocomplete="new-password">
+    </label>
+
+    <div class="rp-message error" role="alert" id="authClientError" hidden></div>
+
+    <button type="submit" class="rp-btn primary auth-submit">Create account</button>
+</form>
+
+<p class="rp-note auth-foot">Forgot it later? The sign-in page explains how to get back in. Your webhooks and other connections are not affected.</p>
+{% endblock %}

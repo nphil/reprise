@@ -52,6 +52,21 @@ jobs:
               echo 'Nonfree FFmpeg configuration must not be published' >&2
               exit 1
             fi
+            for flag in --enable-ffnvcodec --enable-cuda --enable-cuvid --enable-nvdec --enable-vaapi; do
+              printf '%s\n' "$buildconf" | grep -E -- "^[[:space:]]*${flag}[[:space:]]*$" \
+                || { echo "FFmpeg was not configured with $flag" >&2; exit 1; }
+            done
+          hwaccels="$(docker run --rm --network none --entrypoint /usr/local/bin/ffmpeg "$CANDIDATE_IMAGE" -hide_banner -hwaccels 2>&1)"
+            printf '%s\n' "$hwaccels"
+            for accel in cuda vaapi; do
+              printf '%s\n' "$hwaccels" | grep -x -- "$accel" \
+                || { echo "FFmpeg does not list the $accel hardware accelerator" >&2; exit 1; }
+            done
+          for kind in decoders filters; do
+            docker run --rm --network none --entrypoint /usr/local/bin/ffmpeg "$CANDIDATE_IMAGE" -hide_banner "-$kind" > "ffmpeg-$kind.txt" 2>&1
+          done
+            for name in h264_cuvid hevc_cuvid; do grep -E "[[:space:]]${name}[[:space:]]" ffmpeg-decoders.txt >/dev/null || { echo "Missing decoder $name" >&2; exit 1; }; done
+            for name in scale_cuda scale_vaapi hwupload_cuda hwdownload; do grep -E "[[:space:]]${name}[[:space:]]" ffmpeg-filters.txt >/dev/null || { echo "Missing filter $name" >&2; exit 1; }; done
           docker run --rm -i --network none --entrypoint python3 "$CANDIDATE_IMAGE" - <<'PY'
           from pathlib import Path
 
@@ -73,10 +88,10 @@ jobs:
                        'runtime-library-notices/owners.tsv', 'ffmpeg/COPYING.GPLv2',
                        'ffmpeg/COPYING.GPLv3', 'ffmpeg/COPYING.LGPLv2.1',
                        'ffmpeg/COPYING.LGPLv3', 'ffmpeg/LICENSE.md', 'x264/COPYING',
-                       'chromaprint/copyright', 'zimg/copyright'):
+                       'chromaprint/copyright', 'zimg/copyright', 'nv-codec-headers/copyright'):
               require_file(source / name)
           require_glob(source / 'ffmpeg', 'ffmpeg-*.tar.xz')
-          for package in ('x264', 'chromaprint', 'zimg'):
+          for package in ('x264', 'chromaprint', 'zimg', 'nv-codec-headers'):
               require_glob(source / package, '*.dsc')
               require_glob(source / package, '*.tar.*')
           notices = source / 'runtime-library-notices'
@@ -85,6 +100,10 @@ jobs:
               if len(fields) < 4 or not fields[3]:
                   raise SystemExit(f'Invalid library owner record: {line!r}')
               require_file(notices / (fields[3].split(':', 1)[0] + '.copyright'))
+          owned = {line.split('\t')[0] for line in (notices / 'owners.tsv').read_text().splitlines()}
+          for soname in ('libva.so.2', 'libva-drm.so.2'):
+              if soname not in owned:
+                  raise SystemExit(f'Missing library notice for {soname}')
           require_glob(loudness, 'ffmpeg-*.tar.xz')
           for name in ('ebur128.patch', 'COPYING.LGPLv2.1'):
               require_file(loudness / name)

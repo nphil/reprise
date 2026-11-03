@@ -15,6 +15,7 @@ import pytest
 from media_preview_generator.inspector import previews
 from media_preview_generator.servers.plex import PlexServer
 from media_preview_generator.web.settings_manager import get_settings_manager
+from tests.auth_helpers import sign_in
 from tests.conftest import CTIME_ONLY_CHANGES, change_ctime_only
 from tests.test_api_inspector import (  # noqa: F401 - shared route fixtures
     _emby_entry,
@@ -224,8 +225,7 @@ def test_unauthenticated_or_outside_library_never_queries_plex(client, authed_cl
     with client.session_transaction() as session:
         session.clear()
     assert client.get("/api/inspector/file", query_string={"path": film}).status_code == 401
-    with client.session_transaction() as session:
-        session["authenticated"] = True
+    sign_in(client)
     assert client.get("/api/inspector/file", query_string={"path": "/etc/passwd"}).status_code == 400
     assert _read(client, str(media / "other" / "loose.mkv")) == []
     native.query.assert_not_called()

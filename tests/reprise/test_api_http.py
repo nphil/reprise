@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from threading import Thread
 
@@ -11,7 +12,7 @@ from flask import Flask
 from werkzeug.serving import make_server
 
 from media_preview_generator.markers.store import MarkerStore
-from media_preview_generator.reprise.service import RepriseService
+from media_preview_generator.reprise.service import CHANGED_ON_DISK, RepriseService
 from media_preview_generator.reprise.store import RepriseStore
 from media_preview_generator.servers.registry import ServerRegistry
 from media_preview_generator.web.routes.api_reprise import create_reprise_blueprint
@@ -67,7 +68,8 @@ def test_probe_over_http_against_real_store(tmp_path):
         markers.close()
 
 
-def test_verified_stream_ranges_and_replaced_media(tmp_path, monkeypatch):
+def registered_episode(tmp_path, monkeypatch):
+    """One tiny registered episode behind the real blueprint, service and database."""
     from media_preview_generator.reprise.identity import media_version
     from media_preview_generator.reprise.models import PlaybackIdentity
     from media_preview_generator.reprise.service import _mapping_fingerprint
@@ -102,7 +104,11 @@ def test_verified_stream_ranges_and_replaced_media(tmp_path, monkeypatch):
     app = Flask(__name__)
     app.secret_key = "throwaway"
     app.register_blueprint(create_reprise_blueprint(RepriseService(store, registry, None)))
-    client = app.test_client()
+    return app.test_client(), version, path, markers
+
+
+def test_verified_stream_ranges_and_replaced_media(tmp_path, monkeypatch):
+    client, version, path, markers = registered_episode(tmp_path, monkeypatch)
     url = "/api/reprise/media/" + version.id + "/stream"
     assert client.get(url).data == b"0123456789"
     partial = client.get(url, headers={"Range": "bytes=2-5"})
@@ -112,4 +118,20 @@ def test_verified_stream_ranges_and_replaced_media(tmp_path, monkeypatch):
     assert client.get(url, headers={"Range": "bytes=99-"}).status_code == 416
     path.write_bytes(b"replacement")
     assert client.get(url).status_code == 404
+    markers.close()
+
+
+def test_permission_change_does_not_stop_playback(tmp_path, monkeypatch):
+    client, version, path, markers = registered_episode(tmp_path, monkeypatch)
+    time.sleep(0.02)
+    os.chmod(path, 0o600)  # moves only the change time, as a permissions or hard-link pass does
+    assert client.get("/api/reprise/media/" + version.id + "/stream").data == b"0123456789"
+    markers.close()
+
+
+def test_analysis_of_a_changed_file_is_refused_with_a_plain_sentence(tmp_path, monkeypatch):
+    client, version, path, markers = registered_episode(tmp_path, monkeypatch)
+    path.write_bytes(b"replacement")
+    answer = client.post("/api/reprise/analyses", json={"media_version_ids": [version.id]})
+    assert (answer.status_code, answer.get_json()) == (409, {"error": CHANGED_ON_DISK})
     markers.close()

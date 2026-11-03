@@ -18,7 +18,6 @@ from ._mocks import (
     mock_servers_test_connection,
     mock_settings_get,
     mock_setup_status,
-    mock_setup_token_info,
     mock_system_status,
 )
 
@@ -30,7 +29,6 @@ class TestEmbyInline:
         mock_setup_status(wizard_page, complete=False)
         mock_settings_get(wizard_page)
         mock_system_status(wizard_page)
-        mock_setup_token_info(wizard_page, env_controlled=False)
         mock_emby_password_auth(wizard_page, ok=True)
         mock_servers_test_connection(wizard_page, ok=True, server_name="Test Emby")
         captured = capture_servers_save(wizard_page, vendor="emby")
@@ -77,7 +75,6 @@ class TestJellyfinInline:
         mock_setup_status(wizard_page, complete=False)
         mock_settings_get(wizard_page)
         mock_system_status(wizard_page)
-        mock_setup_token_info(wizard_page, env_controlled=False)
         mock_jellyfin_quick_connect(wizard_page, code="ABC123", poll_attempts_until_authenticated=1)
         mock_servers_test_connection(wizard_page, ok=True, server_name="Test Jellyfin")
         captured = capture_servers_save(wizard_page, vendor="jellyfin")

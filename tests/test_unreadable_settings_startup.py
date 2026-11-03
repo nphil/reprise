@@ -37,8 +37,8 @@ def _isolated_auth(tmp_path, monkeypatch):
 
 
 def _assert_sign_in_required(client):
-    body = {"token": "attacker-token-1234", "confirm_token": "attacker-token-1234"}
-    resp = client.post("/api/setup/set-token", data=json.dumps(body), content_type="application/json")
+    body = {"current_password": "attacker-password-1", "new_password": "attacker-password-2"}
+    resp = client.post("/api/account/password", data=json.dumps(body), content_type="application/json")
     assert resp.status_code == 401
     assert client.get("/api/settings").status_code == 401
     assert client.get("/api/jobs").status_code == 401

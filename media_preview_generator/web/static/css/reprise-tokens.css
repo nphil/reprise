@@ -1,3 +1,20 @@
 @font-face{font-family:Manrope;src:url('../fonts/manrope-latin.woff2') format('woff2');font-style:normal;font-weight:200 800;font-display:swap}
-:root{--lu-canvas:#191724;--lu-sheet:#1f1d2e;--lu-glass:#26233a;--lu-edge:#ffffff33;--lu-ink:#f2eff6;--lu-ink-2:#d4cfdf;--lu-accent:#a79bf5;--lu-accent-ink:#17131f;--lu-positive:#9ccfd8;--lu-warning:#f6c177;--lu-danger:#eb6f92;--lu-radius-card:16px;--lu-radius-control:10px;--lu-space-2:8px;--lu-space-4:16px;--lu-space-6:24px;--lu-target:44px;--lu-font:Manrope,system-ui,sans-serif}
-:root[data-bs-theme=light]{--lu-canvas:#faf4ed;--lu-sheet:#fffaf3;--lu-glass:#f2e9e1;--lu-edge:#57527950;--lu-ink:#17131f;--lu-ink-2:#575279;--lu-accent:#907aa9;--lu-accent-ink:#fff;--lu-positive:#286983;--lu-warning:#865a11;--lu-danger:#9c3e5a}
+/* Reprise's single token layer: Lucent v2 structure + Rosé Pine roles (dark by default, Dawn for light).
+   Every page, including the inherited upstream pages, reads these through reprise-shell.css. */
+:root{color-scheme:dark;
+--lu-canvas:#191724;--lu-sheet:#1f1d2e;--lu-glass:#26233a;--lu-edge:#ffffff33;--lu-edge-soft:#ffffff1f;
+--lu-ink:#f2eff6;--lu-ink-2:#d4cfdf;--lu-ink-3:#aaa4bd;
+--lu-accent:#a79bf5;--lu-accent-text:#a79bf5;--lu-accent-ink:#17131f;--lu-accent-wash:#a79bf529;
+--lu-positive:#9ccfd8;--lu-warning:#f6c177;--lu-danger:#eb6f92;--lu-info:#c4a7e7;
+--lu-hover-wash:#ffffff14;--lu-selected-wash:#a79bf51f;--lu-scrim:#120e1acc;
+--lu-radius-card:16px;--lu-radius-control:10px;--lu-radius-row:12px;--lu-radius-pill:999px;
+--lu-space-1:4px;--lu-space-2:8px;--lu-space-3:12px;--lu-space-4:16px;--lu-space-5:20px;--lu-space-6:24px;--lu-space-7:32px;
+--lu-target:44px;--lu-font:Manrope,system-ui,sans-serif;
+--lu-shadow-raised:0 12px 32px #0a0710a6,0 2px 8px #0a07108c}
+:root[data-bs-theme=light]{color-scheme:light;
+--lu-canvas:#faf4ed;--lu-sheet:#fffaf3;--lu-glass:#f2e9e1;--lu-edge:#57527950;--lu-edge-soft:#57527933;
+--lu-ink:#17131f;--lu-ink-2:#575279;--lu-ink-3:#5f5b7a;
+--lu-accent:#907aa9;--lu-accent-text:#5b4a7d;--lu-accent-ink:#17131f;--lu-accent-wash:#907aa933;
+--lu-positive:#286983;--lu-warning:#7a500f;--lu-danger:#9c3e5a;--lu-info:#6d5a9a;
+--lu-hover-wash:#17131f0d;--lu-selected-wash:#907aa933;--lu-scrim:#17131f66;
+--lu-shadow-raised:0 12px 32px #57527940,0 2px 8px #57527926}

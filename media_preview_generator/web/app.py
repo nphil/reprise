@@ -22,7 +22,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from ..job_kinds import JOB_KIND_INTRO_CREDITS, JOB_KIND_LOUDNESS, JOB_KIND_PREVIEWS, JOB_KIND_REPRISE
 from ..nodes.protocol import APP_INSTANCE_HEADER
 from ..shutdown import on_shutdown
-from .auth import log_token_on_startup
+from .auth import initialize_auth, install_auth_hooks
 from .jobs import JobStatus, get_job_manager
 from .scheduler import get_schedule_manager
 
@@ -250,6 +250,9 @@ def _prewarm_caches() -> None:
 
             gpus = _ensure_gpu_cache()
             logger.debug("GPU cache pre-warmed")
+            from ..reprise import acceleration
+
+            acceleration.warm()  # checks each detected GPU's decode against the CPU's, in the background
             from ..gpu.vulkan_check import log_vulkan_warnings
             from .routes.api_vulkan import _diagnose_vulkan_environment
 
@@ -692,6 +695,8 @@ def _install_csrf_protection(app: Flask) -> None:
             return jsonify({"error": "Authentication required"}), 401
         if request.endpoint == "main.login":
             return render_template("login.html", page_expired=True), 400
+        if request.endpoint == "main.first_run":
+            return render_template("welcome.html", page_expired=True), 400
         if request.endpoint == "main.logout":
             # A Logout button on a page older than this session: the confirm page carries a fresh token.
             return redirect(url_for("main.logout"))
@@ -738,6 +743,9 @@ def create_app(config_dir: str | None = None) -> Flask:
     app.config["SESSION_COOKIE_SECURE"] = https_secure
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    # Cookies belong to a host, not a port: another Flask app on this machine also calls its cookie "session" and each
+    # one's cookie would replace the other's, signing both out at random. A name of its own keeps them apart.
+    app.config["SESSION_COOKIE_NAME"] = "reprise_session"
     app.config["CONFIG_DIR"] = config_dir
     # Identifies this running app to Add node, which refuses its own address (protocol.APP_INSTANCE_HEADER).
     app.config["APP_INSTANCE_ID"] = secrets.token_hex(8)
@@ -891,6 +899,7 @@ def create_app(config_dir: str | None = None) -> Flask:
     _load_history_from_disk()
 
     _install_csrf_protection(app)
+    install_auth_hooks(app)
 
     # Initialize rate limiter with app
     limiter.init_app(app)
@@ -906,6 +915,8 @@ def create_app(config_dir: str | None = None) -> Flask:
                 render_template("login.html", rate_limited=True),
                 429,
             )
+        if request.endpoint == "main.first_run":
+            return render_template("welcome.html", rate_limited=True), 429
         return e, 429
 
     # Register SocketIO handlers
@@ -924,19 +935,21 @@ def create_app(config_dir: str | None = None) -> Flask:
         exempt_endpoints = [
             "static",
             "main.login",
+            "main.first_run",
             "main.logout",
             "main.setup_wizard",
-            # Auth endpoints
+            # Auth endpoints (the tour's state is saved the same way before and after the setup wizard)
             "api.auth_status",
             "api.api_login",
+            "api.api_logout",
+            "api.get_onboarding",
+            "api.set_onboarding",
             "api.health_check",
             # Setup wizard endpoints
             "api.get_setup_status",
             "api.get_setup_state",
             "api.save_setup_state",
             "api.complete_setup",
-            "api.get_setup_token_info",
-            "api.set_setup_token",
             "api.validate_paths",
             # Skip-setup is the wizard's escape hatch — has to work for
             # both unauthed (typical fresh install) AND authed users
@@ -1034,8 +1047,8 @@ def create_app(config_dir: str | None = None) -> Flask:
 
     _start_node_registry()
 
-    # Log token on startup
-    log_token_on_startup()
+    # Carry the old sign-in token over to the webhook secret, then log how to sign in.
+    initialize_auth()
 
     # Re-arm Timers for retry-chain Jobs that were mid-backoff at restart.
     # Must run AFTER settings/config are accessible (load_config + registry
