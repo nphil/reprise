@@ -242,6 +242,21 @@ def _prewarm_caches() -> None:
     reads a populated cache. The probe result is module-level and
     idempotent, so subsequent calls from HTTP endpoints are no-ops.
     """
+
+    def _any_server_writes_thumbnails() -> bool:
+        from ..servers.registry import server_config_from_dict
+        from .settings_manager import get_settings_manager
+
+        for entry in get_settings_manager().get("media_servers") or []:
+            if not isinstance(entry, dict) or entry.get("enabled") is False:
+                continue
+            try:
+                if server_config_from_dict(entry).preview_thumbnails_on:
+                    return True
+            except Exception:
+                return True  # can't tell: keep the warning
+        return False
+
     import threading
 
     def _warm_gpu() -> None:
@@ -253,10 +268,13 @@ def _prewarm_caches() -> None:
             from ..reprise import acceleration
 
             acceleration.warm()  # checks each detected GPU's decode against the CPU's, in the background
-            from ..gpu.vulkan_check import log_vulkan_warnings
-            from .routes.api_vulkan import _diagnose_vulkan_environment
+            # Vulkan only serves the Dolby Vision tone mapping of preview thumbnails; analysis never uses it, so
+            # the per-GPU warning is noise unless some enabled server still writes thumbnails.
+            if _any_server_writes_thumbnails():
+                from ..gpu.vulkan_check import log_vulkan_warnings
+                from .routes.api_vulkan import _diagnose_vulkan_environment
 
-            log_vulkan_warnings(gpus, _diagnose_vulkan_environment)
+                log_vulkan_warnings(gpus, _diagnose_vulkan_environment)
         except Exception as exc:
             logger.debug("GPU cache pre-warm failed (non-fatal): {}", exc)
 
