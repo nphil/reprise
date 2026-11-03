@@ -1208,7 +1208,7 @@ class TestDetectAllGPUsEdgeCases:
     @pytest.mark.parametrize(
         ("mode", "where"),
         [
-            ("", "Settings → Processing Options → GPU device tuning"),
+            ("", "Settings → Advanced → GPU device tuning"),
             ("node", "this node's Overview tab on the app's Nodes page"),
         ],
     )

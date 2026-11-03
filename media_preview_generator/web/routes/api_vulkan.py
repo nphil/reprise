@@ -404,7 +404,7 @@ def _get_vulkan_info() -> dict:
                 "Dolby Vision Profile 5 warning: your NVIDIA driver looks correctly installed in this "
                 "container ({!r}, all toolkit checks pass), but the Vulkan loader still rejected it. "
                 "This is rare — please open a GitHub issue and include the diagnostic bundle from "
-                "Settings → Processing Options → GPU device tuning ('Copy diagnostic bundle', or GET "
+                "Settings → Advanced → GPU device tuning ('Copy diagnostic bundle', or GET "
                 "/api/system/vulkan/debug). "
                 "Until then, Dolby Vision Profile 5 thumbnails have the wrong colours (no tone mapping); "
                 "all other thumbnails are unaffected.",

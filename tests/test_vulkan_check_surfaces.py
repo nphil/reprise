@@ -255,7 +255,7 @@ class TestProbeWarnings:
             messages = self._warnings(vulkan_probe.get_vulkan_device_info)
         _reset_vulkan_device_cache()
         assert len(messages) == 1
-        assert "Settings → Processing Options → GPU device tuning" in messages[0]
+        assert "Settings → Advanced → GPU device tuning" in messages[0]
         assert "Settings → System" not in messages[0]
 
     @pytest.mark.parametrize(("nvidia_files", "expected"), [(True, True), (False, False)])
@@ -273,4 +273,4 @@ class TestProbeWarnings:
             messages = self._warnings(real_probe_vulkan_device)
         text = next(m for m in messages if "couldn't be detected" in m)
         assert ("NVIDIA-specific fixes" in text) is expected
-        assert "Settings → Processing Options → GPU device tuning" in text
+        assert "Settings → Advanced → GPU device tuning" in text

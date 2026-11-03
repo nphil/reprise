@@ -879,6 +879,7 @@ class TestPrewarmCaches:
             patch(
                 "media_preview_generator.web.routes._helpers._ensure_gpu_cache",
             ) as mock_gpu,
+            patch("media_preview_generator.reprise.acceleration.warm"),
         ):
             create_app(config_dir=config_dir)
             # Wait for the daemon threads spawned by _prewarm_caches.
@@ -901,7 +902,8 @@ class TestPrewarmCaches:
         return_value={"current_version": "1.0.0"},
     )
     @patch("media_preview_generator.web.routes._helpers._ensure_gpu_cache")
-    def test_prewarm_calls_gpu_and_version(self, mock_gpu, mock_version, mock_vulkan):
+    @patch("media_preview_generator.reprise.acceleration.warm")
+    def test_prewarm_calls_gpu_and_version(self, mock_warm, mock_gpu, mock_version, mock_vulkan):
         """_prewarm_caches starts threads for GPU and version caches."""
         import threading
 
@@ -916,6 +918,7 @@ class TestPrewarmCaches:
 
         mock_gpu.assert_called_once()
         mock_version.assert_called_once()
+        mock_warm.assert_called_once()
 
 
 class TestNoAutomaticMarkerJobsOnStart:

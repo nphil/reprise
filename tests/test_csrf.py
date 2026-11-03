@@ -200,7 +200,8 @@ class TestAccountAndSecretRoutes:
             {"current_password": OWNER_PASSWORD, "new_password": "a brand new password"},
             id="change-the-password",
         ),
-        pytest.param("/api/account/onboarding", {"state": "dismissed"}, id="dismiss-the-tour"),
+        # The signed-in fixture has already dismissed the tour, so finishing it is the change that shows.
+        pytest.param("/api/account/onboarding", {"state": "completed"}, id="finish-the-tour"),
     ]
 
     @staticmethod

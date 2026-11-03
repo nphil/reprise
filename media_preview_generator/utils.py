@@ -215,7 +215,7 @@ def scratch_dir() -> str:
 
 def gpu_settings_hint() -> str:
     """Where a GPU is turned off: the app's GPU settings, or for a node's GPUs, the app's worker groups."""
-    return "the app's Settings → Workers" if is_node_mode() else "Settings → Processing Options → GPU device tuning"
+    return "the app's Settings → Workers" if is_node_mode() else "Settings → Advanced → GPU device tuning"
 
 
 def cpu_workers_hint() -> str:
@@ -227,7 +227,7 @@ def gpu_details_hint() -> str:
     """Where each GPU's test result is shown."""
     if is_node_mode():
         return "this node's Overview tab on the app's Nodes page"
-    return "Settings → Processing Options → GPU device tuning"
+    return "Settings → Advanced → GPU device tuning"
 
 
 def log_viewer_hint() -> str:

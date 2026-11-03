@@ -243,12 +243,12 @@ def verify_login(username: object, password: object) -> bool:
     supplied_ok = isinstance(username, str) and isinstance(password, str) and len(password) <= MAX_PASSWORD_LENGTH
     password_ok = check_password_hash(
         account["password_hash"] if account else _dummy_password_hash(),
-        password if supplied_ok else "",
+        password if isinstance(password, str) and supplied_ok else "",
     )
-    if not (account and supplied_ok and password_ok):
+    if not (account and supplied_ok and password_ok and isinstance(username, str)):
         return False
     wanted = unicodedata.normalize("NFC", account["username"]).casefold().encode()
-    given = unicodedata.normalize("NFC", username.strip()).casefold().encode()  # type: ignore[union-attr]  # supplied_ok
+    given = unicodedata.normalize("NFC", username.strip()).casefold().encode()
     return hmac.compare_digest(wanted, given)
 
 
@@ -375,7 +375,7 @@ def is_authenticated() -> bool:
         return False
     epoch = session_epoch()
     given = session.get("epoch")
-    return bool(epoch) and isinstance(given, str) and hmac.compare_digest(epoch.encode(), given.encode())
+    return bool(epoch and isinstance(given, str) and hmac.compare_digest(epoch.encode(), given.encode()))
 
 
 def start_signed_in_session(*, remember: bool = True) -> None:

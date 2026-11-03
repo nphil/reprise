@@ -479,7 +479,7 @@ def _build_gpu_keeps_failing_notifications() -> list[dict[str, Any]]:
     for state in get_gpu_fallback_tracker().flagged():
         node_id = _gpu_streak_node_id(state.key)
         if node_id is None:
-            todo = "Check the GPU driver, and the GPU in Settings → Processing Options → GPU device tuning."
+            todo = "Check the GPU driver, and the GPU in Settings → Advanced → GPU device tuning."
         else:
             todo = f"Check the GPU driver on {_node_name(node_id)}, then Rescan GPUs on its Nodes page."
         body = (

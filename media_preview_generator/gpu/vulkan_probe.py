@@ -122,7 +122,7 @@ _NODE_VULKAN_HELP = (
 )
 
 _DASHBOARD_VULKAN_HELP = (
-    "Settings → Processing Options → GPU device tuning in the dashboard says why "
+    "Settings → Advanced → GPU device tuning in the dashboard says why "
     "each GPU can't use Vulkan and has a 'Copy diagnostic bundle' button ({size} bytes captured) for a GitHub issue."
 )
 

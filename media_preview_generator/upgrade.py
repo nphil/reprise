@@ -713,7 +713,7 @@ def _migrate_to_v2(sm) -> list:
             logger.warning(
                 "Old GPU settings (gpu_threads={!r}, ffmpeg_threads={!r}) aren't valid numbers — "
                 "they can't be migrated to the new per-GPU layout. Defaulting to 0 GPU workers + 2 ffmpeg threads. "
-                "Open Settings → Processing Options → GPU device tuning and configure your devices manually.",
+                "Open Settings → Advanced → GPU device tuning and configure your devices manually.",
                 old_threads_val,
                 sm.get("ffmpeg_threads"),
             )
@@ -2093,7 +2093,7 @@ def _build_gpu_config_from_env() -> list[dict[str, Any]] | None:
         logger.warning(
             "The legacy GPU_THREADS ({!r}) or FFMPEG_THREADS ({!r}) environment variable wasn't a valid number. "
             "Falling back to defaults (1 GPU worker, 2 ffmpeg threads). "
-            "Open Settings → Processing Options → GPU device tuning after startup and configure the values you actually want.",
+            "Open Settings → Advanced → GPU device tuning after startup and configure the values you actually want.",
             gpu_threads_str,
             ffmpeg_threads_str,
         )

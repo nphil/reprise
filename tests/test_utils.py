@@ -376,9 +376,9 @@ class TestNodeHints:
     """A node logs the app's GPU, FFmpeg and logging lines, but has none of the app's screens."""
 
     APP = {
-        "gpu_settings_hint": "Settings → Processing Options → GPU device tuning",
+        "gpu_settings_hint": "Settings → Advanced → GPU device tuning",
         "cpu_workers_hint": "Settings → Workers",
-        "gpu_details_hint": "Settings → Processing Options → GPU device tuning",
+        "gpu_details_hint": "Settings → Advanced → GPU device tuning",
         "log_viewer_hint": "the live web log viewer",
         "working_folder_hint": ("the working folder", "mount a bigger, writable disk at the container's temp folder"),
         "debug_logging_hint": "enable Debug logging (Settings → Logging)",
@@ -443,7 +443,7 @@ class TestNodeHints:
         monkeypatch.delenv("MODE", raising=False)
 
         assert "under Settings → Workers." in generator.gpu_fallback_advice(generator.FALLBACK_CODEC)
-        assert "under Settings → Processing Options → GPU device tuning." in generator.gpu_fallback_advice(
+        assert "under Settings → Advanced → GPU device tuning." in generator.gpu_fallback_advice(
             generator.FALLBACK_HWACCEL
         )
 

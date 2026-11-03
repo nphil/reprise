@@ -319,7 +319,7 @@ def incoming_job_priority() -> int:
     defaults to :data:`PRIORITY_HIGH` (issue #285) so a freshly imported
     episode overtakes a running full-library regeneration instead of
     queueing behind its remaining ~100k items. Users who prefer the old
-    behaviour set it to Normal under Settings → Processing Options →
+    behaviour set it to Normal under Settings → Advanced →
     Job Execution → Incoming job priority.
 
     Returns:
