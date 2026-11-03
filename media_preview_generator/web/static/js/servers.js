@@ -2208,11 +2208,12 @@
         }
 
         // Preview thumbnails switch: stored only when off, so servers saved before it existed stay on.
+        // The output object is sent only when there is something to say about it.
         {
             const output = {...(payload.output || server.output || {})};
             if ($('#editPreviewThumbnails').checked) delete output.preview_thumbnails;
             else output.preview_thumbnails = false;
-            payload.output = output;
+            if (payload.output || Object.keys(output).length) payload.output = output;
         }
 
         // Plex: turning Intro & Credits on needs the database-write confirmation (asked when the switch was
