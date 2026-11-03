@@ -16,6 +16,7 @@ CANDIDATE = PROFILE_SPEC["candidate"]
 VIDEO = PROFILE_SPEC["video"]
 AUDIO = PROFILE_SPEC["audio"]
 ANCHORS = PROFILE_SPEC["anchors"]
+SOUND = PROFILE_SPEC["sound_offset"]
 COLOR_FIELDS = tuple(PROFILE_SPEC["metadata"]["color_fields"])
 CHANGE_GUARD_MS = PROFILE_SPEC["support"]["guard_ms"]
 MIN_RUN_MS = PROFILE_SPEC["support"]["minimum_run_ms"]
@@ -91,7 +92,48 @@ def perceptual_shifts(target, reference):
     return [p[len(p) // 2][1] for p in valid[: CANDIDATE["maximum_offsets"]]]
 
 
-def anchor(target, reference, lo, hi, offset):
+def sound_lag(target, reference, nearest, block):
+    """The whole-sample lag at which the longer ``reference`` PCM best contains ``target`` (both samples x channels),
+    as ``(lag, score)``. The target is cut into blocks of ``block`` samples (a shorter last block is dropped unless
+    it is the only one); each block's normalised cross-correlation (every channel as one signal) is taken over every
+    lag the reference allows, and the block with the highest peak decides: a probe that straddles shared and unshared
+    sound still has blocks wholly inside the shared part. Among that block's scores within the profile's tie of its
+    peak, the lag nearest ``nearest`` (the lag the picture predicts) wins. ``None`` when nothing audible can be
+    correlated. A lag is a proposal, never support."""
+    x, y = np.asarray(target, dtype=np.float64), np.asarray(reference, dtype=np.float64)
+    if x.ndim != 2 or y.shape[1:] != x.shape[1:] or len(x) == 0 or len(y) < len(x) or block <= 0:
+        raise ValueError("Malformed sound probe")
+    lags = len(y) - len(x) + 1
+    floor = AUDIO["denominator_floor"]
+    best = None
+    for start in range(0, len(x), block):
+        xs = x[start : start + block]
+        if len(xs) < block and start:
+            break
+        ys = y[start : start + len(xs) + lags - 1]
+        energy = float(np.sum(xs * xs))
+        squares = np.concatenate(([0.0], np.cumsum(np.sum(ys * ys, axis=1))))
+        windows = squares[len(xs) : len(xs) + lags] - squares[:lags]
+        audible = windows > floor
+        if energy <= floor or not audible.any():
+            continue
+        size = 1 << (len(ys) - 1).bit_length()
+        spectrum = np.zeros(size // 2 + 1, dtype=np.complex128)
+        for channel in range(x.shape[1]):
+            spectrum += np.fft.rfft(ys[:, channel], size) * np.conj(np.fft.rfft(xs[:, channel], size))
+        correlation = np.fft.irfft(spectrum, size)[:lags]
+        scores = np.where(audible, correlation / np.sqrt(np.maximum(windows, floor) * energy), -1.0)
+        peak = float(scores.max())
+        if best is None or peak > best[0]:
+            candidates = np.flatnonzero(scores >= peak - SOUND["tie"])
+            lag = int(candidates[np.argmin(np.abs(candidates - nearest))])
+            best = (peak, lag)
+    return None if best is None else (best[1], best[0])
+
+
+def agreeing_frames(target, reference, lo, hi, offset):
+    """The target hints in [lo, hi) whose descriptor agrees with the reference's at exactly ``offset``, as (pts,
+    descriptor). Agreement places anchors and the sound probe; it is never support."""
     mapped = {t: (feature, std) for t, feature, std in reference}
     points = []
     for t, feature, std in target:
@@ -104,6 +146,11 @@ def anchor(target, reference, lo, hi, offset):
             and np.mean((feature - ref[0]) ** 2) <= CANDIDATE["descriptor_mse"]
         ):
             points.append((t, feature))
+    return points
+
+
+def anchor(target, reference, lo, hi, offset):
+    points = agreeing_frames(target, reference, lo, hi, offset)
     if len(points) < ANCHORS["minimum_total_frames"]:
         return None
 
@@ -164,13 +211,21 @@ def _local_max(data, size):
     return worst
 
 
-def _signed_local(data, size):
+def _integral(data):
+    """Inclusive float64 prefix sums with a zero row and column, shared by every signed tile size."""
+    h, w = data.shape
+    integral = np.zeros((h + 1, w + 1), dtype=np.float64)
+    np.cumsum(data, axis=0, dtype=np.float64, out=integral[1:, 1:])
+    np.cumsum(integral[1:, 1:], axis=1, out=integral[1:, 1:])
+    return integral
+
+
+def _signed_local(data, size, integral):
     h, w = data.shape
     if h < size or w < size:
         return float(abs(data.mean()))
     ys = np.unique(np.r_[np.arange(0, h - size + 1, size // 2), h - size])
     xs = np.unique(np.r_[np.arange(0, w - size + 1, size // 2), w - size])
-    integral = np.pad(data.cumsum(0, dtype=np.float64).cumsum(1), ((1, 0), (1, 0)))
     sums = (
         integral[(ys + size)[:, None], xs + size]
         - integral[ys[:, None], xs + size]
@@ -203,9 +258,10 @@ def video_metrics(left, right):
         maxima["concentration8"] = max(
             maxima["concentration8"], _local_max((absolute > VIDEO["concentration_level"]).astype(np.float32), 8)
         )
+        integral = _integral(residual)
         for size in (8, 16, 32):
             key = "signed" + str(size)
-            maxima[key] = max(maxima[key], _signed_local(residual, size))
+            maxima[key] = max(maxima[key], _signed_local(residual, size, integral))
     return maxima
 
 

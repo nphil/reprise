@@ -479,8 +479,16 @@ def _native_audit(media, stream, start, end, cancel, pause, threads, ffmpeg_path
     )
 
 
-def _bounded_log_lines(pipe, total_limit=16 * 1024 * 1024):
-    """Read records with bounded lines and an optional total byte cap."""
+# A showinfo line carrying the hex payload of a frame's H.264/HEVC user-data SEI. Some encodes write one per frame
+# (a 4.7 KB x264 SEI on every frame of one Blu-ray rip: 15 MB over a 97-s window), and the reader ignores them, so
+# they do not count towards the diagnostics cap; every other line does, and every line keeps the per-line bound.
+_SEI_PAYLOAD = re.compile(rb"^\[Parsed_showinfo_\d+ @ [^\]]+\] \[info\] (?:UUID=|User Data=)")
+
+
+def _bounded_log_lines(pipe, total_limit=16 * 1024 * 1024, *, uncounted=None):
+    """Read records with bounded lines and an optional total byte cap. Lines ``uncounted`` accepts are not charged
+    to the cap (they still may not exceed the per-line bound), so a known, ignorable per-frame payload cannot trip
+    it while a runaway diagnostic stream still does."""
     buffer = bytearray()
     total = 0
     while True:
@@ -489,9 +497,6 @@ def _bounded_log_lines(pipe, total_limit=16 * 1024 * 1024):
             if buffer:
                 raise DecodeError("Truncated decoder diagnostic record")
             return
-        total += len(chunk)
-        if total_limit is not None and total > total_limit:
-            raise DecodeError("Decoder diagnostics exceed resource limit")
         buffer.extend(chunk)
         while True:
             index = buffer.find(b"\n")
@@ -501,8 +506,13 @@ def _bounded_log_lines(pipe, total_limit=16 * 1024 * 1024):
                 break
             if index > 65536:
                 raise DecodeError("Decoder diagnostic line exceeds resource limit")
-            yield bytes(buffer[:index])
+            line = bytes(buffer[:index])
             del buffer[: index + 1]
+            if uncounted is None or not uncounted(line):
+                total += index + 1
+                if total_limit is not None and total > total_limit:
+                    raise DecodeError("Decoder diagnostics exceed resource limit")
+            yield line
 
 
 class NativeFrameReader:
@@ -652,7 +662,7 @@ class NativeFrameReader:
         pending = {}
         side_data = {"0": False, "2": False}
         try:
-            for raw in _bounded_log_lines(self.proc.stderr):
+            for raw in _bounded_log_lines(self.proc.stderr, uncounted=_SEI_PAYLOAD.match):
                 if self.stop.is_set():
                     return
                 line = raw.decode("utf-8", "replace")

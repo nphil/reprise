@@ -12,17 +12,34 @@ from media_preview_generator.reprise.identity import media_version
 from media_preview_generator.reprise.models import CandidateWindow, PlaybackIdentity
 from media_preview_generator.reprise.store import RepriseStore
 
+CHIRP = "0.3*sin(2*PI*(200*t+13*t*t))"  # aperiodic, so its sound lines up at exactly one lag
 
-def make_video(path: Path, picture=None, changed_audio=False, filters=None, audio_filters=None):
+
+def chirp(expression=CHIRP):
+    return f"aevalsrc={expression}:s=48000:d=7"
+
+
+def make_video(
+    path: Path,
+    picture=None,
+    changed_audio=False,
+    filters=None,
+    audio_filters=None,
+    sound=None,
+    source=None,
+    layout="mono",
+):
     vf = filters or (
         "null"
         if picture is None
         else f"drawbox=x=0:y=0:w=40:h=40:color=red:t=fill:enable='between(t,{picture[0]},{picture[1]})'"
     )
-    if changed_audio:
-        sound = r"aevalsrc=if(between(t\,2.2\,2.3)\,0.3*sin(2*PI*900*t)\,0.3*sin(2*PI*440*t)):s=48000:d=7"
-    else:
-        sound = "aevalsrc=0.3*sin(2*PI*440*t):s=48000:d=7"
+    if not sound:
+        sound = (
+            r"aevalsrc=if(between(t\,2.2\,2.3)\,0.3*sin(2*PI*900*t)\,0.3*sin(2*PI*440*t)):s=48000:d=7"
+            if changed_audio
+            else "aevalsrc=0.3*sin(2*PI*440*t):s=48000:d=7"
+        )
     subprocess.run(
         [
             "ffmpeg",
@@ -34,7 +51,7 @@ def make_video(path: Path, picture=None, changed_audio=False, filters=None, audi
             "-f",
             "lavfi",
             "-i",
-            "testsrc2=size=96x64:rate=10:duration=7",
+            source or "testsrc2=size=96x64:rate=10:duration=7",
             "-f",
             "lavfi",
             "-i",
@@ -57,7 +74,7 @@ def make_video(path: Path, picture=None, changed_audio=False, filters=None, audi
             "-c:a",
             "flac",
             "-channel_layout",
-            "mono",
+            layout,
             "-threads",
             "1",
             "-y",
@@ -423,3 +440,126 @@ def test_a_plex_marker_is_still_offered_when_the_episode_cannot_be_compared(tmp_
     # with no Plex marker the same failure is still a failure: there is nothing to offer instead
     guess = [CandidateWindow("intro", 1000, 6000, "opening-window")]
     assert analyze_windows(target, guess, catalog, [reference]).status == "failed"
+
+
+def matches(result):
+    return [e for e in result.evidence if e.verdict == "match"]
+
+
+@pytest.mark.parametrize(
+    "delayed,shift_ms,confirmed",
+    [("target", 162, True), ("reference", 162, True), ("target", 400, False)],
+)
+def test_sound_out_of_step_with_the_picture_is_found_within_the_search_window_and_refused_beyond_it(
+    tmp_path, catalog, delayed, shift_ms, confirmed
+):
+    from fractions import Fraction
+
+    delay = f"adelay={shift_ms}:all=1"
+    reference = make_video(
+        tmp_path / "reference.mkv", sound=chirp(), audio_filters=delay if delayed == "reference" else None
+    )
+    target = make_video(tmp_path / "target.mkv", sound=chirp(), audio_filters=delay if delayed == "target" else None)
+    result = run(target, reference, catalog)
+    assert result.status == "complete", result.reasons
+    if not confirmed:
+        assert not skips(result) and not matches(result), result.ranges
+        assert any(reason.startswith("Compared with 1 other episode") for reason in result.reasons)
+        return
+    assert overlaps(3000, 4000, skips(result)), result.reasons
+    expected = Fraction(shift_ms if delayed == "reference" else -shift_ms)
+    assert matches(result)
+    for evidence in matches(result):
+        assert evidence.metrics["reference_offset_ms"] == 0.0
+        assert evidence.metrics["sound_offset_ms"] == float(expected)
+        assert evidence.metrics["sound_offset_rational_ms"] == str(expected)
+
+
+def test_a_unique_scene_stays_protected_at_a_found_sound_offset(tmp_path, catalog):
+    reference = make_video(tmp_path / "reference.mkv", sound=chirp())
+    unique = rf"if(between(t\,3\,4)\,0.3*sin(2*PI*(900*t+40*t*t))\,{CHIRP})"
+    target = make_video(tmp_path / "target.mkv", sound=chirp(unique), audio_filters="adelay=162:all=1")
+    result = run(target, reference, catalog)
+    assert result.status == "complete", result.reasons
+    assert skips(result), result.reasons
+    assert not overlaps(3162, 4162, skips(result))  # the scene plays 162 ms later in the target
+    assert all(e.metrics["sound_offset_ms"] == -162.0 for e in matches(result))
+
+
+def test_a_different_sound_is_never_confirmed_whatever_the_picture_says(tmp_path, catalog):
+    reference = make_video(tmp_path / "reference.mkv", sound=chirp())
+    target = make_video(tmp_path / "target.mkv", sound=chirp("0.3*sin(2*PI*(300*t+9*t*t))"))
+    result = run(target, reference, catalog)
+    assert result.status == "complete", result.reasons
+    assert not skips(result) and not matches(result), result.ranges
+
+
+def test_checking_the_picture_only_where_the_sound_matched_changes_nothing(tmp_path, catalog, monkeypatch):
+    from media_preview_generator.reprise import analysis
+
+    reference = make_video(tmp_path / "reference.mkv", sound=chirp())
+    # the sound is the same only between 2.5 s and 4.5 s: the picture check is narrowed to that stretch
+    partial = rf"if(between(t\,2.5\,4.5)\,{CHIRP}\,0.3*sin(2*PI*(300*t+9*t*t)))"
+    target = make_video(tmp_path / "target.mkv", sound=chirp(partial))
+    spans = []
+    original = analysis._picture_span
+
+    def recording(hints, lo, hi, audio):
+        spans.append(original(hints, lo, hi, audio))
+        return spans[-1]
+
+    monkeypatch.setattr(analysis, "_picture_span", recording)
+    narrowed = run(target, reference, catalog)
+    assert narrowed.status == "complete" and skips(narrowed), narrowed.reasons
+    assert spans and all(2000 <= float(lo) and float(hi) <= 5000 for lo, hi in spans), spans
+    monkeypatch.setattr(analysis, "_picture_span", lambda hints, lo, hi, audio: (lo, hi))
+    whole = run(target, reference, catalog)
+    assert (whole.ranges, whole.evidence) == (narrowed.ranges, narrowed.evidence)
+
+
+def surround(lfe, centre=CHIRP):
+    """A 5.1 track: the chirp on every main channel (the centre as given) and ``lfe`` on the subwoofer channel."""
+    return f"aevalsrc={CHIRP}|{CHIRP}|{centre}|{lfe}|{CHIRP}|{CHIRP}:c=5.1:s=48000:d=7"
+
+
+def test_a_difference_only_in_the_subwoofer_channel_never_vetoes_but_a_main_channel_does(tmp_path, catalog):
+    reference = make_video(tmp_path / "reference.mkv", sound=surround("0.3*sin(2*PI*40*t)"), layout="5.1")
+    target = make_video(tmp_path / "target.mkv", sound=surround("0.3*sin(2*PI*55*t+1)"), layout="5.1")
+    result = run(target, reference, catalog)
+    assert result.status == "complete", result.reasons
+    assert overlaps(3000, 4000, skips(result)), result.reasons
+    assert matches(result)
+    for evidence in matches(result):
+        assert evidence.metrics["checked_channels"] == {"123": ["FL", "FR", "FC", "BL", "BR"]}
+    centre = make_video(
+        tmp_path / "centre.mkv",
+        sound=surround("0.3*sin(2*PI*40*t)", centre="0.3*sin(2*PI*(300*t+9*t*t))"),
+        layout="5.1",
+    )
+    refused = run(centre, reference, catalog)
+    assert refused.status == "complete", refused.reasons
+    assert not skips(refused) and not matches(refused), refused.ranges
+
+
+@pytest.mark.parametrize(
+    "shared,suggested",
+    [((2.5, 4.5), True), ((2.0, 5.5), False)],  # about a quarter of the marker is confirmed, then well over half
+)
+def test_a_plex_marker_stays_a_suggestion_unless_half_of_it_is_confirmed(tmp_path, catalog, shared, suggested):
+    reference = make_video(tmp_path / "reference.mkv", sound=chirp())
+    partial = rf"if(between(t\,{shared[0]}\,{shared[1]})\,{CHIRP}\,0.3*sin(2*PI*(300*t+9*t*t)))"
+    target = make_video(tmp_path / "target.mkv", sound=chirp(partial))
+    result = analyze_windows(target, [CandidateWindow("intro", 1000, 6000, "plex")], catalog, [reference])
+    assert result.status == "complete", result.reasons
+    plex = [r for r in result.ranges if r.origin == "plex"]
+    if suggested:
+        assert [(r.kind, r.start_ms, r.end_ms, r.review_status) for r in plex] == [("intro", 1000, 6000, "proposed")]
+        assert all(r.origin == "plex" for r in result.ranges)
+        assert not matches(result)  # the confirmed fragment is dropped, not proposed on its own
+        assert any("confirmed only" in reason and "less than half" in reason for reason in result.reasons)
+        assert not any(reason.startswith("Compared with 1 other episode") for reason in result.reasons)
+    else:
+        assert not plex
+        assert overlaps(3000, 4000, skips(result)), result.reasons
+        assert [r.kind for r in result.ranges if r.action == "keep"]  # the unconfirmed ends stay protected
+        assert not any("Plex suggested" in reason for reason in result.reasons)

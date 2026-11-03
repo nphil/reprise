@@ -956,6 +956,38 @@ def test_bounded_diagnostic_line_and_audit_stderr(tmp_path):
         run(command, lambda: False, lambda: False, reject_stderr=True)
 
 
+def test_per_frame_sei_payload_does_not_count_towards_the_diagnostics_cap_but_diagnostics_do(tmp_path):
+    """One real Blu-ray rip carries a 4.7 KB user-data SEI on every frame; showinfo prints its hex and the reader
+    ignores it, so it must not exhaust the cap. The same volume of anything else still must, and a single
+    oversized payload line still trips the per-line bound."""
+    import sys
+
+    from media_preview_generator.reprise.media import _SEI_PAYLOAD, _bounded_log_lines
+
+    payload = b"[Parsed_showinfo_1 @ 0x1486bc003280] [info] User Data=" + b"78" * 2350
+    other = b"[Parsed_showinfo_1 @ 0x1486bc003280] [info] n:1 pts:42 " + b"x" * 4700
+    frames = 3600  # about 17 MB of each kind
+    script = f"import sys\nsys.stdout.buffer.write((sys.argv[1].encode() + b'\\n') * {frames})\n"
+    pipe_limit = 16 * 1024 * 1024
+
+    def lines(kind):
+        proc = subprocess.Popen(
+            [sys.executable, "-c", script, kind.decode()], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+        )
+        try:
+            return list(_bounded_log_lines(proc.stdout, pipe_limit, uncounted=_SEI_PAYLOAD.match))
+        finally:
+            proc.kill()
+            proc.wait()
+            proc.stdout.close()
+
+    assert len(lines(payload)) == frames
+    with pytest.raises(DecodeError, match="exceed resource limit"):
+        lines(other)
+    with pytest.raises(DecodeError, match="line exceeds"):
+        lines(payload[:60] + b"78" * 40000)
+
+
 def test_missing_complete_metadata_pair_times_out_and_reaps(tmp_path, monkeypatch):
     import sys
     import time

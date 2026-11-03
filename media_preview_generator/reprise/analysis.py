@@ -2,6 +2,10 @@
 
 Unknown metadata is not guessed. Qualified native-code-signal matches are not
 certification of rendered appearance or of arbitrarily small semantic changes.
+
+The picture and the sound of two files are never assumed to share one offset: the
+picture votes propose an offset, the sound is searched for its own within a bounded
+window around it, and each is then verified strictly at its own offset.
 """
 
 from __future__ import annotations
@@ -28,12 +32,19 @@ from .models import (
 )
 from .verification_profile import PROFILE_FINGERPRINT, PROFILE_ID, PROFILE_SPEC
 
-_VerifiedRun = tuple[int, int, MediaVersion, Fraction, list[str], dict]
-_LedgerKey = tuple[str, str, str | None, str | None]
+# A verified run: target start and end, the reference, its picture offset, the unspecified colour fields, the native
+# anchors, the sound offset (both offsets are reference time minus target time, in ms) and the channels compared.
+_VerifiedRun = tuple[int, int, MediaVersion, Fraction, list[str], dict, Fraction, dict]
+_LedgerKey = tuple[str, str, str | None, str | None, str | None]
 
 MAX_CANDIDATE_MS = PROFILE_SPEC["candidate"]["max_ms"]
 REFERENCE_RADIUS_MS = PROFILE_SPEC["candidate"]["reference_radius_ms"]
 CONTEXT_MS = PROFILE_SPEC["candidate"]["context_ms"]
+SOUND_SEARCH_MS = PROFILE_SPEC["sound_offset"]["search_ms"]
+SOUND_PROBE_MS = PROFILE_SPEC["sound_offset"]["probe_ms"]
+SOUND_BLOCK_MS = PROFILE_SPEC["sound_offset"]["block_ms"]
+SOUND_CORRELATION = PROFILE_SPEC["sound_offset"]["correlation"]
+LFE_CHANNELS = frozenset(PROFILE_SPEC["audio"]["lfe_channels"])
 WARNING = (
     "Codec-tolerant native-code-signal recurrence under matching declarations; "
     "not certified rendered equivalence. Unspecified interpretation and sufficiently small semantic differences are not established."
@@ -80,6 +91,13 @@ PLEX_SUGGESTION_TEXT = "Suggested by Plex — not confirmed by Reprise."
 PLEX_EVIDENCE_TEXT = "Plex has a marker here, but comparing episodes did not confirm it."
 NOT_CONFIRMED = "Reprise could not confirm it by comparing episodes."
 TOO_LONG_TO_COMPARE = f"It is longer than the {MAX_CANDIDATE_MS // 60000} minutes Reprise can compare."
+PLEX_CONFIRMED_SHARE = Fraction(PROFILE_SPEC["candidate"]["plex_confirmed_share"])
+
+
+def _confirmed_only(covered_ms):
+    seconds = max(1, round(covered_ms / 1000))
+    span = "1 second" if seconds == 1 else f"{seconds} seconds"
+    return f"Comparing episodes confirmed only {span} of it, less than half, so that part is not proposed on its own."
 
 
 def _clock(ms):
@@ -122,8 +140,11 @@ def _plex_suggestion(media, window, tracks):
         "profile_fingerprint": PROFILE_FINGERPRINT,
         "candidate_source": window.source,
         "checked_audio_stream_ids": [],
+        "checked_channels": {},
         "reference_offset_ms": None,
         "reference_offset_rational_ms": None,
+        "sound_offset_ms": None,
+        "sound_offset_rational_ms": None,
         "unspecified_interpretation_fields": [],
         "claim": "Plex's own marker; not confirmed by comparing episodes",
         "admission_provenance": None,
@@ -249,7 +270,6 @@ def _video_support(
 ):
     """Stage locally; either decoder's final failure invalidates all support."""
     points = []
-    tolerance = Fraction(PROFILE_SPEC["video"]["pair_tolerance_ms"])
     with decoder.native_frames(
         target, video, math.floor(start), math.ceil(end), cancel, pause, threads, ffmpeg_path=ffmpeg_path
     ) as left:
@@ -263,6 +283,13 @@ def _video_support(
             threads,
             ffmpeg_path=ffmpeg_path,
         ) as right:
+            # Container timestamps are whole ticks (a Matroska file's are milliseconds), so two files' frames of the
+            # same instant may sit one tick apart, and the picture offset, itself a difference of two of them, is
+            # rounded the same way: real 24000/1001 fps pairs land 0 or 1 ms off. Pairing therefore tolerates one
+            # tick of the coarser stream when that is wider than the profile's floor; frames are never that close.
+            tolerance = max(
+                Fraction(PROFILE_SPEC["video"]["pair_tolerance_ms"]), left.time_base * 1000, right.time_base * 1000
+            )
             a, b = next(left, None), next(right, None)
             reference_index = 0
             declarations = None
@@ -296,16 +323,30 @@ def _video_support(
             and abs((b[1] - a[1]) - (b[0] - a[0])) <= tolerance
         )
         if a[2] and b[2] and continuous:
-            safe.append((max(lo, a[1] - offset), min(hi, b[1] - offset)))
+            # The pair's support is the target frame's span; the reference frame's span agrees with it within the
+            # pairing tolerance (continuity above), and clipping to their intersection would leave tick-rounding
+            # holes of a millisecond between consecutive pairs that split a run into pieces too short to anchor.
+            safe.append((lo, hi))
         else:
             bad.append((lo - verify.CHANGE_GUARD_MS, hi + verify.CHANGE_GUARD_MS))
     return verify.subtract(safe, bad)
 
 
+def _checked_channels(channel_ids):
+    """The native channels the strict identity compares: every one except the low-frequency effects channel when
+    there are others. The LFE carries no speech, is band-limited and is optional in reproduction (ITU-R BS.775), and
+    two encodes of one mix can disagree in it alone (real 5.1 AC-3 rips do), so a difference only there never vetoes."""
+    main = [i for i, name in enumerate(channel_ids) if name not in LFE_CHANNELS]
+    return main if main else list(range(len(channel_ids)))
+
+
 def _audio_support(
     target, reference, tracks, ref_tracks, start, end, offset, cancel, pause, threads, *, ffmpeg_path=None
 ):
+    """The target times where every mapped track's main channels are the reference's at ``offset``, and which
+    channels of each track that rests on."""
     safe = [(start, end)]
+    checked = {}
     if not tracks:
         raise decoder.DecodeError("No mapped native audio tracks")
     for track, ref_track in zip(tracks, ref_tracks, strict=True):
@@ -352,7 +393,9 @@ def _audio_support(
                         raise decoder.DecodeError("Native audio sample support mismatch")
                     if verifier is None:
                         verifier = verify.AudioVerifier(rate, a.support_start_ms)
-                    verifier.feed(a.data, b.data)
+                        columns = _checked_channels(a.channel_ids)
+                        checked[track[0]] = [a.channel_ids[i] for i in columns]
+                    verifier.feed(a.data[:, columns], b.data[:, columns])
                     expected = a.support_end_ms
         # Final declaration scope exists only AFTER both fully exhausted contexts
         # exit successfully. Never publish provisional chunks or early matches.
@@ -361,7 +404,60 @@ def _audio_support(
         decoder.check_current(target)
         decoder.check_current(reference)
         safe = verify.intersect(safe, verifier.finish() if verifier is not None else [])
-    return safe
+    return safe, checked
+
+
+def _sound_offset(
+    target, reference, track, ref_track, hints, rh, lo, hi, offset, cancel, pause, threads, *, ffmpeg_path=None
+):
+    """The sound offset to try for one picture proposal, or None when no sound within the search window lines up
+    well enough: a whole-sample lag chosen by cross-correlating a bounded probe of the first track (see
+    ``recurrence.sound_lag``). Only the strict sound identity at that offset is support."""
+    search, half = Fraction(SOUND_SEARCH_MS), Fraction(SOUND_PROBE_MS, 2)
+    # The probe keeps away from the reference's ends so the whole search window exists there, when that leaves enough.
+    start, end = max(lo, search - offset), min(hi, reference.duration_ms - offset - search)
+    if end - start < verify.MIN_RUN_MS:
+        start, end = lo, hi
+    agreeing = [t for t, _ in verify.agreeing_frames(hints, rh, start, end, offset)]
+    centre = agreeing[len(agreeing) // 2] if agreeing else (start + end) / 2
+    probe_start = max(start, min(centre - half, end - 2 * half))
+    probe_end = min(end, probe_start + 2 * half)
+    rate = track[2]
+    left = decoder.native_audio_pcm(
+        target, track[1], probe_start, probe_end, cancel, pause, threads, ffmpeg_path=ffmpeg_path
+    )
+    right = decoder.native_audio_pcm(
+        reference,
+        ref_track[1],
+        max(Fraction(0), probe_start + offset - search),
+        min(Fraction(reference.duration_ms), probe_end + offset + search),
+        cancel,
+        pause,
+        threads,
+        ffmpeg_path=ffmpeg_path,
+    )
+    if (left.sample_rate, left.channel_layout, left.channel_ids) != (
+        right.sample_rate,
+        right.channel_layout,
+        right.channel_ids,
+    ) or left.sample_rate != rate:
+        raise decoder.DecodeError("Native audio rate or channel layout differs")
+    if len(right.data) < len(left.data):
+        return None
+    base = right.support_start_ms - left.support_start_ms  # the sound offset at lag zero, on the sample grid
+    found = verify.sound_lag(left.data, right.data, round((offset - base) * rate / 1000), rate * SOUND_BLOCK_MS // 1000)
+    if found is None or found[1] < SOUND_CORRELATION:
+        return None
+    return base + Fraction(found[0] * 1000, rate)
+
+
+def _picture_span(hints, lo, hi, audio):
+    """Where the picture needs checking: the sound support's hull plus the change guard, from the last scanned frame
+    at or before it. Support only counts where both signals match, so this is exact: a pair outside it can neither
+    support nor, with its guard, veto anything inside, and it saves decoding the rest of a long window."""
+    start, end = audio[0][0] - verify.CHANGE_GUARD_MS, audio[-1][1] + verify.CHANGE_GUARD_MS
+    aligned = max((t for t, _, _ in hints if t <= start), default=lo)
+    return max(lo, aligned), min(hi, end)
 
 
 def _analyze(
@@ -464,28 +560,60 @@ def _analyze(
                         if hi - lo < verify.MIN_RUN_MS:
                             continue
                         try:
-                            audio = _audio_support(
-                                media, ref, tracks, rt, lo, hi, offset, cancel, pause, threads, ffmpeg_path=ffmpeg_path
+                            sound = _sound_offset(
+                                media,
+                                ref,
+                                tracks[0],
+                                rt[0],
+                                hints,
+                                rh,
+                                lo,
+                                hi,
+                                offset,
+                                cancel,
+                                pause,
+                                threads,
+                                ffmpeg_path=ffmpeg_path,
                             )
-                            # Picture support only counts where the sound already matches, and it is the slow half
-                            # (minutes per offset): a proposal whose sound does not match needs no picture check.
-                            picture = (
-                                _video_support(
+                            if sound is None:
+                                continue
+                            # The sound is checked over what the reference holds at the sound offset; the picture at
+                            # the picture offset, and only where the sound already matched, since it is the slow half
+                            # (minutes per offset) and a proposal whose sound does not match can never be supported.
+                            slo, shi = max(lo, -sound), min(hi, ref.duration_ms - sound)
+                            audio, checked = (
+                                _audio_support(
+                                    media,
+                                    ref,
+                                    tracks,
+                                    rt,
+                                    slo,
+                                    shi,
+                                    sound,
+                                    cancel,
+                                    pause,
+                                    threads,
+                                    ffmpeg_path=ffmpeg_path,
+                                )
+                                if shi - slo >= verify.MIN_RUN_MS
+                                else ([], {})
+                            )
+                            picture = []
+                            if audio:
+                                plo, phi = _picture_span(hints, lo, hi, audio)
+                                picture = _video_support(
                                     media,
                                     ref,
                                     video,
                                     rv,
-                                    lo,
-                                    hi,
+                                    plo,
+                                    phi,
                                     offset,
                                     cancel,
                                     pause,
                                     threads,
                                     ffmpeg_path=ffmpeg_path,
                                 )
-                                if audio
-                                else []
-                            )
                         except decoder.Cancelled:
                             raise
                         except _AlignmentUnsupported:
@@ -496,7 +624,7 @@ def _analyze(
                             anchored = verify.anchor(hints, rh, max(a, window.start_ms), min(b, window.end_ms), offset)
                             if anchored is not None:
                                 a, b, anchors = anchored
-                                verified.append((a, b, ref, offset, unspecified, anchors))
+                                verified.append((a, b, ref, offset, unspecified, anchors, sound, checked))
                     decoder.check_current(ref)
                 except decoder.Cancelled:
                     raise
@@ -509,7 +637,7 @@ def _analyze(
         last_target = -1
         last_references: dict[str, Fraction] = {}
         for entry in sorted(verified, key=lambda row: (row[0], -(row[1] - row[0]))):
-            lo, hi, ref, offset, _, _ = entry
+            lo, hi, ref, offset, *_ = entry
             decoder.check_current(ref)
             if lo < last_target or lo + offset < last_references.get(ref.id, Fraction(-1)):
                 continue
@@ -517,14 +645,20 @@ def _analyze(
             last_target = hi
             last_references[ref.id] = hi + offset
         verified = selected
-        # A Plex marker that no comparison confirmed is not a keep but a suggestion: it skips nothing until the owner
-        # approves it. One confirmed even in part stays with the comparison, so the rest of it remains protected.
-        suggested = [
-            w
-            for w in windows
-            if w.source == PLEX_SOURCE and not any(a < w.end_ms and b > w.start_ms for a, b, *_ in verified)
-        ]
+        # A Plex marker is the comparison's to propose only when at least half of it was confirmed; otherwise it is
+        # not a keep but a suggestion that skips nothing until the owner approves it, and the smaller confirmed
+        # fragments inside it are dropped (a one-second skip in the middle of an intro helps nobody) and noted.
+        suggested, fragments = [], {}
+        for w in windows:
+            if w.source != PLEX_SOURCE:
+                continue
+            covered = sum(max(0, min(b, w.end_ms) - max(a, w.start_ms)) for a, b, *_ in verified)
+            if Fraction(covered, w.end_ms - w.start_ms) < PLEX_CONFIRMED_SHARE:
+                suggested.append(w)
+                if covered:
+                    fragments[w] = covered
         windows = [w for w in windows if w not in suggested]
+        verified = [run for run in verified if not any(run[0] < w.end_ms and run[1] > w.start_ms for w in suggested)]
         # Unknown remains a keep; evidence never bridges separately anchored holes.
         ranges, evidence = [], []
         boundaries = sorted(
@@ -541,6 +675,7 @@ def _analyze(
                 selected_window.source,
                 support[2].id if support else None,
                 str(support[3]) if support else None,
+                str(support[6]) if support else None,
             )
             if pieces and pieces[-1][1] == lo and pieces[-1][4] == key:
                 pieces[-1] = (pieces[-1][0], hi, selected_window, support, key)
@@ -550,6 +685,7 @@ def _analyze(
             verdict = "match" if support else "unknown"
             evidence_reference = support[2] if support else None
             offset = support[3] if support else None
+            sound = support[6] if support else None
             text = WARNING if support else "Content or timing could not be verified; preserve it."
             eid = _id(
                 media.id,
@@ -561,14 +697,18 @@ def _analyze(
                 verdict,
                 evidence_reference.id if evidence_reference else None,
                 str(offset),
+                str(sound),
             )
             metrics = {
                 "verification_profile": PROFILE_ID,
                 "profile_fingerprint": PROFILE_FINGERPRINT,
                 "candidate_source": window.source,
                 "checked_audio_stream_ids": [t[0] for t in tracks] if support else [],
+                "checked_channels": support[7] if support else {},
                 "reference_offset_ms": float(offset) if offset is not None else None,
                 "reference_offset_rational_ms": str(offset) if offset is not None else None,
+                "sound_offset_ms": float(sound) if sound is not None else None,
+                "sound_offset_rational_ms": str(sound) if sound is not None else None,
                 "unspecified_interpretation_fields": support[4] if support else [],
                 "claim": "native-code-signal recurrence, not rendered equivalence",
                 "admission_provenance": provenance[support[2].id] if support else None,
@@ -611,15 +751,20 @@ def _analyze(
             evidence.append(plex_evidence)
             ranges.append(plex_range)
         if refs:
-            if not verified:
+            if not verified and not fragments:
                 reasons.append(_no_repeat_found(len(refs)))
             for window in windows:
                 note = _FALLBACK_NOTES.get(window.source)
                 if note and not any(a < window.end_ms and b > window.start_ms for a, b, *_ in verified):
                     reasons.append(note)
         for window in suggested:
-            too_long = window.end_ms - window.start_ms > MAX_CANDIDATE_MS
-            reasons.append(_plex_note(window, TOO_LONG_TO_COMPARE if too_long else NOT_CONFIRMED))
+            if window.end_ms - window.start_ms > MAX_CANDIDATE_MS:
+                why = TOO_LONG_TO_COMPARE
+            elif window in fragments:
+                why = _confirmed_only(fragments[window])
+            else:
+                why = NOT_CONFIRMED
+            reasons.append(_plex_note(window, why))
         if comparison_failure is not None:
             reasons.extend(comparison_failure[1:])
         reasons.extend(ignored)

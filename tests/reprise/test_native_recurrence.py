@@ -71,6 +71,19 @@ def test_entire_failed_overlap_is_removed_without_gap_filling():
     assert recurrence.intersect([(0, 100)], [(10, 20), (30, 40)]) == [(10, 20), (30, 40)]
 
 
+class Frames:
+    """What analysis sees of a native frame reader: an iterator that knows its stream's time base."""
+
+    def __init__(self, frames, time_base=Fraction(1, 1000)):
+        self.frames, self.time_base = iter(frames), time_base
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return next(self.frames)
+
+
 @pytest.mark.parametrize("failing_side", ["target", "reference"])
 def test_failure_after_last_native_yield_discards_all_staged_video(tmp_path, monkeypatch, failing_side):
     items = {}
@@ -89,7 +102,7 @@ def test_failure_after_last_native_yield_discards_all_staged_video(tmp_path, mon
                 yield frame(pts)
             exhausted.append(side)
 
-        yield records()
+        yield Frames(records())
         if side == failing_side:
             raise media.DecodeError("failure after final yielded frame")
 
@@ -108,6 +121,34 @@ def test_failure_after_last_native_yield_discards_all_staged_video(tmp_path, mon
             1,
         )
     assert "target" in exhausted and "reference" in exhausted
+
+
+@pytest.mark.parametrize("tick,confirmed", [(Fraction(1, 1000), True), (Fraction(1, 24000), False)])
+def test_frames_pair_within_one_container_tick(tmp_path, monkeypatch, tick, confirmed):
+    """Two 24000/1001 fps Matroska files of the same material whose frame grids sit half a millisecond apart keep
+    whole-millisecond timestamps that land 0 or 1 ms off each other, alternating (real Blu-ray rips do). Pairing
+    within one tick of the stream confirms them; with a finer time base the same 1 ms is a real disagreement."""
+    paths = [tmp_path / name for name in ("target", "reference")]
+    for path in paths:
+        path.write_bytes(path.name.encode())
+    target, reference = [media_version(str(path), 3000, "{}") for path in paths]
+    cadence = Fraction(1001, 24)
+    target_times = [round(n * cadence) for n in range(70)]
+    reference_times = [round(n * cadence + Fraction(41, 2)) for n in range(70)]
+    assert {b - a for a, b in zip(target_times, reference_times, strict=True)} == {20, 21}
+
+    @contextmanager
+    def native(item, *args, **kwargs):
+        yield Frames((frame(t) for t in (target_times if item.id == target.id else reference_times)), tick)
+
+    monkeypatch.setattr(media, "native_frames", native)
+    support = analysis._video_support(
+        target, reference, 0, 0, Fraction(0), Fraction(2800), Fraction(20), lambda: False, lambda: False, 1
+    )
+    assert bool(support) is confirmed, support
+    if confirmed:
+        # one unbroken run: a rounding flip between consecutive pairs must not leave a millisecond hole
+        assert len(support) == 1 and support[0][0] <= 50 and support[0][1] >= 2700, support
 
 
 def test_fractional_offsets_remain_exact_proposal_hints():
@@ -177,7 +218,7 @@ def test_variable_pts_and_inserted_reference_record_veto_native_support(tmp_path
 
     @contextmanager
     def native(item, *args, **kwargs):
-        yield iter(frame(t) for t in (times if item.id == target.id else ref_times))
+        yield Frames(frame(t) for t in (times if item.id == target.id else ref_times))
 
     monkeypatch.setattr(media, "native_frames", native)
     support = analysis._video_support(
@@ -185,3 +226,73 @@ def test_variable_pts_and_inserted_reference_record_veto_native_support(tmp_path
     )
     assert support
     assert not any(lo < 1500 and hi > 1400 for lo, hi in support)
+
+
+def _noise(samples, channels, seed):
+    return np.random.default_rng(seed).standard_normal((samples, channels)) * 0.1
+
+
+def test_sound_lag_is_the_exact_sample_lag_despite_gain_and_codec_noise():
+    rate, search = 48000, 250 * 48
+    source = _noise(20 * rate, 6, 3)
+    source[:, 3] *= 0.01  # a near-silent LFE must not steer the search
+    true = search + 7755  # 161.5625 ms later than the picture predicts
+    probe = source[true : true + 12 * rate] * 1.108 + _noise(12 * rate, 6, 4) * 0.2
+    lag, score = recurrence.sound_lag(probe, source[: 12 * rate + 2 * search], search, rate)
+    assert lag == true and score > 0.95
+
+
+def test_sound_lag_finds_a_shared_stretch_inside_a_probe_that_is_mostly_different():
+    rate, search = 48000, 250 * 48
+    source = _noise(16 * rate, 2, 5)
+    true = search + 4800  # 100 ms later than the picture predicts
+    probe = _noise(12 * rate, 2, 6)  # 12 s of different sound ...
+    probe[5 * rate : 7 * rate] = source[true + 5 * rate : true + 7 * rate]  # ... except two seconds in the middle
+    lag, score = recurrence.sound_lag(probe, source[: 12 * rate + 2 * search], search, rate)
+    assert lag == true and score > 0.99
+
+
+def test_sound_lag_prefers_the_lag_nearest_the_picture_among_exact_ties():
+    period = np.sin(2 * np.pi * np.arange(60000) / 100.0)[:, None]  # a whole number of samples per period: exact ties
+    assert recurrence.sound_lag(period[:40000], period, 12300, 40000) == (12300, pytest.approx(1.0))
+    assert recurrence.sound_lag(period[:40000], period, 12349, 40000)[0] == 12300
+    assert recurrence.sound_lag(period[:40000], period, 12351, 40000)[0] == 12400
+
+
+def test_sound_lag_reports_no_lag_for_silence_and_rejects_malformed_probes():
+    assert recurrence.sound_lag(np.zeros((1000, 2)), np.zeros((2000, 2)), 0, 500) is None
+    assert recurrence.sound_lag(np.zeros((1000, 2)), _noise(2000, 2, 1), 0, 500) is None
+    with pytest.raises(ValueError):
+        recurrence.sound_lag(_noise(2000, 2, 1), _noise(1000, 2, 2), 0, 500)
+    with pytest.raises(ValueError):
+        recurrence.sound_lag(_noise(1000, 2, 1), _noise(2000, 3, 2), 0, 500)
+    with pytest.raises(ValueError):
+        recurrence.sound_lag(_noise(1000, 2, 1), _noise(2000, 2, 2), 0, 0)
+
+
+def _signed_local_with_its_own_integral(data, size):
+    """The pre-shared-integral formula, kept as the oracle: the shared integral must be bit-identical to it."""
+    h, w = data.shape
+    if h < size or w < size:
+        return float(abs(data.mean()))
+    ys = np.unique(np.r_[np.arange(0, h - size + 1, size // 2), h - size])
+    xs = np.unique(np.r_[np.arange(0, w - size + 1, size // 2), w - size])
+    integral = np.pad(data.cumsum(0, dtype=np.float64).cumsum(1), ((1, 0), (1, 0)))
+    sums = (
+        integral[(ys + size)[:, None], xs + size]
+        - integral[ys[:, None], xs + size]
+        - integral[(ys + size)[:, None], xs]
+        + integral[ys[:, None], xs]
+    )
+    return float(np.max(np.abs(sums)) / (size * size))
+
+
+@pytest.mark.parametrize("depth,shape", [(8, (33, 47)), (10, (7, 90)), (10, (135, 240)), (8, (5, 5))])
+def test_shared_integral_signed_tiles_are_bit_identical(depth, shape):
+    rng = np.random.default_rng(depth * 1000 + shape[0])
+    left = rng.integers(0, 1 << depth, size=shape).astype(np.float32)
+    right = np.clip(left + rng.integers(-3, 4, size=shape), 0, (1 << depth) - 1).astype(np.float32)
+    residual = (left - right) * 255 / ((1 << depth) - 1)
+    integral = recurrence._integral(residual)
+    for size in (8, 16, 32):
+        assert recurrence._signed_local(residual, size, integral) == _signed_local_with_its_own_integral(residual, size)

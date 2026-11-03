@@ -33,6 +33,8 @@ Results from an older verification profile become stale immediately, even if pre
 
 Eligibility means current matching evidence plus explicit owner approval, not proof that a scene is safe to skip. Signal matching tolerates normal encoding differences: tiny visual edits and quiet or brief changes may be missed. Review the original media before approval. Playback clients must use only `eligible_skip_ranges`, retain protected gaps, and never treat proposed ranges or ranking scores as automatic approval.
 
-For a Plex suggestion the owner's acknowledged approval of that exact range stands in for matching evidence.
+Matching evidence carries two offsets into the reference episode in its `metrics`: `reference_offset_ms` for the picture (it also places `reference_start_ms` and `reference_end_ms`) and `sound_offset_ms` for the sound, which may differ by up to 250 ms because two files of one show rarely share exact sound/picture sync; each also has an exact rational (`*_rational_ms`). `checked_channels` lists, per audio track, the native channels the strict sound identity compared: every channel except a subwoofer (LFE) channel, which never vetoes on its own.
+
+For a Plex suggestion the owner's acknowledged approval of that exact range stands in for matching evidence. A Plex marker is a suggestion whenever comparing episodes confirmed less than half of it; a smaller confirmed fragment inside it is not proposed on its own and `reasons` says how much was confirmed.
 
 Cancellation and result finalization share one job-state decision. If cancellation wins, the active analysis becomes cancelled and its old skip approvals are cleared. If the last result commits first, the job completes before a late cancel can change its state. Resume starts work only when an existing pause is successfully removed; completed, failed and cancelled jobs remain terminal. To run them again, explicitly request a new analysis.

@@ -9,7 +9,7 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-PROFILE_ID = "native-signal-review-first-v4"
+PROFILE_ID = "native-signal-review-first-v5"
 PROFILE_SPEC: dict[str, Any] = {
     "id": PROFILE_ID,
     "admission_revision": "episode-provenance-1",
@@ -18,6 +18,7 @@ PROFILE_SPEC: dict[str, Any] = {
     "candidate": {
         "max_ms": 180000,
         "max_references": 3,
+        "plex_confirmed_share": "1/2",
         "reference_order": "nearest episode number to the target first, the lower number on a tie; one file per episode; same show and season only",
         "reference_radius_ms": 30000,
         "context_ms": 2000,
@@ -51,8 +52,8 @@ PROFILE_SPEC: dict[str, Any] = {
         "absolute_tiles": "mean absolute residual and fraction above12; four phases0,size/2; include0 and far edge; partial tiles use actual area",
         "signed_tiles": "absolute signed mean; full8/16/32 tiles at half-tile stride plus far-edge full window; smaller plane whole mean; float64 integral sums",
         "aggregation": "maximum over all native planes; every limit inclusive",
-        "pairing": "fixed offset; unique consecutive reference indices; positive target gap<=250ms; duration disagreement<=1/2ms; both endpoints must pass",
-        "support": "actual rational intersection, never tolerance expansion; last observed frame START is boundary; failed/unknown whole interval veto plus250ms",
+        "pairing": "fixed offset; unique consecutive reference indices; positive target gap<=250ms; pair and duration disagreement<=max(1/2ms, one container tick of either stream); both endpoints must pass",
+        "support": "target frame span of each continuous matched pair (its reference span agrees within the pairing tolerance), clipped to the window, never expanded; last observed frame START is boundary; failed/unknown whole interval veto plus250ms",
     },
     "audio": {
         "window_ms": 20,
@@ -80,17 +81,29 @@ PROFILE_SPEC: dict[str, Any] = {
         "weak": "per-bin/channel min M across5 consecutive windows; max_channel sqrt(sum_bins held²)>5e-5 veto60ms plus250ms",
         "moving": "L[t,c]=sqrt(sum_bins M²); max_c min(L[i,c],L[i+1,c])>8e-4 veto30ms plus40ms; same channel, bins may move",
         "phase": "Q=max(abs(X-Y)-min(absX,absY),0); per-bin/channel min across5; max_channel sqrt(sum_bins held²)>1e-3 veto60ms plus40ms",
-        "clock": "rate divisible100; fixed exact sample-index grid from first inward-supported paired sample; never reset at chunks; native sample supports differ exactly by offset; equal shape/rate/layout/ordered IDs",
+        "clock": "rate divisible100; fixed exact sample-index grid from first inward-supported paired sample; never reset at chunks; native sample supports differ exactly by the sound offset; equal shape/rate/layout/ordered IDs",
         "streaming": "One sequential prefix decode/audit per stream and comparison, bounded chunks and rolling5 spectra; carry every veto; all contexts exhausted and exited successfully before support; compare final declaration tuples including absence and initial/per-frame scope",
-        "tracks": "Every mapped track and every native channel; no downmix,resample,normalization,gain,lag,phase or warp fit",
+        "lfe_channels": ["LFE", "LFE2"],
+        "tracks": "Every mapped track and every native channel except the low-frequency effects channel when a track has others (LFE: no speech, band-limited, optional in reproduction under ITU-R BS.775; two encodes of one mix disagree in it alone); the channels compared are recorded per track; no downmix,resample,normalization,gain,lag,phase or warp fit",
         "extent": "ceil first window start to floor(last window start+20ms); trim40ms both ends; no padding; retain audio pieces>=500ms",
+    },
+    "sound_offset": {
+        "search_ms": 250,
+        "probe_ms": 12000,
+        "block_ms": 1000,
+        "correlation": 0.5,
+        "tie": 1e-6,
+        "track": "first mapped track only; every native channel as one signal",
+        "probe": "up to probe_ms of the target inside the proposal's support, shrunk by search_ms at each end when that leaves 500ms, centred on the median target frame whose descriptor agrees with the reference at the picture offset (the support's centre when none agrees)",
+        "search": "the probe in blocks of block_ms (a shorter last block dropped unless it is the only one); per block, normalised cross-correlation (float64 FFT) of the channel-stacked float64 PCM over every whole-sample lag within search_ms of the picture offset that the reference contains; the block with the highest peak decides, and among its scores within tie of the peak the lag nearest the picture offset wins",
+        "gate": "a deciding peak below correlation drops the proposal; the chosen lag is a proposal only: strict sound identity at the sound offset and picture identity at the picture offset must both hold over the same target time",
     },
     "support": {
         "guard_ms": 250,
         "minimum_run_ms": 500,
         "guards": "Conservative content/word preservation, NOT timestamp uncertainty or a frame-gap derivation",
         "rounding": "Failed audio supports round outward before guards; intersect rational video/audio; anchor then ceil start/floor end; never bridge holes",
-        "pieces": "Sort target start then descending length; target nonoverlap and monotonic nonreused reference time; offset changes only across separately anchored holes",
+        "pieces": "Sort target start then descending length; target nonoverlap and monotonic nonreused reference time; picture and sound offsets change only across separately anchored holes",
     },
     "anchors": {
         "edge_ms": 500,
@@ -169,7 +182,7 @@ PROFILE_SPEC: dict[str, Any] = {
         "resources": "one analysis CPU/FFmpeg threads1; bounded retained frames/chunks, not a universal2GiB whole-app guarantee; late audio prefix is linear work, not fast seeking",
     },
     "limitations": "Magnitude4x masks same-bin additions; equal-amplitude phase dead zone through60degrees; floors/persistence miss sufficiently brief,weak,drifting changes; no semantic guarantee; new protected failure remains failure",
-    "suggestions": "Plex's own intro and credits markers for the exact file that no comparison confirmed are stored as proposed skips with origin plex; never eligible until the owner approves that exact range with an explicit acknowledgment; keep vetoes, freshness and review rules unchanged",
+    "suggestions": "Plex's own intro and credits markers for the exact file are the comparison's to propose only when verified runs cover at least plex_confirmed_share of the marker; otherwise the marker is stored as a proposed skip with origin plex, the smaller confirmed fragments inside it are dropped and noted, and it is never eligible until the owner approves that exact range with an explicit acknowledgment; keep vetoes, freshness and review rules unchanged",
 }
 ADMISSION_REVISION = PROFILE_SPEC["admission_revision"]
 PROFILE_FINGERPRINT = hashlib.sha256(
