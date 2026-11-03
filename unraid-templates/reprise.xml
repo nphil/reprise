@@ -11,7 +11,7 @@
   <Overview>Self-hosted media analysis and review. In development: review results and keep production publishing disabled during evaluation. The pinned image is a specific published build; select a newer published immutable image to update. Media is read-only; Plex database access is not mounted by default.</Overview>
   <Category>MediaApp:Video</Category>
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
-  <Icon>https://raw.githubusercontent.com/nphil/reprise/main/media_preview_generator/web/static/icon-512.png</Icon>
+  <Icon>https://raw.githubusercontent.com/nphil/reprise/main/media_preview_generator/web/static/images/reprise.svg</Icon>
   <Config Name="Web UI" Target="8080" Default="8080" Mode="tcp" Description="Web interface" Type="Port" Display="always" Required="true" Mask="false">8080</Config>
   <Config Name="App data" Target="/config" Default="/mnt/user/appdata/reprise" Mode="rw" Description="Persistent configuration and results" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/reprise</Config>
   <Config Name="Media" Target="/media" Default="" Mode="ro" Description="Read-only media library" Type="Path" Display="always" Required="true" Mask="false"></Config>
