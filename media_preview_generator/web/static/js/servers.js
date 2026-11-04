@@ -1776,6 +1776,15 @@
         previewOutput.title = previewText[1];
         // Per-server switch: off = review only, nothing is written into the server (absent means on).
         $('#editPreviewThumbnails').checked = (server.output || {}).preview_thumbnails !== false;
+        if (!$('#editPreviewThumbnails').dataset.revalidateBound) {
+            $('#editPreviewThumbnails').addEventListener('change', () => {
+                ['editPlexConfigFolder', 'editJellyfinConfigFolder'].forEach((id) => {
+                    const el = document.getElementById(id);
+                    if (el && el.value.trim() && el.offsetParent !== null) _validateLocalPathInput(el);
+                });
+            });
+            $('#editPreviewThumbnails').dataset.revalidateBound = '1';
+        }
         $('#editPreviewThumbnailsTarget').textContent = {plex: 'Plex', emby: 'Emby', jellyfin: 'Jellyfin'}[(server.type || '').toLowerCase()] || 'the server';
 
         // Jellyfin-only: "store trickplay off the media drive" toggle + the
@@ -2041,15 +2050,27 @@
             : isJellyfinCfg
               ? '/api/settings/validate-jellyfin-config-folder'
               : '/api/settings/validate-local-path';
+        // Edit modal only: with "Write preview thumbnails" switched off (even unsaved) a read-only folder is correct.
+        const previewSwitch = input.id.startsWith('edit') ? document.getElementById('editPreviewThumbnails') : null;
+        const body = { path };
+        if (useStructuralCheck && previewSwitch && !previewSwitch.checked) body.preview_thumbnails = false;
+        let note = input.parentElement.querySelector('.folder-note');
+        if (note) note.remove();
         try {
             const resp = await fetch(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path }),
+                body: JSON.stringify(body),
             });
             const data = await resp.json();
             if (input.value.trim() !== path) return;
-            if (data.error) {
+            if (data.note && !data.error) {
+                input.classList.remove('is-invalid', 'is-valid');
+                note = document.createElement('div');
+                note.className = 'folder-note small text-body-secondary mt-1';
+                note.textContent = data.note;
+                input.parentElement.appendChild(note);
+            } else if (data.error) {
                 input.classList.remove('is-valid');
                 input.classList.add('is-invalid');
                 if (feedback) feedback.textContent = data.error;

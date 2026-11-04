@@ -1133,6 +1133,17 @@ def preview_file_path():
     )
 
 
+_READ_ONLY_IS_FINE_NOTE = "Read-only is fine: Reprise writes nothing here while preview thumbnails are off."
+
+
+def _review_only_requested(data: dict) -> bool:
+    """True when the caller says this server's preview thumbnails are off (``preview_thumbnails: false``).
+
+    A read-only config folder is then correct, so the folder checks report a note instead of an error.
+    """
+    return data.get("preview_thumbnails") is False
+
+
 @api.route("/settings/validate-plex-config-folder", methods=["POST"])
 @setup_or_auth_required
 def validate_plex_config_folder():
@@ -1263,6 +1274,7 @@ def validate_plex_config_folder():
 
     writable = os.access(resolved, os.W_OK)
     if not writable:
+        review_only = _review_only_requested(data)
         return jsonify(
             {
                 "exists": True,
@@ -1270,7 +1282,8 @@ def validate_plex_config_folder():
                 "shard_count": shard_count,
                 "writable": False,
                 "detail": "",
-                "error": "Folder is not writable — check PUID/PGID on the container",
+                "error": None if review_only else "Folder is not writable — check PUID/PGID on the container",
+                "note": _READ_ONLY_IS_FINE_NOTE if review_only else None,
             }
         )
 
@@ -1316,7 +1329,7 @@ def validate_jellyfin_config_folder():
     """
     from ...output.jellyfin_trickplay import jellyfin_config_data_marker, looks_like_jellyfin_config_dir
 
-    def _resp(*, exists=False, valid=False, writable=False, detail="", error=None):
+    def _resp(*, exists=False, valid=False, writable=False, detail="", error=None, note=None):
         return jsonify(
             {
                 "exists": exists,
@@ -1324,6 +1337,7 @@ def validate_jellyfin_config_folder():
                 "writable": writable,
                 "detail": detail,
                 "error": error,
+                "note": note,
             }
         )
 
@@ -1351,6 +1365,8 @@ def validate_jellyfin_config_folder():
             ),
         )
     if not writable:
+        if _review_only_requested(data):
+            return _resp(exists=True, valid=True, writable=False, note=_READ_ONLY_IS_FINE_NOTE)
         return _resp(
             exists=True,
             valid=True,

@@ -104,6 +104,9 @@ class RepriseStore:
                 "CREATE TABLE IF NOT EXISTS reprise_online_answers (source TEXT NOT NULL, lookup_key TEXT NOT NULL, status TEXT NOT NULL, candidates TEXT NOT NULL, parser_version INTEGER NOT NULL, fetched_at TEXT NOT NULL, PRIMARY KEY(source,lookup_key))",
             ):
                 c.execute(sql)
+            # Every status lookup asks for one version's bindings. Without this the answer was a scan of every binding
+            # (about 40 ms at 4,000 episodes), which made a 100-row Library page cost seconds once rows had results.
+            c.execute("CREATE INDEX IF NOT EXISTS reprise_bindings_version ON reprise_bindings(version_id, active)")
 
     def transaction(self):
         return self.marker_store._tx()
@@ -275,6 +278,21 @@ class RepriseStore:
             ):
                 matches.append(MediaVersion(**json.loads(row["data"])))
         return matches[0] if len(matches) == 1 else None
+
+    def catalogue(self, server_id=None):
+        """Every active binding's version id, server and Plex metadata in one pass, for Library filtering.
+
+        Unlike ``list_media`` it never reads the media-version or identity documents, so filtering the whole
+        catalogue costs one query and one metadata parse per row instead of three document parses."""
+        with self.marker_store._reading() as c:
+            rows = c.execute(
+                "SELECT version_id,server_id,metadata FROM reprise_bindings WHERE active=1 AND (? IS NULL OR server_id=?) ORDER BY rowid",
+                (server_id, server_id),
+            ).fetchall()
+        return [
+            {"version_id": r["version_id"], "server_id": r["server_id"], "metadata": json.loads(r["metadata"])}
+            for r in rows
+        ]
 
     def list_media(self, server_id=None, cursor=None, limit=50):
         if type(limit) is not int or not 1 <= limit <= 500:

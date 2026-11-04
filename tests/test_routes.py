@@ -6344,6 +6344,29 @@ class TestValidatePlexConfigFolder:
         assert body["shard_count"] == 16
         assert "16/16" in body["detail"]
 
+    @pytest.mark.parametrize("review_only", [True, False])
+    def test_read_only_folder_is_a_note_only_when_preview_thumbnails_are_off(
+        self, client, tmp_path, monkeypatch, review_only
+    ):
+        plex_root = tmp_path / "plex-ro"
+        (plex_root / "Media" / "localhost").mkdir(parents=True)
+        from media_preview_generator.web.routes import api_settings
+
+        monkeypatch.setattr(api_settings, "PLEX_DATA_ROOT", str(tmp_path))
+        real_access = os.access
+        monkeypatch.setattr(os, "access", lambda p, m: False if m == os.W_OK else real_access(p, m))
+        payload = {"path": str(plex_root)}
+        if review_only:
+            payload["preview_thumbnails"] = False
+        body = client.post("/api/settings/validate-plex-config-folder", headers=_api_headers(), json=payload).get_json()
+        assert body["writable"] is False
+        if review_only:
+            assert body["error"] is None
+            assert "Read-only is fine" in body["note"]
+        else:
+            assert "not writable" in body["error"]
+            assert body["note"] is None
+
     def test_missing_media_folder_reports_clear_error(self, client, tmp_path, monkeypatch):
         not_plex = tmp_path / "random"
         not_plex.mkdir()
@@ -6484,6 +6507,25 @@ class TestValidateJellyfinConfigFolder:
         assert body["valid_jellyfin_structure"] is True
         assert body["writable"] is False
         assert "not writable" in body["error"].lower()
+
+    @pytest.mark.parametrize("review_only", [True, False])
+    def test_read_only_is_a_note_when_preview_thumbnails_are_off(self, client, tmp_path, monkeypatch, review_only):
+        cfg = tmp_path / "jf-ro2"
+        (cfg / "data").mkdir(parents=True)
+        monkeypatch.setattr(os, "access", lambda path, mode: False)
+        payload = {"path": str(cfg)}
+        if review_only:
+            payload["preview_thumbnails"] = False
+        body = client.post(
+            "/api/settings/validate-jellyfin-config-folder", headers=_api_headers(), json=payload
+        ).get_json()
+        assert body["writable"] is False
+        if review_only:
+            assert body["error"] is None
+            assert "Read-only is fine" in body["note"]
+        else:
+            assert "not writable" in body["error"].lower()
+            assert body["note"] is None
 
 
 # ---------------------------------------------------------------------------

@@ -588,13 +588,9 @@ class RepriseService:
         return eligible_ranges(result, identity.audio_stream_id)
 
     def list_media(self, server_id=None, cursor=None, limit=50, show=None, season=None, search=None):
-        rows, pos = [], None
-        while True:
-            page = self.store.list_media(server_id=server_id, cursor=pos, limit=100)
-            rows.extend(page["items"])
-            pos = page.get("next_cursor")
-            if not pos:
-                break
+        rows = self.store.catalogue(server_id)
+        needle = str(search).lower() if search else ""
+        show_needle = str(show).lower() if show else ""
         matched = []
         seen = set()
         shows = sorted({str(row["metadata"].get("show_title")) for row in rows if row["metadata"].get("show_title")})
@@ -603,44 +599,41 @@ class RepriseService:
                 row["metadata"].get("season")
                 for row in rows
                 if row["metadata"].get("season") is not None
-                and (not show or str(show).lower() in str(row["metadata"].get("show_title", "")).lower())
+                and (not show_needle or show_needle in str(row["metadata"].get("show_title", "")).lower())
             }
         )
         for row in rows:
-            version, meta = row["media_version"], row["metadata"]
-            if version["id"] in seen:
+            version_id, meta = row["version_id"], row["metadata"]
+            if version_id in seen:
                 continue
-            seen.add(version["id"])
-            if show and str(show).lower() not in str(meta.get("show_title", "")).lower():
+            seen.add(version_id)
+            if show_needle and show_needle not in str(meta.get("show_title", "")).lower():
                 continue
             if season is not None and str(meta.get("season")) != str(season):
                 continue
-            if (
-                search
-                and str(search).lower()
-                not in (str(meta.get("title", "")) + " " + str(meta.get("show_title", ""))).lower()
-            ):
+            if needle and needle not in (str(meta.get("title", "")) + " " + str(meta.get("show_title", ""))).lower():
                 continue
             matched.append(row)
         start = int(cursor or 0)
         limit = min(max(int(limit), 1), 100)
         items = []
         for row in matched[start : start + limit]:
-            version, meta = row["media_version"], row["metadata"]
-            bindings = self._bindings(version["id"])
+            version_id, meta = row["version_id"], row["metadata"]
+            version = self.store.get_media(version_id)
+            if version is None:
+                continue
+            bindings = self._bindings(version_id)
             current = self.lookup(bindings[0][0]) if bindings else None
-            stored = (
-                self.store.get_result(version["id"]) if current and current["analysis_status"] != "missing" else None
-            )
+            stored = self.store.get_result(version_id) if current and current["analysis_status"] != "missing" else None
             items.append(
                 {
-                    "id": version["id"],
+                    "id": version_id,
                     "server_id": row["server_id"],
                     "title": meta.get("title", ""),
                     "show_title": meta.get("show_title", ""),
                     "season": meta.get("season"),
                     "episode": meta.get("episode"),
-                    "duration_ms": version["duration_ms"],
+                    "duration_ms": version.duration_ms,
                     "analysis_status": current["analysis_status"] if current else "missing",
                     "freshness": current["freshness"] if current else "unavailable",
                     "ranges": _range_counts(stored.ranges if stored else ()),
