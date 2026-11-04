@@ -6,6 +6,7 @@ values come from the decoder's presentation timestamps, never frame counts/FPS.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import queue
@@ -17,6 +18,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from fractions import Fraction
 
@@ -24,7 +26,7 @@ from loguru import logger
 
 from ..gpu.ffmpeg_capabilities import ffmpeg_binary
 from ..markers.probe import ffprobe_path_for
-from . import acceleration
+from . import acceleration, cuda_metrics
 from .identity import is_current
 
 MAX_OUTPUT = 128 * 1024 * 1024
@@ -334,6 +336,53 @@ _NATIVE_FRAME_LIMIT = 64 * 1024 * 1024
 _NATIVE_PROTOCOL_TIMEOUT = 30.0  # Fail closed if paired decoder pipes stop making progress.
 
 
+class _PendingAudit:
+    """The audit's frame timestamps while ffprobe is still reading them.
+
+    The audit is a second full decode of the window, so it runs beside the reader's decode instead of before it (a
+    quarter of a scan's time). Nothing is accepted earlier than before: the reader compares the timestamps it saw with
+    these when the stream ends and a failed audit raises its own error there, or at exit if the stream was never read,
+    and every consumer takes frames only from a reader that exited without an error. Whoever created the audit closes it.
+    """
+
+    def __init__(self, work):
+        self._future = _AUDIT_POOL.submit(work)
+
+    def result(self):
+        return self._future.result()
+
+    def __contains__(self, item):
+        return item in self.result()
+
+    def __iter__(self):
+        return iter(self.result())
+
+    def raise_if_failed(self):
+        if self._future.done():
+            self._future.result()
+
+    def close(self):
+        """Do not leave ffprobe running behind an abandoned reader: wait for it (cancel and pause still reach it)."""
+        self._future.cancel()
+        with contextlib.suppress(Exception):
+            self._future.exception()
+
+
+def _close_audit(audit):
+    pending = audit[10] if audit else None
+    if isinstance(pending, _PendingAudit):
+        pending.close()
+
+
+def _raise_failed_audit(audit):
+    pending = audit[10] if audit else None
+    if isinstance(pending, _PendingAudit):
+        pending.raise_if_failed()
+
+
+_AUDIT_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="reprise-audit")
+
+
 def _native_audit(media, stream, start, end, cancel, pause, threads, ffmpeg_path):
     """Verify one window-constant chroma location; this does not pair frames."""
     check_current(media)
@@ -423,44 +472,50 @@ def _native_audit(media, stream, start, end, cancel, pause, threads, ffmpeg_path
         "json",
         media.canonical_path,
     ]
-    parsed = json.loads(run(command, cancel, pause, 16 * 1024 * 1024, reject_stderr=True))
-    if not isinstance(parsed.get("frames"), list) or len(parsed["frames"]) > 100000:
-        raise DecodeError("Native video audit record limit exceeded or invalid")
-    pts = set()
-    try:
-        for frame in parsed["frames"]:
-            point = (int(frame["pts"]) * tb - origin) * 1000
-            if point in pts or frame["chroma_location"] != chroma or int(frame.get("decode_error_flags", 0)):
-                raise DecodeError("Ambiguous native video chroma audit")
-            frame_sar = Fraction(frame["sample_aspect_ratio"].replace(":", "/"))
-            side_data = frame.get("side_data_list", [])
-            # Some ffprobe versions omit crop fields altogether. Reject any
-            # reported crop, but do not claim omission proves uncropped input.
-            if (
-                frame_sar != sar
-                or int(frame["interlaced_frame"]) != 0
-                or (int(frame["width"]), int(frame["height"])) != (width, height)
-                or any(int(frame.get(key, 0)) for key in ("crop_top", "crop_bottom", "crop_left", "crop_right"))
-                or not isinstance(side_data, list)
-                # FFmpeg 8 also attaches the stream display matrix to decoded
-                # frames. Allow it only when the stream is already flagged;
-                # consumers reject that flag rather than interpreting pixels.
-                or any(
-                    not isinstance(side, dict)
-                    or not (
-                        side.get("side_data_type") == "H.26[45] User Data Unregistered SEI message"
-                        or (side.get("side_data_type") == "3x3 displaymatrix" and "display_matrix" in flags)
+
+    def audited_timestamps():
+        parsed = json.loads(run(command, cancel, pause, 16 * 1024 * 1024, reject_stderr=True))
+        if not isinstance(parsed.get("frames"), list) or len(parsed["frames"]) > 100000:
+            raise DecodeError("Native video audit record limit exceeded or invalid")
+        pts = set()
+        try:
+            for frame in parsed["frames"]:
+                point = (int(frame["pts"]) * tb - origin) * 1000
+                if point in pts or frame["chroma_location"] != chroma or int(frame.get("decode_error_flags", 0)):
+                    raise DecodeError("Ambiguous native video chroma audit")
+                frame_sar = Fraction(frame["sample_aspect_ratio"].replace(":", "/"))
+                side_data = frame.get("side_data_list", [])
+                # Some ffprobe versions omit crop fields altogether. Reject any
+                # reported crop, but do not claim omission proves uncropped input.
+                if (
+                    frame_sar != sar
+                    or int(frame["interlaced_frame"]) != 0
+                    or (int(frame["width"]), int(frame["height"])) != (width, height)
+                    or any(int(frame.get(key, 0)) for key in ("crop_top", "crop_bottom", "crop_left", "crop_right"))
+                    or not isinstance(side_data, list)
+                    # FFmpeg 8 also attaches the stream display matrix to decoded
+                    # frames. Allow it only when the stream is already flagged;
+                    # consumers reject that flag rather than interpreting pixels.
+                    or any(
+                        not isinstance(side, dict)
+                        or not (
+                            side.get("side_data_type") == "H.26[45] User Data Unregistered SEI message"
+                            or (side.get("side_data_type") == "3x3 displaymatrix" and "display_matrix" in flags)
+                        )
+                        for side in side_data
                     )
-                    for side in side_data
-                )
-            ):
-                raise DecodeError("Unsupported native frame interpretation metadata")
-            pts.add(point)
-    except (KeyError, TypeError, ValueError) as exc:
-        raise DecodeError("Missing native video chroma audit metadata") from exc
-    if not pts:
-        raise DecodeError("Empty native video chroma audit")
-    check_current(media)
+                ):
+                    raise DecodeError("Unsupported native frame interpretation metadata")
+                pts.add(point)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise DecodeError("Missing native video chroma audit metadata") from exc
+        if not pts:
+            raise DecodeError("Empty native video chroma audit")
+        check_current(media)
+        return pts
+
+    # ffprobe's decode of the window runs while the reader's ffmpeg decodes it too; see _PendingAudit.
+    pts = _PendingAudit(audited_timestamps)
     return (
         pix,
         width,
@@ -552,8 +607,17 @@ class NativeFrameReader:
         self.accelerated = False
         self.showinfo = {"0": "0", "2": "2"}  # FFmpeg's showinfo instance numbers -> the reader's pre/post labels
         self.audit = audit  # _native_audit's answer when a wrapper already ran it: its repeats must not run it again
+        self._owns_audit = audit is None  # whoever ran the audit closes it
 
     def __enter__(self):
+        try:
+            return self._start()
+        except BaseException:
+            if self._owns_audit:
+                _close_audit(self.audit)
+            raise
+
+    def _start(self):
         (
             self.pix,
             self.width,
@@ -569,7 +633,7 @@ class NativeFrameReader:
             self.time_base,
             codec,
             profile,
-        ) = self.audit or _native_audit(
+        ) = self.audit = self.audit or _native_audit(
             self.media,
             self.stream,
             self.request_start_ms,
@@ -844,7 +908,7 @@ class NativeFrameReader:
             (pts, pix, width, height, checks), color = event
             if (pix, width, height) != (self.pix, self.width, self.height):
                 raise DecodeError("Dynamic or unsupported native video format")
-            if len(checks) != 3 or pts not in self.audit_pts or (self.previous is not None and pts <= self.previous):
+            if len(checks) != 3 or (self.previous is not None and pts <= self.previous):
                 raise DecodeError("Missing, unaudited or non-monotonic native frame timestamp")
             if self.color is not None and color != self.color:
                 raise DecodeError("Dynamic native video color metadata")
@@ -885,23 +949,34 @@ class NativeFrameReader:
                 self.interpretation_flags,
             )
 
+    def _audit_result(self):
+        """Raise the audit's own error if it failed (the timestamps come from ffprobe, possibly still running)."""
+        pending = self.audit[10]
+        if isinstance(pending, _PendingAudit):
+            pending.result()
+
     def __exit__(self, exc_type, exc, traceback):
-        self.stop.set()
-        if self.proc is not None:
-            if self.proc.poll() is None:
-                if self.paused:
-                    self._signal(signal.SIGCONT)
-                self._signal(signal.SIGKILL)
-            self.proc.wait()
-            if self.worker is not None:
-                self.worker.join()
-            self.proc.stdout.close()
-            self.proc.stderr.close()
-        if exc_type is None:
-            if self.termination is None:
-                raise DecodeError("Native frame verification was not exhausted")
-            check_current(self.media)
-        return False
+        try:
+            self.stop.set()
+            if self.proc is not None:
+                if self.proc.poll() is None:
+                    if self.paused:
+                        self._signal(signal.SIGCONT)
+                    self._signal(signal.SIGKILL)
+                self.proc.wait()
+                if self.worker is not None:
+                    self.worker.join()
+                self.proc.stdout.close()
+                self.proc.stderr.close()
+            if exc_type is None:
+                self._audit_result()
+                if self.termination is None:
+                    raise DecodeError("Native frame verification was not exhausted")
+                check_current(self.media)
+            return False
+        finally:
+            if self._owns_audit:
+                _close_audit(self.audit)
 
 
 class _FallbackFrames:
@@ -942,15 +1017,19 @@ class _FallbackFrames:
         # The audit decodes the whole window in ffprobe once; the repeat reuses it. It also names the stream's codec,
         # so only a device verified for that codec is tried, the best one first.
         audit = self._audit = _native_audit(*self._args)
-        pix, width, height, codec, profile = audit[0], audit[1], audit[2], audit[12], audit[13]
-        ffmpeg = self._args[7]
-        usable = [
-            a
-            for a in self._attempts
-            if a is not None and acceleration.eligible(a, ffmpeg, codec, profile, pix, width, height)
-        ]
-        self._attempts = [*usable[:1], None]
-        self._open()
+        try:
+            pix, width, height, codec, profile = audit[0], audit[1], audit[2], audit[12], audit[13]
+            ffmpeg = self._args[7]
+            usable = [
+                a
+                for a in self._attempts
+                if a is not None and acceleration.eligible(a, ffmpeg, codec, profile, pix, width, height)
+            ]
+            self._attempts = [*usable[:1], None]
+            self._open()
+        except BaseException:
+            _close_audit(audit)
+            raise
         return self
 
     def __iter__(self):
@@ -964,6 +1043,8 @@ class _FallbackFrames:
         raise DecodeError("GPU and CPU decodes of the same window disagree: " + why)
 
     def _retry(self, exc):
+        # A decode that ended on the audit's own failure is not the GPU's: repeating it would only reach the same end.
+        _raise_failed_audit(self._audit)
         failed = self._attempts[self._step]
         self._failed.append((failed, str(exc)))
         reader, self._reader = self._reader, None
@@ -1002,28 +1083,34 @@ class _FallbackFrames:
             return frame
 
     def __exit__(self, exc_type, exc, traceback):
-        reader = self._reader
-        if reader is None or self._closed:
-            return False
-        self._closed = True
-        result = reader.__exit__(exc_type, exc, traceback)
-        if exc_type is None:
-            # Finished and exhausted. Whoever completed it, the devices that failed first are at fault, not the file.
-            if reader.accelerated:
-                acceleration.record_gpu(
-                    reader.accel,
-                    acceleration.family_of(reader.codec, reader.profile, reader.pix, reader.width, reader.height),
-                )
-            else:
-                acceleration.record_cpu()
-            for accel, reason in self._failed:
-                acceleration.record_fallback(accel, reason)
-        return result
+        try:
+            reader = self._reader
+            if reader is None or self._closed:
+                return False
+            self._closed = True
+            result = reader.__exit__(exc_type, exc, traceback)
+            if exc_type is None:
+                # Finished and exhausted. Whoever completed it, the devices that failed first are at fault, not the file.
+                if reader.accelerated:
+                    acceleration.record_gpu(
+                        reader.accel,
+                        acceleration.family_of(reader.codec, reader.profile, reader.pix, reader.width, reader.height),
+                    )
+                else:
+                    acceleration.record_cpu()
+                for accel, reason in self._failed:
+                    acceleration.record_fallback(accel, reason)
+            return result
+        finally:
+            _close_audit(self._audit)
 
 
 def native_frames(media, stream, start_ms, end_ms, cancel_check, pause_check, threads, *, ffmpeg_path=None):
     selected = ffmpeg_path if ffmpeg_path is not None else ffmpeg_binary()
     attempts = acceleration.plan(selected)
+    # The comparison of frame pairs runs on the same NVIDIA GPU the owner allows for decoding (or on none).
+    cuda_metrics.use(next((a.cuda_index for a in attempts if a.cuda_index is not None), None))
+    attempts = acceleration.order(attempts)
     if not attempts:
         acceleration.record_cpu()
         return NativeFrameReader(media, stream, start_ms, end_ms, cancel_check, pause_check, threads, selected)

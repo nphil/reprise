@@ -7,11 +7,12 @@ import json
 import secrets
 import uuid
 from dataclasses import asdict, replace
+from datetime import datetime
 
 from .admission import pair_provenance
 from .identity import is_current
 from .models import (
-    ORIGIN_PLEX,
+    SUGGESTION_ORIGINS,
     AnalysisResult,
     ClientPrincipal,
     DecisionRange,
@@ -24,10 +25,13 @@ from .verification_profile import POLICY_VERSION, is_current_profile
 
 DEFAULT_SCOPES = ("results:read", "jobs:read")
 ALLOWED_SCOPES = frozenset((*DEFAULT_SCOPES, "analysis:request"))
-# A review key, not stored: the client's deliberate "yes" to approving a range Plex suggested and Reprise did not confirm.
-PLEX_ACKNOWLEDGMENT = "acknowledge_plex_suggestion"
-PLEX_NEEDS_ACKNOWLEDGMENT = (
-    "A range Plex suggested needs a deliberate approval: send acknowledge_plex_suggestion: true with that range."
+# Review keys, not stored: the client's deliberate "yes" to approving a range someone suggested (Plex, or an online
+# database) and Reprise did not confirm. ``acknowledge_plex_suggestion`` is the key from before online suggestions
+# existed and is still accepted for any suggestion.
+SUGGESTION_ACKNOWLEDGMENT = "acknowledge_suggestion"
+LEGACY_PLEX_ACKNOWLEDGMENT = "acknowledge_plex_suggestion"
+NEEDS_ACKNOWLEDGMENT = (
+    "A suggested range needs a deliberate approval: send acknowledge_suggestion: true with that range."
 )
 
 
@@ -53,7 +57,19 @@ def _range(data):
     data = dict(data)
     data["evidence_ids"] = tuple(data["evidence_ids"])
     data["audio_stream_ids"] = tuple(data["audio_stream_ids"])
+    data["suggested_by"] = tuple(data.get("suggested_by", ()))
     return DecisionRange(**data)
+
+
+def _owner_decided(r, override_ids):
+    """Whether a range is the owner's: made or locked by them, overridden by them, or a keep they have reviewed.
+    A new analysis preserves these ranges."""
+    return (
+        r.origin == "manual"
+        or r.locked
+        or r.id in override_ids
+        or (r.action == "keep" and r.review_status != "proposed")
+    )
 
 
 def _validate_range(r, duration):
@@ -61,7 +77,7 @@ def _validate_range(r, duration):
         r.kind not in ("intro", "credits", "recap", "preview")
         or r.action not in ("skip", "keep")
         or r.review_status not in ("proposed", "approved", "rejected")
-        or r.origin not in ("manual", "detector", ORIGIN_PLEX)
+        or r.origin not in ("manual", "detector", *SUGGESTION_ORIGINS)
         or type(r.start_ms) is not int
         or type(r.end_ms) is not int
         or not 0 <= r.start_ms < r.end_ms <= duration
@@ -85,6 +101,7 @@ class RepriseStore:
                 "CREATE TABLE IF NOT EXISTS reprise_analysis_proposals (version_id TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(version_id,id))",
                 "CREATE TABLE IF NOT EXISTS reprise_manual_overrides (version_id TEXT NOT NULL, range_id TEXT NOT NULL, data TEXT NOT NULL, actor TEXT NOT NULL, quarantined INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(version_id,range_id))",
                 "CREATE TABLE IF NOT EXISTS reprise_api_clients (id TEXT PRIMARY KEY, name TEXT NOT NULL, scopes TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, revoked INTEGER NOT NULL DEFAULT 0)",
+                "CREATE TABLE IF NOT EXISTS reprise_online_answers (source TEXT NOT NULL, lookup_key TEXT NOT NULL, status TEXT NOT NULL, candidates TEXT NOT NULL, parser_version INTEGER NOT NULL, fetched_at TEXT NOT NULL, PRIMARY KEY(source,lookup_key))",
             ):
                 c.execute(sql)
 
@@ -347,6 +364,54 @@ class RepriseStore:
         with self.marker_store._reading(snapshot=True) as c:
             return self._result(c, media_version_id)
 
+    @staticmethod
+    def _override_ids(c, media_version_id):
+        return {
+            row["range_id"]
+            for row in c.execute(
+                "SELECT range_id FROM reprise_manual_overrides WHERE version_id=? AND quarantined=0",
+                (media_version_id,),
+            )
+        }
+
+    def owner_keep_ranges(self, media_version_id):
+        """The (start, end) of every range the owner keeps: added or locked by them, or a keep they reviewed. A new
+        analysis preserves these, so it must not fill a gap across one."""
+        with self.marker_store._reading(snapshot=True) as c:
+            result = self._result(c, media_version_id)
+            overrides = self._override_ids(c, media_version_id)
+        return tuple(
+            (r.start_ms, r.end_ms)
+            for r in (result.ranges if result else ())
+            if r.action == "keep" and _owner_decided(r, overrides)
+        )
+
+    def online_answer(self, source, lookup_key):
+        """What an online source answered for one episode, as ``online.OnlineLookups`` stored it; None when never asked."""
+        with self.marker_store._reading(snapshot=True) as c:
+            row = c.execute(
+                "SELECT status,candidates,parser_version,fetched_at FROM reprise_online_answers WHERE source=? AND lookup_key=?",
+                (source, lookup_key),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "status": row["status"],
+            "candidates": row["candidates"],
+            "parser_version": row["parser_version"],
+            "fetched_at": datetime.fromisoformat(row["fetched_at"]),
+        }
+
+    def save_online_answer(self, source, lookup_key, status, candidates, parser_version, fetched_at):
+        """Remember an online source's answer ("ok", or "no_data" for no entry) for one episode."""
+        with self.transaction() as c:
+            c.execute(
+                "INSERT INTO reprise_online_answers VALUES (?,?,?,?,?,?) ON CONFLICT(source,lookup_key) DO UPDATE SET "
+                "status=excluded.status,candidates=excluded.candidates,parser_version=excluded.parser_version,"
+                "fetched_at=excluded.fetched_at",
+                (source, lookup_key, status, candidates, parser_version, fetched_at.isoformat()),
+            )
+
     def begin_analysis(self, media_version_id, job_id, signature):
         if not signature or not job_id:
             raise ValueError("job and signature required")
@@ -404,7 +469,7 @@ class RepriseStore:
                     raise ValueError("invalid evidence range")
             for r in ranges:
                 _validate_range(r, duration)
-                if r.review_status != "proposed" or r.origin not in ("detector", ORIGIN_PLEX) or r.locked:
+                if r.review_status != "proposed" or r.origin not in ("detector", *SUGGESTION_ORIGINS) or r.locked:
                     raise ValueError("analysis produces proposals only")
             previous = self._result(c, expected_media_version)
             if not previous or previous.analysis_id != analysis_id or previous.analysis_status != "running":
@@ -423,7 +488,7 @@ class RepriseStore:
                         }
                     )
                     for r in items
-                    if r.origin in ("detector", ORIGIN_PLEX)
+                    if r.origin in ("detector", *SUGGESTION_ORIGINS)
                 )
 
             baseline = tuple(
@@ -447,21 +512,8 @@ class RepriseStore:
                     ("complete", analysis_id, _json(reasons), expected_media_version),
                 )
             else:
-                override_ids = {
-                    row["range_id"]
-                    for row in c.execute(
-                        "SELECT range_id FROM reprise_manual_overrides WHERE version_id=? AND quarantined=0",
-                        (expected_media_version,),
-                    )
-                }
-                preserved = [
-                    r
-                    for r in (previous.ranges if previous else ())
-                    if r.origin == "manual"
-                    or r.locked
-                    or r.id in override_ids
-                    or (r.action == "keep" and r.review_status != "proposed")
-                ]
+                override_ids = self._override_ids(c, expected_media_version)
+                preserved = [r for r in (previous.ranges if previous else ()) if _owner_decided(r, override_ids)]
                 preserved = [replace(r, review_status="proposed") if r.action == "skip" else r for r in preserved]
                 ids = {r.id for r in preserved}
                 combined = preserved + [r for r in ranges if r.id not in ids]
@@ -553,7 +605,8 @@ class RepriseStore:
             for edit in edits:
                 edit = dict(edit)
                 supplied_id = edit.pop("range_id", None)
-                acknowledged = edit.pop(PLEX_ACKNOWLEDGMENT, None)
+                acknowledged = edit.pop(SUGGESTION_ACKNOWLEDGMENT, None)
+                legacy_acknowledged = edit.pop(LEGACY_PLEX_ACKNOWLEDGMENT, None)
                 if supplied_id is not None and supplied_id not in current:
                     raise RevisionConflict("range no longer exists")
                 if supplied_id is None and edit.get("action", "keep") != "keep":
@@ -586,15 +639,16 @@ class RepriseStore:
                 updated = replace(original, **edit)
                 _validate_range(updated, version.duration_ms)
                 if (
-                    updated.origin == ORIGIN_PLEX
+                    updated.origin in SUGGESTION_ORIGINS
                     and updated.action == "skip"
                     and updated.review_status == "approved"
                     and (original.review_status != "approved" or updated != original)
                     and acknowledged is not True
+                    and legacy_acknowledged is not True
                 ):
                     # Approving a range, or changing one already approved, is the owner's deliberate act for that
                     # range: nothing Reprise confirmed backs it, so a bulk or older client cannot do it by accident.
-                    raise ReviewRefused(PLEX_NEEDS_ACKNOWLEDGMENT)
+                    raise ReviewRefused(NEEDS_ACKNOWLEDGMENT)
                 if existing and original.action == "keep" and updated.action != "keep":
                     raise ValueError("a protected keep cannot be implicitly removed")
                 current[rid] = updated

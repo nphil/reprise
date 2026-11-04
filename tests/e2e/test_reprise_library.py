@@ -180,6 +180,7 @@ class RepriseApi:
         self.settings: dict = {
             "publication_available": False,
             "writes_enabled": False,
+            "online_lookups": True,
             "acceleration": {
                 "enabled": True,
                 "active": True,
@@ -275,6 +276,8 @@ class RepriseApi:
                 self.settings_patches.append(body)
                 if "writes_enabled" in body:
                     self.settings["writes_enabled"] = body["writes_enabled"]
+                if "online_lookups" in body:
+                    self.settings["online_lookups"] = body["online_lookups"]
                 if "gpu_decode" in body:
                     on = body["gpu_decode"]
                     self.settings["acceleration"].update(
@@ -443,19 +446,31 @@ def _plex(rid: str, kind: str, start: int, end: int, status: str = "proposed") -
         "origin": "plex",
         "reason_code": "plex_suggestion",
         "reason": "Suggested by Plex — not confirmed by Reprise.",
+        "suggested_by": ["Plex"],
+    }
+
+
+def _online(rid: str, kind: str, start: int, end: int, status: str = "proposed") -> dict:
+    return {
+        **_range(rid, kind, "skip", start, end, status),
+        "origin": "online",
+        "reason_code": "online_suggestion",
+        "reason": "Suggested by IntroDB — not confirmed by Reprise.",
+        "suggested_by": ["IntroDB"],
     }
 
 
 def _suggest(api: RepriseApi, *ranges: dict, reasons: tuple[str, ...] = ()) -> None:
-    """Spanish 101 now holds only what Plex suggested."""
-    open_count = sum(1 for r in ranges if r["review_status"] == "proposed")
+    """Spanish 101 now holds only what Plex or an online database suggested."""
+    open_ranges = [r for r in ranges if r["review_status"] == "proposed"]
     api.items[1]["ranges"] = {
         "skip": len(ranges),
         "keep": 0,
-        "proposed": open_count,
-        "approved": len(ranges) - open_count,
+        "proposed": len(open_ranges),
+        "approved": len(ranges) - len(open_ranges),
         "to_review": 0,
-        "suggested": open_count,
+        "suggested": len(open_ranges),
+        "suggested_by": list(dict.fromkeys(name for r in open_ranges for name in r["suggested_by"])),
     }
     api.results["v2"].update(result_revision=4, ranges=list(ranges), reasons=list(reasons))
 
@@ -491,8 +506,9 @@ class TestPlexSuggestions:
         expect(authed_page.locator("#rpMessage")).to_have_text("Review saved. Nothing was sent to Plex.")
         edits = {edit["range_id"]: edit for edit in api.reviews[0]["edits"]}
         assert edits["p-intro"]["review_status"] == "approved"
-        assert edits["p-intro"]["acknowledge_plex_suggestion"] is True
-        assert "acknowledge_plex_suggestion" not in edits["p-credits"]
+        assert edits["p-intro"]["acknowledge_suggestion"] is True
+        assert "acknowledge_suggestion" not in edits["p-credits"]
+        assert all("acknowledge_plex_suggestion" not in edit for edit in edits.values())
 
     def test_a_failed_comparison_still_shows_plex_suggestions_with_the_plain_headline(
         self, authed_page: Page, api: RepriseApi, app_url: str
@@ -539,7 +555,31 @@ class TestPlexSuggestions:
         expect(authed_page.locator("#rpMessage")).to_have_text("Review saved. Nothing was sent to Plex.")
         edits = {edit["range_id"]: edit for edit in api.reviews[0]["edits"]}
         assert edits["p-credits"]["review_status"] == "rejected"
-        assert all("acknowledge_plex_suggestion" not in edit for edit in edits.values())
+        assert all("acknowledge_suggestion" not in edit for edit in edits.values())
+
+    def test_an_online_suggestion_is_named_asks_first_and_sends_the_acknowledgement(
+        self, authed_page: Page, api: RepriseApi, app_url: str
+    ) -> None:
+        _suggest(api, _online("o-intro", "intro", 0, 45_000))
+        _open(authed_page, app_url)
+        expect(authed_page.locator(".rp-episode-open").nth(1).locator(".rp-chip")).to_have_text("1 suggestion")
+        authed_page.locator(".rp-episode-open").nth(1).click()
+        expect(authed_page.locator("#rpOutcome")).to_contain_text(
+            "IntroDB suggested 1 section to skip, but Reprise could not confirm it."
+        )
+        box = authed_page.locator(".rp-range").first
+        expect(box.locator(".rp-chip", has_text="IntroDB suggestion")).to_have_count(1)
+        box.locator(":scope > summary").click()
+        box.locator("label[data-value=approved]").click()
+        expect(box.locator(".rp-plex-confirm")).to_contain_text(
+            "IntroDB found this, Reprise could not confirm it. Approve it only if it is right."
+        )
+        box.get_by_role("button", name="Approve it").click()
+        expect(box.locator(".rp-chip", has_text="IntroDB suggestion · approved by you")).to_be_visible()
+        authed_page.locator("#rpSave").click()
+        expect(authed_page.locator("#rpMessage")).to_have_text("Review saved. Nothing was sent to Plex.")
+        edits = {edit["range_id"]: edit for edit in api.reviews[0]["edits"]}
+        assert edits["o-intro"]["acknowledge_suggestion"] is True
 
 
 @pytest.mark.e2e
@@ -607,6 +647,18 @@ class TestShellStatus:
         expect(hardware).to_contain_text("Analysis uses CPU (GPU decode is turned off).")
         expect(authed_page.locator("#rpHardwareToggle")).to_have_text("Use GPU when available")
         assert api.settings_patches == [{"gpu_decode": False}]
+
+    def test_the_library_has_a_switch_for_looking_up_intro_times_online(
+        self, authed_page: Page, api: RepriseApi, app_url: str
+    ) -> None:
+        _open(authed_page, app_url)
+        switch = authed_page.locator("#rpOnlineToggle")
+        expect(authed_page.locator("#rpOnline")).to_contain_text("Look up intro times online (IntroDB, SkipDB)")
+        expect(switch).to_be_checked()
+        switch.uncheck()
+        expect(authed_page.locator("#rpMessage")).to_have_text("Intro times will no longer be looked up online.")
+        expect(switch).not_to_be_checked()
+        assert api.settings_patches == [{"online_lookups": False}]
 
     def test_the_sharing_page_flips_the_plex_switch_and_updates_the_sidebar(
         self, authed_page: Page, api: RepriseApi, app_url: str

@@ -10,6 +10,7 @@ from fractions import Fraction
 
 import numpy as np
 
+from . import cuda_metrics
 from .verification_profile import PROFILE_SPEC
 
 CANDIDATE = PROFILE_SPEC["candidate"]
@@ -63,8 +64,27 @@ def descriptor(frame):
     return np.asarray(values, dtype=np.float32)
 
 
+def _plane_std(plane, bit_depth):
+    return float(plane_array(plane).std(dtype=np.float64)) * 255 / ((1 << bit_depth) - 1)
+
+
 def spatial_information(frame):
-    return max(float(plane_array(p).std(dtype=np.float64)) * 255 / ((1 << frame.bit_depth) - 1) for p in frame.planes)
+    """The largest within-plane population standard deviation, normalised to 8 bits.
+
+    Only ever compared with ``plane_std``, so it comes from the planes' exact integer moments (sum and sum of squares:
+    no float64 copy of the plane, 3x faster) instead of numpy's float64 two-pass. The two agree to 1e-14; within 1e-6 of
+    the limit the numpy value decides, so the comparison is the one numpy's value would give.
+    """
+    limit = CANDIDATE["plane_std"]
+    best = 0.0
+    for plane in frame.planes:
+        flat = plane_array(plane).reshape(-1)
+        n = flat.size
+        total = int(flat.sum(dtype=np.uint64))
+        squares = int(np.einsum("i,i->", flat, flat, dtype=np.uint64))
+        value = math.sqrt((n * squares - total * total) / (n * n)) * 255 / ((1 << frame.bit_depth) - 1)
+        best = max(best, _plane_std(plane, frame.bit_depth) if abs(value - limit) < 1e-6 else value)
+    return best
 
 
 def perceptual_shifts(target, reference):
@@ -236,6 +256,8 @@ def _signed_local(data, size, integral):
 
 
 def video_metrics(left, right):
+    """Every metric's worst value over the planes (None when the frames are not comparable): the reference the
+    verdict functions are tested against, and the numbers behind a diagnosis."""
     if (
         left.interpretation_flags
         or right.interpretation_flags
@@ -265,9 +287,52 @@ def video_metrics(left, right):
     return maxima
 
 
+def _plane_matches(left_data, right_data, bit_depth):
+    """Whether every VIDEO limit holds on one plane pair, stopping at the first limit exceeded.
+
+    The limits are one conjunction, so the stop gives the verdict ``video_metrics`` gives; it only skips metrics that can
+    no longer change it. The arithmetic of every metric is ``video_metrics``'s own, cheapest metrics first: a pair that
+    differs (a neighbouring frame, another scene) fails on the peak alone, which costs 1/15th of the full set.
+    """
+    scale = 255 / ((1 << bit_depth) - 1)
+    raw = left_data.astype(np.float32) - right_data.astype(np.float32)
+    absolute = np.abs(raw) * scale
+    if float(absolute.max()) > VIDEO["peak"]:
+        return False
+    for size in (4, 8):
+        if _local_max(absolute, size) > VIDEO["local" + str(size)]:
+            return False
+    if _local_max((absolute > VIDEO["concentration_level"]).astype(np.float32), 8) > VIDEO["concentration8"]:
+        return False
+    residual = raw * 255 / ((1 << bit_depth) - 1)
+    integral = _integral(residual)
+    return all(_signed_local(residual, size, integral) <= VIDEO["signed" + str(size)] for size in (8, 16, 32))
+
+
 def video_matches(left, right):
-    metrics = video_metrics(left, right)
-    return metrics is not None and all(value <= VIDEO[key] for key, value in metrics.items())
+    """Whether two decoded frames agree within every VIDEO limit (``video_metrics``'s verdict, computed lazily).
+
+    Each plane pair goes to the GPU first when one is usable (``cuda_metrics``): it answers pass or fail only when the
+    exact result is outside the arithmetic's error band, and None otherwise, which is decided here on the CPU.
+    """
+    if (
+        left.interpretation_flags
+        or right.interpretation_flags
+        or frame_declarations(left) != frame_declarations(right)
+        or len(left.planes) != len(right.planes)
+    ):
+        return False
+    pairs = list(zip(left.planes, right.planes, strict=True))
+    if any((a.width, a.height, a.sample_bytes) != (b.width, b.height, b.sample_bytes) for a, b in pairs):
+        return False
+    for a, b in pairs:
+        left_data, right_data = plane_array(a), plane_array(b)
+        verdict = cuda_metrics.plane_verdict(left_data, right_data, left.bit_depth)
+        if verdict is None:
+            verdict = _plane_matches(left_data, right_data, left.bit_depth)
+        if not verdict:
+            return False
+    return True
 
 
 class AudioVerifier:

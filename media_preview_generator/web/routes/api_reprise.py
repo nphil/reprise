@@ -326,6 +326,7 @@ def create_reprise_blueprint(service):
             "review_status",
             "locked",
             "reason",
+            "acknowledge_suggestion",
             "acknowledge_plex_suggestion",
         }
         if any(
@@ -364,19 +365,23 @@ def create_reprise_blueprint(service):
     @owner
     def settings():
         if request.method == "PATCH":
-            data = _body({"writes_enabled", "gpu_decode"})
+            data = _body({"writes_enabled", "gpu_decode", "online_lookups"})
             if not data or any(type(value) is not bool for value in data.values()):
                 raise ValueError("Invalid setting")
             if "writes_enabled" in data:
                 service.set_writes_enabled(data["writes_enabled"])
             if "gpu_decode" in data:
                 acceleration.set_enabled(data["gpu_decode"])
+            if "online_lookups" in data:
+                service.set_online_lookups_enabled(data["online_lookups"])
         publisher = service.publisher
         return jsonify(
             publication_available=publisher is not None,
             writes_enabled=bool(getattr(publisher, "writes_enabled", False)),
             # What decodes analysis frames now: label (for display), active, per-device state and counters.
             acceleration=acceleration.status(),
+            # The owner's switch for asking public databases where an episode's intro and credits are.
+            online_lookups=service.online_lookups_enabled(),
         )
 
     @bp.route("/api/reprise/clients", methods=["GET", "POST"])

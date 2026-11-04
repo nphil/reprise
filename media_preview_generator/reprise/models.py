@@ -45,10 +45,15 @@ class Evidence:
     metrics: dict
 
 
-# A range's origin when it is Plex's own intro/credits marker, offered as a suggestion that no comparison of episodes
-# confirmed. It is never eligible to skip until the owner approves that exact range.
+# A range's origin when it is a suggestion no comparison of episodes confirmed: Plex's own intro/credits marker
+# (``plex``), or the times an online database (IntroDB, SkipDB, TheIntroDB) gives for the episode (``online``). A
+# suggestion is never eligible to skip until the owner approves that exact range. When Plex and a database agree it is
+# one suggestion, origin ``plex`` (Plex already has the marker), naming both in ``suggested_by``.
 ORIGIN_PLEX = "plex"
+ORIGIN_ONLINE = "online"
+SUGGESTION_ORIGINS = (ORIGIN_PLEX, ORIGIN_ONLINE)
 REASON_PLEX_SUGGESTION = "plex_suggestion"
+REASON_ONLINE_SUGGESTION = "online_suggestion"
 
 
 @dataclass(frozen=True)
@@ -66,6 +71,9 @@ class DecisionRange:
     evidence_ids: tuple[str, ...]
     audio_stream_ids: tuple[str, ...]
     terminal: bool = False
+    # Who suggested a suggestion range, in display order ("Plex", "IntroDB", ...); empty on every other range, and on
+    # Plex suggestions stored before online databases were used (those are Plex's).
+    suggested_by: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -88,6 +96,20 @@ class CandidateWindow:
     start_ms: int
     end_ms: int
     source: str
+
+
+@dataclass(frozen=True)
+class OnlineWindow:
+    """Where online databases put one episode's intro or credits, read on that file's own clock.
+
+    ``sources`` names every database that gave these times (agreeing within a few seconds), best first; ``dissent``
+    names those that gave the same kind other times and were left out."""
+
+    kind: str
+    start_ms: int
+    end_ms: int
+    sources: tuple[str, ...]
+    dissent: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

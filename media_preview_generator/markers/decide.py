@@ -1225,6 +1225,21 @@ def _on_file_clock(of_type: list[Candidate], ctx: DecisionContext) -> list[Candi
     return out
 
 
+def read_on_file_clock(of_type: list[Candidate], ctx: DecisionContext) -> list[Candidate]:
+    """One type's candidates the rules would use for this file, with online times read on its own clock: what
+    :func:`_on_file_clock` returns, for callers outside the decision rules (Reprise reads the databases' times for an
+    episode this way before using them as hints and suggestions).
+
+    Args:
+        of_type: One type's candidates.
+        ctx: The file's context (its duration and frame rate).
+
+    Returns:
+        The sane candidates, an online answer scaled where it was timed at the other speed.
+    """
+    return _on_file_clock(of_type, ctx)
+
+
 def _without_another_releases_intro(sane: list[Candidate], ctx: DecisionContext) -> list[Candidate]:
     """The candidates without an intro or recap that is season audio's on another release's clock (rule 14).
 

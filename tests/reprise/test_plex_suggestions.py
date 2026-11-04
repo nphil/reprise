@@ -7,7 +7,7 @@ from media_preview_generator.reprise.identity import media_version
 from media_preview_generator.reprise.models import DecisionRange, Evidence, PlaybackIdentity, ReviewRefused
 from media_preview_generator.reprise.policy import eligible_ranges
 from media_preview_generator.reprise.review import plex_projection
-from media_preview_generator.reprise.store import PLEX_NEEDS_ACKNOWLEDGMENT, RepriseStore
+from media_preview_generator.reprise.store import NEEDS_ACKNOWLEDGMENT, RepriseStore
 from media_preview_generator.reprise.verification_profile import PROFILE_FINGERPRINT, PROFILE_ID
 from tests.reprise.test_api_http import registered_episode
 
@@ -147,7 +147,7 @@ def test_the_review_api_asks_for_a_deliberate_approval_then_serves_the_eligible_
     url = "/api/reprise/media/" + version.id
     body = {"expected_revision": result.result_revision, "edits": [{"range_id": "intro", "review_status": "approved"}]}
     refused = client.patch(url + "/review", json=body)
-    assert (refused.status_code, refused.get_json()) == (400, {"error": PLEX_NEEDS_ACKNOWLEDGMENT})
+    assert (refused.status_code, refused.get_json()) == (400, {"error": NEEDS_ACKNOWLEDGMENT})
     assert not client.get(url + "/result").get_json()["eligible_skip_ranges"]
     body["edits"][0].update(ACKNOWLEDGED)
     assert client.patch(url + "/review", json=body).status_code == 200

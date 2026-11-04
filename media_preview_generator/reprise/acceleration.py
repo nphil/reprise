@@ -15,6 +15,8 @@ the CPU cannot decode fails exactly as it did before.
 
 from __future__ import annotations
 
+import contextlib
+import os
 import re
 import subprocess
 import threading
@@ -73,6 +75,14 @@ class Accelerator:
     @property
     def method(self) -> str:
         return "NVDEC" if self.kind == "cuda" else "VAAPI"
+
+    @property
+    def cuda_index(self) -> int | None:
+        """The CUDA device index of an NVIDIA GPU ("cuda:1" is 1), None for any other kind."""
+        if self.kind != "cuda":
+            return None
+        index = self.device.partition(":")[2]
+        return int(index) if index.isdigit() else None
 
     @property
     def title(self) -> str:
@@ -302,6 +312,31 @@ def plan(ffmpeg: str) -> list[Accelerator]:
         if allowed and not _suspended(accel) and _families(accel, ffmpeg, verify(accel, ffmpeg)):
             ready.append(accel)
     return ready
+
+
+_slot = threading.local()
+
+
+@contextlib.contextmanager
+def pinned(slot: int):
+    """Searches that run side by side each hold one slot; with REPRISE_SPREAD_DECODERS=1 ``order`` then starts each
+    with a different device (a P40's decoder and an Intel iGPU's at once instead of everything on the P40's)."""
+    previous = getattr(_slot, "value", None)
+    _slot.value = slot
+    try:
+        yield
+    finally:
+        _slot.value = previous
+
+
+def order(devices: list[Accelerator]) -> list[Accelerator]:
+    """``plan``'s devices, rotated so this thread's slot picks the first one tried. Which device decodes never changes
+    what is decoded (each is parity-checked per codec family, and a failed decode repeats on the CPU), only where."""
+    slot = getattr(_slot, "value", None)
+    if slot is None or len(devices) < 2 or os.environ.get("REPRISE_SPREAD_DECODERS") != "1":
+        return devices
+    start = slot % len(devices)
+    return devices[start:] + devices[:start]
 
 
 def warm(ffmpeg: str | None = None) -> None:

@@ -9,7 +9,7 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-PROFILE_ID = "native-signal-review-first-v5"
+PROFILE_ID = "native-signal-review-first-v7"
 PROFILE_SPEC: dict[str, Any] = {
     "id": PROFILE_ID,
     "admission_revision": "episode-provenance-1",
@@ -102,8 +102,21 @@ PROFILE_SPEC: dict[str, Any] = {
         "guard_ms": 250,
         "minimum_run_ms": 500,
         "guards": "Conservative content/word preservation, NOT timestamp uncertainty or a frame-gap derivation",
-        "rounding": "Failed audio supports round outward before guards; intersect rational video/audio; anchor then ceil start/floor end; never bridge holes",
+        "rounding": "Failed audio supports round outward before guards; intersect rational video/audio; anchor then ceil start/floor end; never bridge holes except as the bridge section allows",
         "pieces": "Sort target start then descending length; target nonoverlap and monotonic nonreused reference time; picture and sound offsets change only across separately anchored holes",
+    },
+    "bridge": {
+        "max_gap_ms": 3000,
+        "suggested_window": True,
+        "rule": "Inside one suggested window for the exact file (a Plex marker, or the times an online database gives), a hole between two neighbouring confirmed runs (each confirmed by sound and picture against a reference) is filled when it is at most max_gap_ms long, lies entirely inside the window, and no range the owner keeps overlaps it; the filled hole is its own match evidence marked bridged with its start, end and length, carries the reference and channel details of the run before it and no offset, and counts as confirmed time for plex_confirmed_share; holes longer than max_gap_ms, holes touching the window's ends or outside it, and files with no suggested window are never filled and stay protected keeps; the result is still a proposal the owner approves",
+    },
+    "online": {
+        "sources": ["skipdb", "introdb", "theintrodb"],
+        "agree_ms": 5000,
+        "kinds": ["intro", "credits"],
+        "times": "Each episode is asked once per source and remembered; IntroDB and TheIntroDB carry no duration, SkipDB is matched to the file's duration; a time is read on the file's own clock by the Intro & Credits rules (25 fps against film rate) and dropped when it is not plausible for the file",
+        "hints": "A hint only adds a search place and never decides: when comparing the target's window against the default reference neighbourhood confirmed less than plex_confirmed_share of it, the reference is also searched where the target's online position, shifted by the reference's own online position, puts it (or around the reference's online position when the target has none); sound and picture confirmation decide exactly as before",
+        "windows": "An online time is a suggested window like Plex's: it is compared the same way and confirmed by at least plex_confirmed_share, otherwise stored as a proposed skip with origin online naming its sources; where it agrees with a Plex marker of the same kind within agree_ms at both ends it names both on the Plex suggestion; where it overlaps a Plex marker of the same kind and differs it is not added; the opening and ending fallback windows give way to it",
     },
     "anchors": {
         "edge_ms": 500,
@@ -182,7 +195,7 @@ PROFILE_SPEC: dict[str, Any] = {
         "resources": "one analysis CPU/FFmpeg threads1; bounded retained frames/chunks, not a universal2GiB whole-app guarantee; late audio prefix is linear work, not fast seeking",
     },
     "limitations": "Magnitude4x masks same-bin additions; equal-amplitude phase dead zone through60degrees; floors/persistence miss sufficiently brief,weak,drifting changes; no semantic guarantee; new protected failure remains failure",
-    "suggestions": "Plex's own intro and credits markers for the exact file are the comparison's to propose only when verified runs cover at least plex_confirmed_share of the marker; otherwise the marker is stored as a proposed skip with origin plex, the smaller confirmed fragments inside it are dropped and noted, and it is never eligible until the owner approves that exact range with an explicit acknowledgment; keep vetoes, freshness and review rules unchanged",
+    "suggestions": "Plex's own intro and credits markers for the exact file, and the times online databases give for it, are the comparison's to propose only when verified runs plus filled bridge holes cover at least plex_confirmed_share of the window; otherwise the window is stored as a proposed skip with origin plex or online naming who suggested it, the smaller confirmed fragments inside it are dropped and noted, and it is never eligible until the owner approves that exact range with an explicit acknowledgment; keep vetoes, freshness and review rules unchanged",
 }
 ADMISSION_REVISION = PROFILE_SPEC["admission_revision"]
 PROFILE_FINGERPRINT = hashlib.sha256(

@@ -152,10 +152,11 @@ paths:
                       review_status: {type: string, enum: [proposed, approved, rejected]}
                       locked: {type: boolean}
                       reason: {type: string}
-                      acknowledge_plex_suggestion: {type: boolean, description: "Required (true) on an edit that approves a range with origin plex, or changes one already approved; otherwise the whole review is refused with 400 and nothing is saved. Send it only for a range the owner deliberately approved."}
+                      acknowledge_suggestion: {type: boolean, description: "Required (true) on an edit that approves a range whose origin is plex or online, or changes one already approved; otherwise the whole review is refused with 400 and nothing is saved. Send it only for a range the owner deliberately approved."}
+                      acknowledge_plex_suggestion: {type: boolean, description: "The older name of acknowledge_suggestion, still accepted for any suggestion, whether it came from Plex or an online database."}
       responses:
         '200': {description: Saved revision}
-        '400': {description: "Invalid review, or a Plex suggestion approved without acknowledge_plex_suggestion; the body is {error: <plain sentence>}"}
+        '400': {description: "Invalid review, or a suggested range (origin plex or online) approved without acknowledge_suggestion; the body is {error: <plain sentence>}"}
         '409': {$ref: '#/components/responses/Conflict'}
   /api/reprise/analyses:
     post:
@@ -173,15 +174,15 @@ paths:
       responses:
         '200':
           description: Publication availability, write status and what decodes analysed video (a verified GPU, or the CPU)
-          content: {application/json: {schema: {type: object, required: [publication_available, writes_enabled, acceleration], properties: {publication_available: {type: boolean}, writes_enabled: {type: boolean}, acceleration: {$ref: '#/components/schemas/Acceleration'}}}}}
+          content: {application/json: {schema: {type: object, required: [publication_available, writes_enabled, acceleration, online_lookups], properties: {publication_available: {type: boolean}, writes_enabled: {type: boolean}, acceleration: {$ref: '#/components/schemas/Acceleration'}, online_lookups: {type: boolean, description: "The owner's switch for asking public intro and credits databases (IntroDB, SkipDB, and TheIntroDB when it has a key) where an episode's intro and credits are. On unless explicitly turned off."}}}}}
     patch:
-      summary: Change a setting - Plex writes (disabled by default) and/or GPU decoding (on by default); send either or both
+      summary: Change a setting - Plex writes (disabled by default), GPU decoding (on by default) and/or online intro and credits lookups (on by default); send any of them
       security: [{owner: []}]
       requestBody:
         required: true
-        content: {application/json: {schema: {type: object, additionalProperties: false, minProperties: 1, properties: {writes_enabled: {type: boolean}, gpu_decode: {type: boolean}}}}}
+        content: {application/json: {schema: {type: object, additionalProperties: false, minProperties: 1, properties: {writes_enabled: {type: boolean}, gpu_decode: {type: boolean}, online_lookups: {type: boolean}}}}}
       responses:
-        '200': {description: Publication availability and write status}
+        '200': {description: "Publication availability, write status, the active video decoder and online_lookups, as in GET"}
         '400': {$ref: '#/components/responses/BadRequest'}
         '403': {$ref: '#/components/responses/Forbidden'}
   /api/reprise/jobs:
@@ -353,9 +354,10 @@ components:
         end_ms: {type: integer}
         review_status: {type: string, enum: [proposed, approved, rejected]}
         locked: {type: boolean}
-        origin: {type: string, enum: [detector, manual, plex], description: "plex marks Plex's own marker offered as a suggestion that comparing episodes did not confirm; it is never eligible until the owner approves that exact range"}
+        origin: {type: string, enum: [detector, manual, plex, online], description: "plex marks Plex's own marker, and online a time an online database (IntroDB, SkipDB, TheIntroDB) gave, offered as a suggestion that comparing episodes did not confirm; it is never eligible until the owner approves that exact range. When Plex and a database agree it is one range with origin plex and both named in suggested_by."}
         reason_code: {type: string}
         reason: {type: string}
+        suggested_by: {type: array, items: {type: string}, description: "Who suggested a range with origin plex or online, for example [Plex], [IntroDB], [Plex, IntroDB] or [IntroDB, SkipDB]. Empty on every other range; a Plex suggestion saved before online suggestions existed has it empty and is Plex's."}
         evidence_ids: {type: array, items: {type: string}}
         audio_stream_ids: {type: array, items: {type: string}}
         terminal: {type: boolean, default: false}
@@ -390,7 +392,7 @@ components:
           nullable: true
           description: What a finished analysis ended with, in plain sentences
           properties:
-            state: {type: string, enum: [found, suggested, nothing_found, failed, cancelled], description: "found = Reprise confirmed ranges to review; suggested = only Plex's markers, none confirmed"}
+            state: {type: string, enum: [found, suggested, nothing_found, failed, cancelled], description: "found = Reprise confirmed ranges to review; suggested = only Plex's or an online database's times, none confirmed"}
             message: {type: string}
             per_media:
               type: array

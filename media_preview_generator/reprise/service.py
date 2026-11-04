@@ -14,11 +14,14 @@ import time
 from dataclasses import asdict, replace
 from urllib.parse import urlsplit
 
+from loguru import logger
+
 from ..gpu.ffmpeg_capabilities import ffmpeg_binary
 from ..servers.ownership import apply_path_mappings
+from . import scan_cache
 from .admission import admit_references, pair_provenance
 from .identity import is_current, media_version
-from .models import ORIGIN_PLEX, AnalysisRefused, CandidateWindow, PlaybackIdentity
+from .models import SUGGESTION_ORIGINS, AnalysisRefused, CandidateWindow, PlaybackIdentity
 from .policy import eligible_ranges
 from .verification_profile import PROFILE_FINGERPRINT
 
@@ -30,16 +33,25 @@ CHANGED_ON_DISK = (
 )
 
 
+def _suggesters(ranges):
+    """Who suggested these ranges, in the order first met ("Plex", "IntroDB", ...); a Plex suggestion from before
+    online suggestions existed names no one, and is Plex's."""
+    return list(dict.fromkeys(name for r in ranges for name in (r.suggested_by or ("Plex",))))
+
+
 def _range_counts(ranges):
-    """``to_review``: skips Reprise confirmed and the owner has not decided; ``suggested``: Plex's, likewise."""
+    """``to_review``: skips Reprise confirmed and the owner has not decided; ``suggested``: Plex's or an online
+    database's, likewise, and ``suggested_by`` who they are."""
     undecided = [r for r in ranges if r.action == "skip" and r.review_status == "proposed"]
+    suggested = [r for r in undecided if r.origin in SUGGESTION_ORIGINS]
     return {
         "skip": sum(1 for r in ranges if r.action == "skip"),
         "keep": sum(1 for r in ranges if r.action == "keep"),
         "proposed": sum(1 for r in ranges if r.review_status == "proposed"),
         "approved": sum(1 for r in ranges if r.review_status == "approved"),
-        "to_review": sum(1 for r in undecided if r.origin != ORIGIN_PLEX),
-        "suggested": sum(1 for r in undecided if r.origin == ORIGIN_PLEX),
+        "to_review": sum(1 for r in undecided if r.origin not in SUGGESTION_ORIGINS),
+        "suggested": len(suggested),
+        "suggested_by": _suggesters(suggested),
     }
 
 
@@ -48,23 +60,32 @@ def _kinds_text(ranges):
     return " and ".join(kinds)
 
 
+def _suggesters_text(ranges):
+    """Who suggested these ranges, in plain words ("Plex", "Plex and IntroDB")."""
+    listed = _suggesters(ranges)
+    return listed[0] if len(listed) == 1 else f"{', '.join(listed[:-1])} and {listed[-1]}"
+
+
 def _analysis_summary(ranges, reasons):
-    """(state, sentence) for an analysis that finished: what it confirmed, what only Plex suggested, or the first
-    reason it proposed nothing."""
+    """(state, sentence) for an analysis that finished: what it confirmed, what only Plex or an online database
+    suggested, or the first reason it proposed nothing."""
     skips = [r for r in ranges if r.action == "skip"]
-    suggested = [r for r in skips if r.origin == ORIGIN_PLEX]
-    confirmed = [r for r in skips if r.origin != ORIGIN_PLEX]
+    suggested = [r for r in skips if r.origin in SUGGESTION_ORIGINS]
+    confirmed = [r for r in skips if r.origin not in SUGGESTION_ORIGINS]
     if confirmed:
         noun = "range" if len(confirmed) == 1 else "ranges"
         message = f"Found {len(confirmed)} {noun} to review ({_kinds_text(confirmed)})."
         if suggested:
-            message += f" Plex also suggested the {_kinds_text(suggested)}, which Reprise could not confirm."
+            message += (
+                f" {_suggesters_text(suggested)} also suggested the {_kinds_text(suggested)}, "
+                "which Reprise could not confirm."
+            )
         return "found", message
     if suggested:
         it = "it" if len(suggested) == 1 else "them"
         return "suggested", (
-            f"Plex suggested the {_kinds_text(suggested)}, but Reprise could not confirm {it} by comparing "
-            f"episodes. Review {it} before approving."
+            f"{_suggesters_text(suggested)} suggested the {_kinds_text(suggested)}, but Reprise could not confirm {it} "
+            f"by comparing episodes. Review {it} before approving."
         )
     return "nothing_found", reasons[0] if reasons else "Nothing was found to skip."
 
@@ -193,6 +214,7 @@ class RepriseService:
         self.publisher = None
         self._enqueue_lock = threading.Lock()
         self._refresh_locks = {}
+        self._show_ids = {}
 
     def set_writes_enabled(self, enabled):
         if type(enabled) is not bool or self.publisher is None:
@@ -921,11 +943,11 @@ class RepriseService:
                 f"Found ranges to review in {len(found)} of {len(per_media)} episodes." if many else found[0]["message"]
             )
             if many and suggested:
-                message += f" Plex suggested ranges in {len(suggested)} more."
+                message += f" Suggestions were made for {len(suggested)} more."
             return {"state": "found", "message": message, "per_media": per_media}
         if suggested:
             message = (
-                f"Plex suggested ranges in {len(suggested)} of {len(per_media)} episodes; Reprise could not confirm them."
+                f"Suggestions were made for {len(suggested)} of {len(per_media)} episodes; Reprise could not confirm them."
                 if many
                 else suggested[0]["message"]
             )
@@ -1067,6 +1089,76 @@ class RepriseService:
             if acquired:
                 lock.release()
 
+    def online_lookups_enabled(self):
+        from . import online
+
+        return online.switch_on()
+
+    def set_online_lookups_enabled(self, enabled):
+        from . import online
+
+        if type(enabled) is not bool:
+            raise ValueError("Invalid setting")
+        online.set_switch(enabled)
+
+    def _online_lookups(self):
+        """This job's online lookups (None when the switch is off or settings cannot be read): nothing here may fail an
+        analysis, so a problem only means no online times."""
+        from . import online
+
+        try:
+            lookups = online.OnlineLookups(self.store)
+        except Exception as exc:
+            logger.warning("Online lookups are unavailable: {}", type(exc).__name__)
+            return None
+        return lookups if lookups.sources else None
+
+    def _server_external_ids(self, server_id, rating_key):
+        return self.registry.get(server_id).get_external_ids(rating_key)
+
+    def _online_windows(self, lookups, version, bindings, references, job):
+        """Where the online databases put the intro and credits of this episode and of each reference, each read on
+        its own file's clock: ``{media version id: (OnlineWindow, ...)}``. Every episode is asked at most once; an episode
+        the databases don't know, or can't be asked, is simply missing."""
+        from . import online
+
+        if lookups is None:
+            return {}
+        identity, server_id, meta = bindings[0]
+        try:
+            key = (server_id, meta.get("show_key"))
+            ids = self._show_ids.get(key) if key[1] else None
+            if ids is None:
+                ids = online.show_ids(
+                    version.canonical_path, lambda: self._server_external_ids(server_id, identity.rating_key)
+                )
+                if key[1] and ids.is_episode:
+                    self._show_ids[key] = ids
+            if not ids.is_episode:
+                return {}
+            found = {}
+            files = [(version, meta)] + [
+                (ref, (self._bindings(ref.id) or [(None, None, {})])[0][2]) for ref in references
+            ]
+            for file, file_meta in files:
+                season, episode = file_meta.get("season"), file_meta.get("episode")
+                if not isinstance(season, int) or not isinstance(episode, int):
+                    continue
+                windows = lookups.windows(
+                    replace(ids, season=season, episode=episode),
+                    duration_ms=file.duration_ms,
+                    frame_rate=online.frame_rate_of(file.stream_signature),
+                    plex=[CandidateWindow(**c) for c in file_meta.get("candidates", [])],
+                    priority=job.priority,
+                    cancel_check=lambda: self.job_manager.is_cancellation_requested(job.id),
+                )
+                if windows:
+                    found[file.id] = windows
+            return found
+        except Exception as exc:
+            logger.warning("Online lookups failed: {}", type(exc).__name__)
+            return {}
+
     def run_job(self, job_id):
         from .analysis import (
             ENDING_WINDOW,
@@ -1082,6 +1174,10 @@ class RepriseService:
         from ..web.settings_manager import get_settings_manager
 
         ffmpeg_path = ffmpeg_binary()
+        # Frames scanned for one episode serve the episodes that compare with it (kept with the other state, bounded).
+        config_dir = getattr(self.job_manager, "config_dir", None)
+        if config_dir:
+            scan_cache.configure(os.path.join(config_dir, "reprise-scan-cache.db"))
 
         def paused():
             return self.job_manager.is_pause_requested(job_id) or get_settings_manager().processing_paused
@@ -1141,6 +1237,7 @@ class RepriseService:
             return
         if not library_request:
             ids = job.config["media_version_ids"]
+        lookups = self._online_lookups()
         for index, mid in enumerate(ids):
             from ..markers.freeze import Freeze
 
@@ -1205,12 +1302,16 @@ class RepriseService:
             admitted = admit_references(version, references, self.store)
             references = [ref for ref, _ in admitted]
             no_comparison_note = OTHER_EPISODES_NOT_READY if other_episodes else NO_OTHER_EPISODES
+            owner_keeps = self.store.owner_keep_ranges(mid)
+            online_windows = self._online_windows(lookups, version, bindings, references, job)
             signature = hashlib.sha256(
                 (
                     version.stream_signature
                     + json.dumps([asdict(c) for c in candidates], sort_keys=True)
                     + PROFILE_FINGERPRINT
                     + json.dumps([(ref.id, snapshot) for ref, snapshot in admitted])
+                    + json.dumps(owner_keeps)
+                    + json.dumps({k: [asdict(w) for w in v] for k, v in sorted(online_windows.items())})
                 ).encode()
             ).hexdigest()
             aid = self.store.begin_analysis(mid, job_id, signature)
@@ -1228,6 +1329,8 @@ class RepriseService:
                     ),
                     ffmpeg_threads=1,
                     ffmpeg_path=ffmpeg_path,
+                    owner_keeps=owner_keeps,
+                    online=online_windows,
                 )
                 if draft.status != "complete":
                     why = draft.reasons or (

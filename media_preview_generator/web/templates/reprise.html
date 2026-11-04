@@ -8,6 +8,10 @@
       <h1>Library</h1>
       <p>Pick episodes, analyze them, then review the intros and credits Reprise finds.</p>
       <p class="rp-hardware" id="rpHardware" hidden><i class="bi bi-cpu" aria-hidden="true"></i><span id="rpHardwareLabel"></span><button type="button" class="rp-btn quiet" id="rpHardwareToggle"></button></p>
+      <div class="rp-online" id="rpOnline" hidden>
+        <div class="form-check form-switch rp-switch"><input class="form-check-input" id="rpOnlineToggle" type="checkbox" role="switch" aria-describedby="rpOnlineHelp"><label class="form-check-label" for="rpOnlineToggle">Look up intro times online (IntroDB, SkipDB)</label></div>
+        <p class="rp-note" id="rpOnlineHelp">Reprise asks these public databases where an episode's intro and credits are (it sends the show's id, season, episode and the file's length, nothing else). Their times only tell it where to look and are offered as suggestions you must approve; they are never applied on their own.</p>
+      </div>
     </div>
     <div class="rp-actions"><button type="button" class="rp-btn" id="rpRefresh"><i class="bi bi-arrow-repeat" aria-hidden="true"></i>Refresh library</button></div>
   </header>

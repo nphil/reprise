@@ -18,6 +18,11 @@
     const clear = node => node.replaceChildren();
     const plural = (n, one, many = one + 's') => `${n} ${n === 1 ? one : many}`;
     const joinAnd = parts => { const list = parts.filter(Boolean); return list.length > 1 ? list.slice(0, -1).join(', ') + ' and ' + list[list.length - 1] : list[0] || ''; };
+    /* A suggestion is a range someone else proposed (Plex or an online database) that Reprise did not confirm. */
+    const isSuggestion = r => r.origin === 'plex' || r.origin === 'online';
+    const suggesters = r => (Array.isArray(r.suggested_by) && r.suggested_by.length ? r.suggested_by : ['Plex']);
+    const suggesterNames = ranges => [...new Set(ranges.flatMap(suggesters))];
+    const suggestionBadge = r => suggesters(r).join(' + ') + ' suggestion';
     const option = (value, label) => { const n = el('option', label); n.value = value; return n; };
     const pad = n => String(n).padStart(2, '0');
     /* Exact time as m:ss.mmm (or h:mm:ss.mmm): the unit of every range, so it is what the editors show. */
@@ -91,7 +96,8 @@
                     if (!(r.skip + r.keep)) return { label: 'Nothing found', tone: 'positive' };
                     if (!r.skip) return { label: 'Nothing to skip', tone: 'positive' };
                     const review = typeof r.to_review === 'number' ? r.to_review : r.proposed, suggested = r.suggested || 0;
-                    const shown = [review ? `${review} to review` : '', suggested ? `${suggested} Plex suggestion${suggested === 1 ? '' : 's'}` : ''].filter(Boolean);
+                    const who = r.suggested_by, plexOnly = Array.isArray(who) && who.length === 1 && who[0] === 'Plex';
+                    const shown = [review ? `${review} to review` : '', suggested ? plural(suggested, plexOnly ? 'Plex suggestion' : 'suggestion') : ''].filter(Boolean);
                     if (shown.length) return { label: shown.join(' · '), tone: 'accent' };
                     return { label: 'Reviewed', tone: 'positive' };
                 }
@@ -264,7 +270,7 @@
             // The open episode's own result is the freshest truth: keep its list row and header chip in step with it.
             item.analysis_status = r.analysis_status; item.freshness = r.freshness;
             const count = test => state.edits.filter(test).length;
-            if (r.analysis_status === 'complete' && !state.dirty) item.ranges = { skip: count(x => x.action === 'skip'), keep: count(x => x.action === 'keep'), proposed: count(x => x.review_status === 'proposed'), approved: count(x => x.review_status === 'approved'), to_review: count(x => x.action === 'skip' && x.review_status === 'proposed' && x.origin !== 'plex'), suggested: count(x => x.origin === 'plex' && x.review_status === 'proposed') };
+            if (r.analysis_status === 'complete' && !state.dirty) { const open = state.edits.filter(x => isSuggestion(x) && x.review_status === 'proposed'); item.ranges = { skip: count(x => x.action === 'skip'), keep: count(x => x.action === 'keep'), proposed: count(x => x.review_status === 'proposed'), approved: count(x => x.review_status === 'approved'), to_review: count(x => x.action === 'skip' && x.review_status === 'proposed' && !isSuggestion(x)), suggested: open.length, suggested_by: suggesterNames(open) }; }
         }
         paintChip($('rpStatusChip'), episodeStatus(item)); paintStatuses();
         const stale = !!r && r.freshness === 'stale', again = !!r && ['failed', 'cancelled', 'unsupported'].includes(r.analysis_status);
@@ -289,22 +295,23 @@
         }
         switch (r.analysis_status) {
             case 'complete': {
-                const plexRanges = state.edits.filter(x => x.origin === 'plex'), plexOpen = plexRanges.filter(x => x.review_status === 'proposed').length;
-                const skip = state.edits.filter(x => x.action === 'skip' && x.origin !== 'plex').length, keep = state.edits.filter(x => x.action === 'keep').length;
-                const pending = state.edits.filter(x => x.action === 'skip' && x.review_status === 'proposed' && x.origin !== 'plex').length;
+                const suggestions = state.edits.filter(isSuggestion), suggestionsOpen = suggestions.filter(x => x.review_status === 'proposed').length;
+                const names = suggesterNames(suggestions), plexOnly = names.length === 1 && names[0] === 'Plex', noun = plexOnly ? 'Plex suggestion' : 'suggestion';
+                const skip = state.edits.filter(x => x.action === 'skip' && !isSuggestion(x)).length, keep = state.edits.filter(x => x.action === 'keep').length;
+                const pending = state.edits.filter(x => x.action === 'skip' && x.review_status === 'proposed' && !isSuggestion(x)).length;
                 if (!state.edits.length) {
                     return setOutcome('none', 'No repeated intro or credits found.',
                         plain[0] || 'Reprise compared this episode with other episodes of the same season, but nothing matched closely enough to suggest a skip.',
                         box => { plain.slice(1).forEach(sentence => box.append(el('p', sentence))); details(box); });
                 }
-                const parts = joinAnd([skip ? plural(skip, 'section') + ' it can skip' : '', plexRanges.length ? plural(plexRanges.length, 'Plex suggestion') : '', keep ? plural(keep, 'protected scene') : '']);
-                const plexNote = plexOpen ? ' Plex suggestions are not confirmed by Reprise; approve each one yourself only if it is right.' : '';
-                const next = !skip && !plexRanges.length ? 'There is nothing to skip here. Protected scenes are never skipped.' : pending
-                    ? `${plural(pending, 'section')} still need${pending === 1 ? 's' : ''} your review. Nothing is skipped until you approve it and save.${plexNote}` : plexOpen
+                const parts = joinAnd([skip ? plural(skip, 'section') + ' it can skip' : '', suggestions.length ? plural(suggestions.length, noun) : '', keep ? plural(keep, 'protected scene') : '']);
+                const plexNote = suggestionsOpen ? ` ${plexOnly ? 'Plex suggestions are' : 'Suggestions are'} not confirmed by Reprise; approve each one yourself only if it is right.` : '';
+                const next = !skip && !suggestions.length ? 'There is nothing to skip here. Protected scenes are never skipped.' : pending
+                    ? `${plural(pending, 'section')} still need${pending === 1 ? 's' : ''} your review. Nothing is skipped until you approve it and save.${plexNote}` : suggestionsOpen
                         ? `Nothing is skipped until you approve it and save.${plexNote}` : 'Every section has a decision. Save the review to keep your choices.';
-                if (!skip && plexRanges.length) {
-                    const headline = plain[0] && !/^Plex/.test(plain[0]) ? plain[0] + ' ' : '';
-                    return setOutcome('suggested', `Plex suggested ${plural(plexRanges.length, 'section')} to skip, but Reprise could not confirm ${plexRanges.length === 1 ? 'it' : 'them'}.`, headline + next, details);
+                if (!skip && suggestions.length) {
+                    const headline = plain[0] && !names.some(n => plain[0].startsWith(n)) ? plain[0] + ' ' : '';
+                    return setOutcome('suggested', `${joinAnd(names)} suggested ${plural(suggestions.length, 'section')} to skip, but Reprise could not confirm ${suggestions.length === 1 ? 'it' : 'them'}.`, headline + next, details);
                 }
                 return setOutcome('found', `Reprise found ${parts}.`, next, details);
             }
@@ -396,7 +403,7 @@
         const timeline = $('rpTimeline'); clear(timeline);
         const bar = (cls, a, b, title) => { const s = el('span', null, `rp-timeline-segment ${cls}`); s.style.left = `${Math.max(0, a / duration * 100)}%`; s.style.width = `${Math.max(0, Math.min(duration, b) - a) / duration * 100}%`; s.title = title; timeline.append(s); };
         if (duration) {
-            for (const range of state.edits) if (range.end_ms > range.start_ms) bar(range.action === 'keep' ? 'keep' : range.origin === 'plex' && range.review_status !== 'approved' ? 'skip suggested' : 'skip', range.start_ms, range.end_ms, `${range.origin === 'plex' ? 'Plex suggestion' : range.action} ${ms(range.start_ms)}–${ms(range.end_ms)}`);
+            for (const range of state.edits) if (range.end_ms > range.start_ms) bar(range.action === 'keep' ? 'keep' : isSuggestion(range) && range.review_status !== 'approved' ? 'skip suggested' : 'skip', range.start_ms, range.end_ms, `${isSuggestion(range) ? suggestionBadge(range) : range.action} ${ms(range.start_ms)}–${ms(range.end_ms)}`);
             for (const e of r.evidence || []) if (e.end_ms > e.start_ms) bar('evidence', e.start_ms, e.end_ms, `${e.verdict || 'Evidence'} ${ms(e.start_ms)}–${ms(e.end_ms)}`);
         }
         if (rebuild) {
@@ -441,21 +448,21 @@
             name.textContent = (range.action === 'keep' ? 'Keep ' : 'Skip ') + kindLabel(range.kind);
             bounds.textContent = ms(range.start_ms) + ' – ' + ms(range.end_ms) + (range.end_ms > range.start_ms ? ` (${Math.round((range.end_ms - range.start_ms) / 1000)} s)` : '');
             chip.textContent = decisionLabel(range.review_status) + (range.locked ? ' · Locked' : ''); chip.dataset.tone = range.review_status === 'approved' ? 'positive' : range.review_status === 'rejected' ? 'danger' : 'accent';
-            if (range.origin === 'plex') { badge.textContent = range.review_status === 'approved' ? 'Plex suggestion · approved by you' : 'Plex suggestion'; badge.dataset.tone = 'info'; chip.hidden = range.review_status === 'approved' && !range.locked; }
+            if (isSuggestion(range)) { badge.textContent = suggestionBadge(range) + (range.review_status === 'approved' ? ' · approved by you' : ''); badge.dataset.tone = 'info'; chip.hidden = range.review_status === 'approved' && !range.locked; }
         };
-        const changed = () => { if (range.origin === 'plex' && range.review_status === 'approved') range.acknowledged = true; const was = state.dirty; state.dirty = true; updateSummary(); renderReview(false); if (!was) renderPublication(); };
-        summary.append(name, bounds, ...(range.origin === 'plex' ? [badge] : []), chip); box.append(summary);
+        const changed = () => { if (isSuggestion(range) && range.review_status === 'approved') range.acknowledged = true; const was = state.dirty; state.dirty = true; updateSummary(); renderReview(false); if (!was) renderPublication(); };
+        summary.append(name, bounds, ...(isSuggestion(range) ? [badge] : []), chip); box.append(summary);
         const body = el('div', null, 'rp-range-body'); body.append(el('p', plainReason(range.reason || range.reason_code || '') || 'Added by you.', 'rp-note'));
         const seg = el('div', null, 'rp-seg'); seg.setAttribute('role', 'radiogroup'); seg.setAttribute('aria-label', 'Your decision');
         const syncRadios = () => radios.forEach(input => { input.checked = input.value === (range.review_status || 'proposed'); });
-        const confirmBox = el('div', null, 'rp-plex-confirm'); confirmBox.hidden = true; confirmBox.setAttribute('role', 'group'); confirmBox.setAttribute('aria-label', 'Confirm approving a Plex suggestion');
+        const confirmBox = el('div', null, 'rp-plex-confirm'); confirmBox.hidden = true; confirmBox.setAttribute('role', 'group'); confirmBox.setAttribute('aria-label', 'Confirm approving a suggestion');
         const confirmActions = el('div', null, 'rp-actions');
         confirmActions.append(button('Approve it', () => { range.review_status = 'approved'; range.acknowledged = true; confirmBox.hidden = true; syncRadios(); changed(); }), button('Not now', () => { confirmBox.hidden = true; syncRadios(); }, 'rp-btn quiet'));
-        confirmBox.append(el('p', 'Plex found this, Reprise could not confirm it. Approve it only if it is right.'), confirmActions);
+        confirmBox.append(el('p', `${joinAnd(suggesters(range))} found this, Reprise could not confirm it. Approve it only if it is right.`), confirmActions);
         [['approved', 'Approve'], ['rejected', 'Reject'], ['proposed', 'Decide later']].forEach(([value, text]) => {
             const label = el('label'), input = el('input'); input.type = 'radio'; input.name = 'decision-' + id; input.value = value; input.checked = (range.review_status || 'proposed') === value;
             input.addEventListener('change', () => {
-                if (value === 'approved' && range.origin === 'plex' && range.review_status !== 'approved') { syncRadios(); confirmBox.hidden = false; return; }
+                if (value === 'approved' && isSuggestion(range) && range.review_status !== 'approved') { syncRadios(); confirmBox.hidden = false; return; }
                 range.review_status = value; changed();
             }); radios.push(input); label.dataset.value = value; label.append(input, el('span', text)); seg.append(label);
         });
@@ -482,7 +489,7 @@
     async function saveReview() {
         const duration = Number(state.result?.duration_ms || state.item?.duration_ms || 0);
         if (state.edits.some(r => !Number.isInteger(r.start_ms) || !Number.isInteger(r.end_ms) || r.start_ms < 0 || r.start_ms >= r.end_ms || (duration && r.end_ms > duration))) return message('Each section needs a start before its end, inside the episode.', true);
-        const edits = state.edits.map(r => ({ range_id: r.id || null, action: r.action, kind: r.kind, start_ms: r.start_ms, end_ms: r.end_ms, review_status: r.review_status || 'proposed', locked: !!r.locked, reason: r.reason || '', ...(r.origin === 'plex' && r.review_status === 'approved' && r.acknowledged ? { acknowledge_plex_suggestion: true } : {}) }));
+        const edits = state.edits.map(r => ({ range_id: r.id || null, action: r.action, kind: r.kind, start_ms: r.start_ms, end_ms: r.end_ms, review_status: r.review_status || 'proposed', locked: !!r.locked, reason: r.reason || '', ...(isSuggestion(r) && r.review_status === 'approved' && r.acknowledged ? { acknowledge_suggestion: true } : {}) }));
         try { $('rpSave').disabled = true; await api(`/api/reprise/media/${encodeURIComponent(state.item.id)}/review`, { method: 'PATCH', body: { expected_revision: state.result.result_revision, edits } }); state.dirty = false; await openItem(state.item, true); message('Review saved. Nothing was sent to Plex.'); }
         catch (error) { fail(error); $('rpSave').disabled = false; }
     }
@@ -663,9 +670,21 @@
         try { state.settings = await api('/api/reprise/settings', { method: 'PATCH', body: { gpu_decode: !current.enabled } }); renderHardware(); message(current.enabled ? 'Analysis will use the CPU only.' : 'Analysis will use a GPU when one is available.'); }
         catch (error) { fail(error); }
     });
-    window.addEventListener('rp:settings', event => { state.settings = event.detail; renderHardware(); if (state.result) renderPublication(); });
+    /* Whether analysis may ask public databases (IntroDB, SkipDB) where an episode's intro and credits are. */
+    function renderOnline() {
+        const on = state.settings && state.settings.online_lookups, box = $('rpOnline'); box.hidden = typeof on !== 'boolean'; if (box.hidden) return;
+        $('rpOnlineToggle').checked = on;
+    }
+    $('rpOnlineToggle').addEventListener('change', async event => {
+        const toggle = event.target, wanted = toggle.checked; toggle.disabled = true;
+        try { state.settings = await api('/api/reprise/settings', { method: 'PATCH', body: { online_lookups: wanted } }); message(wanted ? 'Intro times will be looked up online.' : 'Intro times will no longer be looked up online.'); }
+        catch (error) { fail(error); }
+        finally { toggle.disabled = false; renderOnline(); }
+    });
+    const renderSettings = () => { renderHardware(); renderOnline(); };
+    window.addEventListener('rp:settings', event => { state.settings = event.detail; renderSettings(); if (state.result) renderPublication(); });
 
-    api('/api/reprise/settings').then(settings => { state.settings = settings; renderHardware(); if (state.result) { renderPublication(); loadHistory(state.item.id, reviewRequest); } }).catch(() => { /* the shell chip reports it */ });
+    api('/api/reprise/settings').then(settings => { state.settings = settings; renderSettings(); if (state.result) { renderPublication(); loadHistory(state.item.id, reviewRequest); } }).catch(() => { /* the shell chip reports it */ });
     const initialSearch = new URLSearchParams(location.search).get('search'); if (initialSearch) $('rpSearch').value = initialSearch.slice(0, 200);
     loadLibrary(); loadQueue();
 })();
