@@ -11,16 +11,14 @@
 <div class="settings-page">
     <header class="page-header settings-header" id="settingsHeader">
         <div class="settings-header-row">
-            <div class="settings-header-title">
-                <h1 class="page-title">Advanced settings</h1>
-                <p class="page-subtitle mb-0">Changes save automatically, except worker groups (Apply) and the pause schedule (Save).</p>
-            </div>
+            <h1 class="page-title">Advanced settings</h1>
+            {{ settings_mobile_nav("settings") }}
             <div class="page-actions">
                 <span id="saveStatusIndicator" class="autosave-indicator" aria-live="polite"></span>
             </div>
         </div>
-        {{ settings_mobile_nav("settings") }}
     </header>
+    <p class="settings-intro">Most changes save the moment you make them. Two things wait for you: <strong>Apply</strong> on worker groups, and <strong>Save</strong> on the pause schedule.</p>
 
     <div class="settings-layout">
         {{ settings_sidebar("settings") }}
@@ -48,14 +46,20 @@
 
                 <!-- Job execution: global controls that apply to every job this app runs. The labels once lived under
                      Automation → Triggers, so the stored keys keep their webhook_* names. -->
-                <h3 class="settings-subheading"><i class="bi bi-layers" aria-hidden="true"></i>Job execution</h3>
+                <details class="fold settings-fold" id="foldJobs">
+                    <summary>
+                        <i class="bi bi-layers fold-ico" aria-hidden="true"></i>
+                        <span class="fold-text"><span class="fold-title">Job priority and CPU use</span><span class="fold-sub">Which jobs run first, and how politely background work shares your computer.</span></span>
+                        <i class="bi bi-chevron-down chev" aria-hidden="true"></i>
+                    </summary>
+                    <div class="fold-body">
 
                 <div class="setting-row">
                     <div class="sr-label">
                         <label for="incomingJobPriority" class="sr-title">Incoming job priority
                             <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Priority for jobs started when new media lands: webhooks and Recently Added sweeps." data-explain-title="Incoming job priority" data-explain-template="infoIncomingPriorityTpl"><i class="bi bi-info-circle"></i></button>
                         </label>
-                        <div class="sr-hint">Webhook and Recently Added jobs. Leave on High so new imports jump the queue.</div>
+                        <div class="sr-hint">Jobs started by new movies or episodes. High runs them before bigger jobs, so new files are ready sooner.</div>
                     </div>
                     <div class="sr-control">
                         <select class="form-select" id="incomingJobPriority">
@@ -68,16 +72,25 @@
 
                 <div class="setting-row">
                     <div class="sr-label">
-                        <label for="loudnessNiceLevel" class="sr-title">Loudness analysis nice level
-                            <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="How much CPU loudness analysis gives way to previews and Intro &amp; Credits detection when the CPU is busy." data-explain-title="Loudness analysis nice level" data-explain-template="infoLoudnessNiceTpl"><i class="bi bi-info-circle"></i></button>
+                        <label for="loudnessNiceLevel" class="sr-title">Loudness analysis CPU priority
+                            <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="How much CPU loudness analysis gives way to previews and Intro &amp; Credits detection when the CPU is busy." data-explain-title="Loudness analysis CPU priority" data-explain-template="infoLoudnessNiceTpl"><i class="bi bi-info-circle"></i></button>
                         </label>
-                        <div class="sr-hint">0–19. Higher lets previews and Intro &amp; Credits go first when the CPU is busy. Default 10.</div>
+                        <div class="sr-hint">0–19. Higher makes loudness checks wait, so thumbnails and Intro &amp; Credits go first. Default 10.</div>
                     </div>
                     <div class="sr-control">
                         <input type="number" class="form-control has-stepper" id="loudnessNiceLevel" min="0" max="19" step="1" value="10">
                     </div>
                 </div>
+                    </div>
+                </details>
 
+                <details class="fold settings-fold" id="foldRetries">
+                    <summary>
+                        <i class="bi bi-arrow-repeat fold-ico" aria-hidden="true"></i>
+                        <span class="fold-text"><span class="fold-title">Retries and restarts</span><span class="fold-sub">What happens when a file isn&#39;t ready yet, or when the app restarts in the middle of a job.</span></span>
+                        <i class="bi bi-chevron-down chev" aria-hidden="true"></i>
+                    </summary>
+                    <div class="fold-body">
                 <h3 class="settings-subheading"><i class="bi bi-arrow-repeat" aria-hidden="true"></i>Retry policy
                     <button type="button" class="info-icon ms-1" tabindex="0"
                             data-bs-toggle="tooltip" data-bs-placement="top"
@@ -89,7 +102,7 @@
                         <label for="webhookRetryCount" class="sr-title">Retry count
                             <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="How many times to retry if the media server hasn't indexed the file yet, or if a per-file failure is recoverable. 0 = no retries."><i class="bi bi-info-circle"></i></button>
                         </label>
-                        <div class="sr-hint">Attempts before a job is marked failed. 0 disables retries.</div>
+                        <div class="sr-hint">How many times a file is tried again before the job is marked failed. 0 turns retries off.</div>
                     </div>
                     <div class="sr-control">
                         <input type="number" class="form-control has-stepper" id="webhookRetryCount" min="0" max="10" value="5">
@@ -127,7 +140,7 @@
                                     data-explain-template="infoAutoRequeueTpl"
                                     aria-label="Explain auto-requeue interrupted jobs"><i class="bi bi-info-circle"></i></button>
                         </label>
-                        <div class="sr-hint">Re-queue interrupted jobs after a restart. Older ones are marked failed.</div>
+                        <div class="sr-hint">Run interrupted jobs again after a restart. Older ones are marked failed.</div>
                     </div>
                     <div class="sr-control">
                         <div class="form-check form-switch">
@@ -138,8 +151,8 @@
 
                 <div class="setting-row" id="requeueMaxAgeGroup">
                     <div class="sr-label">
-                        <label for="requeueMaxAge" class="sr-title">Max requeue age</label>
-                        <div class="sr-hint">Older interrupted jobs are not re-queued (5 minutes – 24 hours).</div>
+                        <label for="requeueMaxAge" class="sr-title">Only re-run jobs newer than</label>
+                        <div class="sr-hint">Jobs interrupted longer ago than this are not run again (5 minutes – 24 hours).</div>
                     </div>
                     <div class="sr-control">
                         <div class="range-ctl">
@@ -148,12 +161,22 @@
                         </div>
                     </div>
                 </div>
+                    </div>
+                </details>
 
                 <!-- GPU device tuning -->
-                <h3 class="settings-subheading" id="gpu-configuration"><i class="bi bi-gpu-card" aria-hidden="true"></i>GPU device tuning
-                    <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Per-GPU FFmpeg tuning. Worker counts live in Worker groups."><i class="bi bi-info-circle"></i></button>
-                    <button type="button" class="btn btn-sm btn-icon ms-auto" id="gpuRescanBtn" onclick="rescanGPUs()" aria-label="Re-scan GPUs" title="Re-scan GPUs"><i class="bi bi-arrow-clockwise"></i></button>
-                </h3>
+                <details class="fold settings-fold" id="gpu-configuration">
+                    <summary>
+                        <i class="bi bi-gpu-card fold-ico" aria-hidden="true"></i>
+                        <span class="fold-text"><span class="fold-title">GPU device tuning</span><span class="fold-sub">Fine-tune each graphics card used to make thumbnails faster. Most people never need this.</span></span>
+                        <i class="bi bi-chevron-down chev" aria-hidden="true"></i>
+                    </summary>
+                    <div class="fold-body">
+                    <div class="fold-tools">
+                        <span class="fold-tools-text">How many workers each card runs is set in Workers, above.</span>
+                        <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Settings for each graphics card (GPU). How many workers each card runs is set in the Workers section."><i class="bi bi-info-circle"></i></button>
+                        <button type="button" class="btn btn-sm btn-icon ms-auto" id="gpuRescanBtn" onclick="rescanGPUs()" aria-label="Look for graphics cards again" title="Look for graphics cards again"><i class="bi bi-arrow-clockwise"></i></button>
+                    </div>
                 <div id="gpuConfigContainer">
                     <div class="hint-line" id="gpuDetecting">
                         <div class="spinner-border spinner-border-sm" role="status">
@@ -163,15 +186,23 @@
                     </div>
                     <div id="gpuConfigList"></div>
                 </div>
+                    </div>
+                </details>
 
                 <!-- Library scanning -->
-                <h3 class="settings-subheading"><i class="bi bi-search" aria-hidden="true"></i>Library scanning</h3>
+                <details class="fold settings-fold" id="foldScanning">
+                    <summary>
+                        <i class="bi bi-search fold-ico" aria-hidden="true"></i>
+                        <span class="fold-text"><span class="fold-title">Library scanning</span><span class="fold-sub">How many files a full scan checks at the same time.</span></span>
+                        <i class="bi bi-chevron-down chev" aria-hidden="true"></i>
+                    </summary>
+                    <div class="fold-body">
                 <div class="setting-row">
                     <div class="sr-label">
                         <label for="scanWorkers" class="sr-title">Files checked at once
                             <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="How many files a full scan checks at once for an existing preview. 0 = Auto." data-explain-title="Files checked at once" data-explain-template="infoScanWorkersTpl"><i class="bi bi-info-circle"></i></button>
                         </label>
-                        <div class="sr-hint"><strong>0 = Auto</strong> (recommended).<span id="scanWorkersAutoHint" class="faint-note"></span></div>
+                        <div class="sr-hint"><strong>0 = Auto</strong> (recommended). Raise it only if big scans feel slow.<span id="scanWorkersAutoHint" class="faint-note"></span></div>
                     </div>
                     <div class="sr-control">
                         <div class="input-group">
@@ -181,15 +212,23 @@
                         </div>
                     </div>
                 </div>
+                    </div>
+                </details>
 
                 <!-- Thumbnails -->
-                <h3 class="settings-subheading"><i class="bi bi-image" aria-hidden="true"></i>Thumbnails</h3>
+                <details class="fold settings-fold" id="foldThumbnails">
+                    <summary>
+                        <i class="bi bi-image fold-ico" aria-hidden="true"></i>
+                        <span class="fold-text"><span class="fold-title">Thumbnails</span><span class="fold-sub">How often a frame is taken, how sharp it is, and how HDR video is shown.</span></span>
+                        <i class="bi bi-chevron-down chev" aria-hidden="true"></i>
+                    </summary>
+                    <div class="fold-body">
                 <div class="setting-row">
                     <div class="sr-label">
                         <label for="thumbnailInterval" class="sr-title">Thumbnail interval
                             <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Seconds between thumbnails. Lower gives finer scrubbing in your player." data-explain-title="Thumbnail interval" data-explain-template="infoThumbnailIntervalTpl"><i class="bi bi-info-circle"></i></button>
                         </label>
-                        <div class="sr-hint">Seconds between preview frames.</div>
+                        <div class="sr-hint">Seconds between preview pictures. Smaller is smoother to scrub in your player but slower.</div>
                     </div>
                     <div class="sr-control">
                         <div class="input-group">
@@ -299,18 +338,28 @@
                             Can look flat or washed out on some content.</li>
                     </ul>
                 </template>
+                    </div>
+                </details>
 
                 <!-- Smart caching across servers: per-knob detail lives in the ⓘ tooltips. -->
-                <h3 class="settings-subheading"><i class="bi bi-hdd-stack" aria-hidden="true"></i>Smart caching across servers
-                    <button type="button" class="info-icon info-icon-more ms-1" tabindex="0"
-                            data-bs-toggle="tooltip" data-bs-placement="top"
-                            title="How cache reuse works across servers."
-                            data-explain-title="Smart caching across servers"
-                            data-explain-template="infoSmartCachingTpl"
-                            aria-label="Explain smart caching">
-                        <i class="bi bi-info-circle"></i>
-                    </button>
-                </h3>
+                <details class="fold settings-fold" id="foldCaching">
+                    <summary>
+                        <i class="bi bi-hdd-stack fold-ico" aria-hidden="true"></i>
+                        <span class="fold-text"><span class="fold-title">Smart caching across servers</span><span class="fold-sub">Saves time by reusing work when several servers share the same files.</span></span>
+                        <i class="bi bi-chevron-down chev" aria-hidden="true"></i>
+                    </summary>
+                    <div class="fold-body">
+                    <div class="fold-tools">
+                        <span class="fold-tools-text">How reusing work across servers works</span>
+                        <button type="button" class="info-icon info-icon-more ms-1" tabindex="0"
+                                data-bs-toggle="tooltip" data-bs-placement="top"
+                                title="How cache reuse works across servers."
+                                data-explain-title="Smart caching across servers"
+                                data-explain-template="infoSmartCachingTpl"
+                                aria-label="Explain smart caching">
+                            <i class="bi bi-info-circle"></i>
+                        </button>
+                    </div>
 
                 <template id="infoSmartCachingTpl">
                     <p><strong>What it does:</strong> when this app extracts video
@@ -366,7 +415,7 @@
                         <label for="frameReuseEnabled" class="sr-title">Enable smart caching
                             <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="On: another server's webhook for the same file reuses the result within the cache window. Off: every webhook runs FFmpeg."><i class="bi bi-info-circle"></i></button>
                         </label>
-                        <div class="sr-hint">Decode once, publish to every server.</div>
+                        <div class="sr-hint">Work done for one server is reused for your other servers instead of being redone.</div>
                     </div>
                     <div class="sr-control">
                         <div class="form-check form-switch">
@@ -379,7 +428,7 @@
                         <label for="frameReuseTtlMinutes" class="sr-title">Cache window
                             <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="How long results stay cached before being deleted. Longer = more reuse but more disk; shorter = saves disk but more re-processing."><i class="bi bi-info-circle"></i></button>
                         </label>
-                        <div class="sr-hint">Minutes before cached results are removed. Default 60.</div>
+                        <div class="sr-hint">How many minutes saved work is kept before it is removed. Default 60.</div>
                     </div>
                     <div class="sr-control">
                         <div class="input-group">
@@ -404,16 +453,18 @@
                         </div>
                     </div>
                 </div>
+                    </div>
+                </details>
             </div>
         </div>
 
-        <!-- Intro & Credits: detection settings shared by every server (a file is detected once). Each server's
-             switch lives in Servers → Edit → Intro & Credits, its libraries in Servers → Edit → Libraries. -->
+        <!-- Intro & Credits: detection settings shared by every connection (a file is detected once). Each connection's
+             switch lives in Connections → Edit connection → Intro & Credits, its libraries in the Libraries tab. -->
         <div class="card section-card section-violet" id="section-markers">
             <div role="heading" aria-level="2" class="card-header">
                 <i class="bi bi-skip-forward sec-ico" aria-hidden="true"></i>
-                <div class="sec-title"><span class="sec-name">Intro &amp; Credits</span><span class="sec-desc">Shared by every server. Turn on per server in
-                    <a class="btn btn-sm btn-link-chip" href="/servers">Servers</a> → Edit.</span></div>
+                <div class="sec-title"><span class="sec-name">Intro &amp; Credits</span><span class="sec-desc">Shared by every connection. Turn on per connection in
+                    <a class="btn btn-sm btn-link-chip" href="/servers">Connections</a> → Edit connection.</span></div>
             </div>
             <div class="card-body">
                 <h3 class="settings-subheading"><i class="bi bi-bullseye" aria-hidden="true"></i>What to detect</h3>
@@ -744,15 +795,15 @@
                         <label for="logLevel" class="sr-title">Log level
                             <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="How chatty the logs are: DEBUG = everything, INFO = normal, WARNING/ERROR = only problems."><i class="bi bi-info-circle"></i></button>
                         </label>
-                        <div class="sr-hint">INFO for daily use; DEBUG for bug reports.</div>
+                        <div class="sr-hint">How much detail the logs record. Normal is right day to day; use Everything for bug reports.</div>
                     </div>
                     <div class="sr-control sr-control-pair">
                         <select class="form-select" id="logLevel">
-                            <option value="DEBUG">DEBUG</option>
-                            <option value="INFO" selected>INFO</option>
-                            <option value="WARNING">WARNING</option>
-                            <option value="ERROR">ERROR</option>
-                            <option value="CRITICAL">CRITICAL</option>
+                            <option value="DEBUG">DEBUG · everything</option>
+                            <option value="INFO" selected>INFO · normal</option>
+                            <option value="WARNING">WARNING · problems</option>
+                            <option value="ERROR">ERROR · errors only</option>
+                            <option value="CRITICAL">CRITICAL · worst only</option>
                         </select>
                         <button type="button" class="btn btn-sm btn-outline-secondary text-nowrap" onclick="applyLogLevel()">
                             <i class="bi bi-arrow-repeat me-1"></i>Apply Log Level Now
@@ -768,7 +819,7 @@
                         <label for="logRotationSize" class="sr-title">Rotation size
                             <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Maximum size the active log file can reach before it gets compressed and a new one starts. Smaller values mean more frequent rotation."><i class="bi bi-info-circle"></i></button>
                         </label>
-                        <div class="sr-hint">New file when <code>/config/logs/app.log</code> reaches this size.</div>
+                        <div class="sr-hint">Start a new file when <code>/config/logs/app.log</code> reaches this size.</div>
                     </div>
                     <div class="sr-control">
                         <div class="input-group">
@@ -782,7 +833,7 @@
                         <label for="logRetentionCount" class="sr-title">Retention
                             <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="How many rotated log files to keep on disk. Older ones beyond this count are deleted automatically."><i class="bi bi-info-circle"></i></button>
                         </label>
-                        <div class="sr-hint">Rotated files kept. The <a href="/logs">Logs</a> page reads them.</div>
+                        <div class="sr-hint">How many old log files to keep. The <a href="/logs">Logs</a> page reads them.</div>
                     </div>
                     <div class="sr-control">
                         <div class="input-group">
@@ -798,7 +849,7 @@
                         <label for="jobHistoryDays" class="sr-title">Keep history for
                             <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Finished jobs older than this are deleted, along with their log files."><i class="bi bi-info-circle"></i></button>
                         </label>
-                        <div class="sr-hint">Per-job logs in <code>/config/logs/jobs/</code> are deleted after this.</div>
+                        <div class="sr-hint">Each job&#39;s own log in <code>/config/logs/jobs/</code> is deleted after this long.</div>
                     </div>
                     <div class="sr-control">
                         <div class="input-group">
@@ -823,7 +874,7 @@
             </div>
             <div class="card-body">
                 <div class="restore-zone">
-                    <div class="restore-note"><i class="bi bi-info-circle" aria-hidden="true"></i>Restoring overwrites the live config file.</div>
+                    <div class="restore-note"><i class="bi bi-info-circle" aria-hidden="true"></i>Restoring replaces the file&#39;s current contents with the copy you pick.</div>
                     <div class="restore-body">
                         <div id="backupRestorePanel">
                             <div class="text-muted small">
@@ -841,8 +892,8 @@
                     <div class="fold-body">
                         <div class="setting-row">
                             <div class="sr-label">
-                                <label for="configBackupKeep" class="sr-title">Keep last N backups per file</label>
-                                <div class="sr-hint">1–100. Older snapshots are pruned on every save.</div>
+                                <label for="configBackupKeep" class="sr-title">Backups to keep for each file</label>
+                                <div class="sr-hint">1–100. Older ones are deleted each time you save.</div>
                             </div>
                             <div class="sr-control">
                                 <input type="number" class="form-control has-stepper" id="configBackupKeep"
@@ -1043,7 +1094,7 @@ document.addEventListener('DOMContentLoaded', function() {
         document.getElementById('requeueMaxAgeValue').textContent = _formatMinutesShort(this.value);
     });
     document.getElementById('autoRequeueOnRestart').addEventListener('change', function() {
-        document.getElementById('requeueMaxAgeGroup').style.opacity = this.checked ? '1' : '0.5';
+        document.getElementById('requeueMaxAgeGroup').classList.toggle('is-disabled', !this.checked);
         document.getElementById('requeueMaxAge').disabled = !this.checked;
     });
 });
@@ -1161,7 +1212,7 @@ async function loadSettings() {
         const maxAge = Math.min(1440, Math.max(5, parseInt(settings.requeue_max_age_minutes, 10) || 720));
         document.getElementById('requeueMaxAge').value = maxAge;
         document.getElementById('requeueMaxAgeValue').textContent = _formatMinutesShort(maxAge);
-        document.getElementById('requeueMaxAgeGroup').style.opacity = autoRequeue ? '1' : '0.5';
+        document.getElementById('requeueMaxAgeGroup').classList.toggle('is-disabled', !autoRequeue);
         document.getElementById('requeueMaxAge').disabled = !autoRequeue;
 
         _applyMarkersSettings(settings.markers);

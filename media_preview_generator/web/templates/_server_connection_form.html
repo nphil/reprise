@@ -33,7 +33,7 @@
             <div class="sm-hint mt-2">
                 Picking a server fills the fields below. <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="What to do next and how to add another Plex." data-explain-title="Discovered Plex servers" data-explain-template="infoPlexPickTpl"><i class="bi bi-info-circle"></i></button>
 <template id="infoPlexPickTpl">
-    <p>Picking a server fills the fields below — set its config folder, then Test connection. To add another Plex from the same account, sign in again after saving this one.</p>
+    <p>Picking a server fills the fields below. Set its Plex config folder, then Test connection. To add another Plex from the same account, sign in again after saving this one.</p>
 </template>
             </div>
         </div>
@@ -51,10 +51,10 @@
 
     <div class="sm-row2">
         <div class="sm-fld">
-            <label class="sm-lab" for="serverUrl">Server URL
+            <label class="sm-lab" for="serverUrl">Server address (URL)
                 <button type="button" class="info-icon info-icon-more" tabindex="0"
                         data-bs-toggle="tooltip" data-bs-placement="top"
-                        title="How this app reaches your media server."
+                        title="The web address Reprise uses to reach your media server."
                         data-explain-title="Server URL — Docker &amp; networking"
                         data-explain-template="infoServerUrlTpl"
                         aria-label="Explain Server URL">
@@ -62,12 +62,12 @@
                 </button>
             </label>
             <input type="text" id="serverUrl" class="form-control font-monospace" placeholder="http://hostname:port" autocomplete="off">
-            <div class="invalid-feedback">Enter the server URL.</div>
+            <div class="invalid-feedback">Enter the server address.</div>
             <div class="sm-hint" id="serverUrlPortHint">Default ports: <code>:32400</code> Plex &middot; <code>:8096</code> Emby &middot; <code>:8096</code> Jellyfin</div>
         </div>
         <div class="sm-fld">
             <label class="sm-lab" for="serverName">Display name
-                <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="What this server is called in the UI. Cosmetic only — pick anything memorable (e.g. 'Living Room Plex', 'NAS Jellyfin')."><i class="bi bi-info-circle"></i></button>
+                <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="The name Reprise shows for this server. Pick anything you will recognise, like 'Living Room Plex'."><i class="bi bi-info-circle"></i></button>
             </label>
             <input type="text" id="serverName" class="form-control" placeholder="e.g. Home Server, Living Room">
             <div class="invalid-feedback">Give this server a name to recognise it later.</div>
@@ -77,10 +77,10 @@
     <!-- Auth method picker (Emby / Jellyfin only). Only the chosen method's panel shows beneath it. -->
     <div id="auth-method-section" class="sm-sec d-none">
         <div class="sm-fld">
-            <span class="sm-lab">Authentication
+            <span class="sm-lab">How to sign in
                 <button type="button" class="info-icon info-icon-more" tabindex="0"
                         data-bs-toggle="tooltip" data-bs-placement="top"
-                        title="Which credential to use, and when."
+                        title="Which way to sign in, and when to use it."
                         data-explain-title="Authentication method"
                         data-explain-template="infoAuthMethodTpl"
                         aria-label="Explain authentication method">
@@ -91,9 +91,9 @@
                 <input type="radio" class="btn-check" name="authMethod" id="auth-quick" value="quick_connect" autocomplete="off">
                 <label class="btn" for="auth-quick">Quick Connect</label>
                 <input type="radio" class="btn-check" name="authMethod" id="auth-pw" value="password" autocomplete="off" checked>
-                <label class="btn" for="auth-pw">Username + Password</label>
+                <label class="btn" for="auth-pw">Username and password</label>
                 <input type="radio" class="btn-check" name="authMethod" id="auth-key" value="api_key" autocomplete="off">
-                <label class="btn" for="auth-key">API Key</label>
+                <label class="btn" for="auth-key">API key</label>
             </div>
         </div>
     </div>
@@ -101,14 +101,14 @@
     <div id="auth-fields-password" class="sm-row2 d-none">
         <div class="sm-fld">
             <label class="sm-lab" for="authUsername">Username
-                <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="The Emby/Jellyfin user account this app should sign in as. Use an admin account so the app can read every library."><i class="bi bi-info-circle"></i></button>
+                <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="The Emby or Jellyfin user Reprise should sign in as. Use an administrator account so Reprise can read every library."><i class="bi bi-info-circle"></i></button>
             </label>
             <input type="text" id="authUsername" class="form-control" autocomplete="username">
             <div class="invalid-feedback">Enter the username.</div>
         </div>
         <div class="sm-fld">
             <label class="sm-lab" for="authPassword">Password
-                <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Your password is sent once to the server in exchange for an access token; only the token is stored. Your password itself is never saved."><i class="bi bi-info-circle"></i></button>
+                <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Your password is sent once to the server in exchange for an access code, and only that code is saved. The password itself is never saved."><i class="bi bi-info-circle"></i></button>
             </label>
             <input type="password" id="authPassword" class="form-control" autocomplete="current-password">
             <div class="sm-hint">Sent once to the server; not stored here.</div>
@@ -117,7 +117,7 @@
     <div id="auth-fields-api-key" class="d-none">
         <div class="sm-fld">
             <label class="sm-lab" for="authApiKey">API key
-                <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="A long-lived authentication token. Create one in Emby/Jellyfin admin → Dashboard → API Keys, then paste it here."><i class="bi bi-info-circle"></i></button>
+                <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="A long code that lets Reprise sign in without your password. In Emby or Jellyfin, open Dashboard, then API Keys, create one and paste it here."><i class="bi bi-info-circle"></i></button>
             </label>
             <div class="input-group">
                 <input type="password" id="authApiKey" class="form-control font-monospace" autocomplete="off">
@@ -131,7 +131,7 @@
             <div id="quickConnectIdle" class="sm-line">
                 <div>
                     <b>Sign in with a code</b>
-                    <div class="sm-hint">Approve this app from your Jellyfin profile menu. No password needed.</div>
+                    <div class="sm-hint">Approve Reprise from your Jellyfin profile menu. No password needed.</div>
                 </div>
                 <span class="sm-qc-start">
                     <button type="button" class="btn btn-primary" id="quickConnectStart">
@@ -150,17 +150,17 @@
     <!-- Jellyfin only: trickplay has to be switched on per library; Setup Health does it after saving. -->
     <div id="auth-jellyfin-trickplay-note" class="sm-warnline d-none">
         <i class="bi bi-exclamation-triangle-fill"></i>
-        <span>After saving, open Setup Health to turn on Trickplay extraction per library.</span>
-        <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Why Jellyfin needs this, and where the one-click fix is." data-explain-title="Jellyfin trickplay extraction" data-explain-template="infoJellyfinTrickplayNoteTpl" aria-label="About trickplay extraction"><i class="bi bi-info-circle"></i></button>
+        <span>After saving, open Setup Health to turn on preview-picture creation (trickplay) for each library.</span>
+        <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Why Jellyfin needs this, and where the one-click fix is." data-explain-title="Jellyfin preview pictures (trickplay)" data-explain-template="infoJellyfinTrickplayNoteTpl" aria-label="About trickplay"><i class="bi bi-info-circle"></i></button>
 <template id="infoJellyfinTrickplayNoteTpl">
-    <p>Jellyfin needs <em>Trickplay image extraction</em> enabled per library to show previews. After saving, open this server's Edit screen — the <strong>Setup Health</strong> tab has a one-click button that flips the right settings for you.</p>
+    <p>Jellyfin has to create preview pictures (“trickplay”) for each library before it can show them. After saving, open this server’s edit dialog: the <strong>Setup Health</strong> tab has a one-click button that turns on the right settings for you.</p>
 </template>
     </div>
 
     <div id="auth-fields-plex-config" class="sm-sec d-none">
         <div class="sm-fld">
             <label class="sm-lab" for="plexConfigFolder">Plex config folder
-                <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Plex's config folder as this container sees it (where you mounted it), not the path on your host."><i class="bi bi-info-circle"></i></button>
+                <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Plex’s own data folder (the “config folder”) as Reprise sees it: where you shared it into Reprise’s container, not the path on your host computer."><i class="bi bi-info-circle"></i></button>
             </label>
             <div class="input-group sm-vf has-validation">
                 <input type="text" id="plexConfigFolder" class="form-control font-monospace" placeholder="/config/plex">
@@ -173,9 +173,9 @@
                 <div class="valid-feedback small">Looks like a valid Plex config folder</div>
             </div>
             <div class="sm-hint">
-                Preview files land in <code>{this folder}/Media/localhost/...</code>. <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Common Docker bind example." data-explain-title="Plex config folder" data-explain-template="infoPlexFolderTpl"><i class="bi bi-info-circle"></i></button>
+                Preview files are saved inside this folder, under <code>Media/localhost</code>. <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="A common Docker setup." data-explain-title="Plex config folder" data-explain-template="infoPlexFolderTpl"><i class="bi bi-info-circle"></i></button>
 <template id="infoPlexFolderTpl">
-    <p>Preview files land in <code>{this folder}/Media/localhost/...</code>. Common Docker bind: <code>-v /path/to/plex/config:/config/plex</code>.</p>
+    <p>Preview files are saved inside this folder, under <code>Media/localhost</code>. A common Docker setup: <code>-v /path/to/plex/config:/config/plex</code>.</p>
 </template>
             </div>
         </div>

@@ -17,9 +17,9 @@ let _manualOpeningSequence = 0;
 let _manualSubmitting = false;
 // help is the one visible line under the type cards; the long version lives in each type's (i) dialog.
 const _MANUAL_KINDS = {
-    previews: { label: 'Previews', icon: 'bi-film', start: 'Start previews job', endpoint: '/api/jobs/manual', help: 'Creates previews on every server that owns these files.' },
-    intro_credits: { label: 'Intro & Credits', icon: 'bi-skip-forward', start: 'Start intro & credits job', endpoint: '/api/markers/jobs', help: 'Finds skip markers on enabled servers that own these files.' },
-    loudness: { label: 'Plex loudness', icon: 'bi-soundwave', start: 'Start loudness job', endpoint: '/api/loudness/jobs', help: 'Analyzes audio loudness on owning Plex servers.' },
+    previews: { label: 'Previews', icon: 'bi-film', start: 'Start previews', endpoint: '/api/jobs/manual', help: "Makes the small pictures shown when you drag along a video's timeline." },
+    intro_credits: { label: 'Intro & Credits', icon: 'bi-skip-forward', start: 'Start intro & credits', endpoint: '/api/markers/jobs', help: 'Finds where the intro and end credits are in these files, so a Skip button can appear.' },
+    loudness: { label: 'Plex loudness', icon: 'bi-soundwave', start: 'Start loudness', endpoint: '/api/loudness/jobs', help: 'Measures how loud the audio in these files is and saves it in Plex.' },
 };
 const _MANUAL_PRIORITY_NAMES = { 1: 'High', 2: 'Normal', 3: 'Low' };
 
@@ -78,6 +78,7 @@ function _showManualKindControls(resetDefaults = false) {
     document.getElementById('manualProcessingModeGroup').hidden = !previews;
     document.getElementById('manualMarkersForceGroup').hidden = kind !== 'intro_credits';
     document.getElementById('manualKindHelp').textContent = _MANUAL_KINDS[kind]?.help || '';
+    _manualSyncPreviewsOff();
     document.getElementById('manualTriggerModal').dataset.kind = kind;
     document.getElementById('manualStartLabel').textContent = _MANUAL_KINDS[kind]?.start || 'Start job';
     const priority = document.getElementById('manualPriority');
@@ -102,6 +103,11 @@ function _manualSyncRegenerateHint() {
 }
 
 
+// One sentence under the type help when every connection has preview thumbnails off (see refreshPreviewsOffState).
+function _manualSyncPreviewsOff() {
+    _syncPreviewsOffNote('manualPreviewsOffNote', _manualJobKind() === 'previews');
+}
+
 async function _populateManualServerScopePicker() {
     const opening = _manualOpeningSequence;
     const pickers = [document.getElementById('manualServerScope'), document.getElementById('manualSearchServer')];
@@ -112,7 +118,7 @@ async function _populateManualServerScopePicker() {
         const servers = (data.servers || []).filter(server => server.enabled !== false);
         pickers.forEach((select, index) => {
             const chosen = select.value;
-            select.replaceChildren(new Option(index ? 'All enabled servers' : 'All servers (publish to whoever owns the file)', ''));
+            select.replaceChildren(new Option(index ? 'All enabled connections' : 'All connections that have the file', ''));
             servers.forEach(server => select.add(new Option(`${server.name} (${(server.type || '').toUpperCase()})`, server.id)));
             if ([...select.options].some(option => option.value === chosen)) select.value = chosen;
         });
@@ -386,10 +392,11 @@ function showManualTriggerModal() {
     const sel = document.getElementById('manualServerScope');
     if (sel) sel.value = '';
     _populateManualServerScopePicker();
+    refreshPreviewsOffState();
     manualRenderChips();
     _showManualKindControls();
     _wireManualModal();
-    new bootstrap.Modal(document.getElementById('manualTriggerModal')).show();
+    _openModalReturningFocus(document.getElementById('manualTriggerModal'));
 }
 
 async function startManualJob() {

@@ -17,6 +17,8 @@ import pytest
 import requests
 from playwright.sync_api import Page, expect
 
+from .conftest import expand_settings_folds
+
 _AUTH_JSON_HEADERS = {"X-Auth-Token": "e2e-test-token", "Content-Type": "application/json"}
 _API_TIMEOUT = 60
 
@@ -31,6 +33,8 @@ class TestSettingsSaveAndReloadPersists:
         app_url, config_dir = backend_real_app
 
         backend_real_page.goto(f"{app_url}/settings")
+
+        expand_settings_folds(backend_real_page)
         backend_real_page.wait_for_load_state("domcontentloaded")
 
         # Wait for the form to populate from the seeded settings.json.
@@ -86,6 +90,7 @@ class TestSettingsSaveAndReloadPersists:
 
         # NOW reload the page and verify the form re-populates from disk.
         backend_real_page.reload()
+        expand_settings_folds(backend_real_page)
         backend_real_page.wait_for_load_state("domcontentloaded")
 
         expect(backend_real_page.locator("#thumbnailInterval")).to_have_value("7", timeout=5000)
@@ -117,6 +122,7 @@ class TestSettingsSaveAndReloadPersists:
         # depending on that timing while still exercising the real backend
         # handler that the UI uses.)
         backend_real_page.goto(f"{app_url}/settings")
+        expand_settings_folds(backend_real_page)
         backend_real_page.wait_for_load_state("domcontentloaded")
 
         # Endpoint is PUT (not POST) per api_settings.py. Use requests
@@ -147,6 +153,7 @@ class TestSettingsSaveAndReloadPersists:
 
         # Reload and assert the form now shows DEBUG.
         backend_real_page.reload()
+        expand_settings_folds(backend_real_page)
         backend_real_page.wait_for_load_state("domcontentloaded")
         expect(backend_real_page.locator("#logLevel")).to_have_value("DEBUG", timeout=5000)
 
@@ -163,6 +170,8 @@ class TestSettingsSaveAndReloadPersists:
         app_url, config_dir = backend_real_app
 
         backend_real_page.goto(f"{app_url}/settings")
+
+        expand_settings_folds(backend_real_page)
         backend_real_page.wait_for_load_state("domcontentloaded")
         expect(backend_real_page.locator("#thumbnailInterval")).to_have_value("5", timeout=5000)
         expect(backend_real_page.locator("#markersHowItDecides")).to_be_visible(timeout=5000)
@@ -202,6 +211,8 @@ class TestSettingsSaveAndReloadPersists:
         assert "publish_when" not in on_disk
 
         backend_real_page.reload()
+
+        expand_settings_folds(backend_real_page)
         backend_real_page.wait_for_load_state("domcontentloaded")
         expect(backend_real_page.locator("#markersHowItDecides")).to_be_visible(timeout=5000)
         # The static help and default rows render before the saved settings GET completes.
@@ -230,6 +241,8 @@ class TestSettingsSaveAndReloadPersists:
         assert resp.ok, f"POST /api/settings: {resp.status_code} {resp.text}"
 
         backend_real_page.goto(f"{app_url}/settings")
+
+        expand_settings_folds(backend_real_page)
         backend_real_page.wait_for_load_state("domcontentloaded")
         expect(backend_real_page.locator("#thumbnailInterval")).to_have_value("5", timeout=5000)  # the form is loaded
         expect(backend_real_page.locator("#webhookRetryCount")).to_have_value("0")
@@ -258,6 +271,7 @@ class TestSettingsSaveAndReloadPersists:
         """The level defaults to 10, and 0 (no nice) and 19 survive a save and a reload as they are."""
         app_url, config_dir = backend_real_app
         backend_real_page.goto(f"{app_url}/settings")
+        expand_settings_folds(backend_real_page)
         backend_real_page.wait_for_load_state("domcontentloaded")
         expect(backend_real_page.locator("#thumbnailInterval")).to_have_value("5", timeout=5000)
         expect(backend_real_page.locator("#loudnessNiceLevel")).to_have_value("10")
@@ -278,6 +292,8 @@ class TestSettingsSaveAndReloadPersists:
             assert on_disk.get("loudness_nice_level") == int(level), f"the save never reached {settings_path}"
 
             backend_real_page.reload()
+
+            expand_settings_folds(backend_real_page)
             backend_real_page.wait_for_load_state("domcontentloaded")
             expect(backend_real_page.locator("#thumbnailInterval")).to_have_value("5", timeout=5000)
             expect(backend_real_page.locator("#loudnessNiceLevel")).to_have_value(level)
@@ -317,6 +333,7 @@ class TestSettingsSaveAndReloadPersists:
             stored.clear()
             stored.update(settings)
             backend_real_page.goto(f"{app_url}/settings")
+            expand_settings_folds(backend_real_page)
             backend_real_page.wait_for_load_state("domcontentloaded")
             expect(backend_real_page.locator("#thumbnailInterval")).to_have_value("5", timeout=5000)
             expect(backend_real_page.locator("#webhookRetryCount")).to_have_value(shown)

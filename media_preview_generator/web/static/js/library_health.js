@@ -191,7 +191,7 @@
         if (!cell) return '<span class="lh-na">–</span>';
         const reason = escapeHtml(cell.reason || '');
         if (cell.state === 'off') {
-            return `<span class="lh-chip lh-chip-muted">${reason || 'Off for this library'}</span> <a class="lh-link" href="/servers">Change in Servers</a>`;
+            return `<span class="lh-chip lh-chip-muted">${reason || 'Off for this library'}</span> <a class="lh-link" href="/servers">Change in Connections</a>`;
         }
         if (cell.state === 'not_applicable') return `<span class="lh-na">${reason || 'Not used here'}</span>`;
         if (cell.state === 'unavailable') return `<span class="lh-na">${reason || 'Not available'}</span>`;
@@ -304,10 +304,8 @@
                 <p>Add a Plex, Emby or Jellyfin server to see what's done and what's left in each library.</p>
                 <a class="btn btn-primary" href="/servers">Set up a server</a></div>`);
         } else if (!list.length) {
-            const running = !!state.data.running;
             setHtml('lhServers', `<div class="lh-empty"><h2>Not checked yet</h2>
-                <p>Run a check to count what's done and what's left in each library.</p>
-                <button type="button" class="btn btn-primary" data-action="check"${running ? ' disabled' : ''}>Check now</button></div>`);
+                <p>Press <b>Check now</b> at the top of the page to count what's done and what's left in each library.</p></div>`);
         } else {
             setHtml('lhServers', list.map(renderServer).join(''));
         }
@@ -382,9 +380,10 @@
         const rows = notShowingByLibrary(server);
         const total = rows.reduce(function (sum, row) { return sum + row.count; }, 0);
         $('lhFixTitle').textContent = `Ask Plex to show ${n(total)} previews`;
-        $('lhFixBody').innerHTML = `<p>These previews are already made. Plex only starts showing a preview after it re-reads the video, and it hasn't re-read these. This asks Plex to re-read each one. No previews are made again. Plex will also start any of its jobs set to "As a scheduled task" (like intro detection or loudness) on these files now. A re-read clears chapter thumbnails, so if those are on, a preview job adds them back afterwards.</p>
+        $('lhFixBody').innerHTML = `<p>These previews are already made, but Plex hasn't noticed them yet. This asks Plex to look at each of these videos again so it starts showing the previews. Nothing is made again.</p>
             <dl class="lh-kv">${rows.map(function (row) { return `<dt>${escapeHtml(row.name)}</dt><dd>${n(row.count)}</dd>`; }).join('')}</dl>
-            <p class="mb-0">Plex re-reads one video at a time and can take a few seconds each, so thousands take hours. It runs in the background; you can cancel it on this page.</p>`;
+            <p>Plex will also start any of its jobs set to "As a scheduled task" (like intro detection or loudness) on these files now. If you use chapter thumbnails, looking again clears them; a preview job adds them back afterwards.</p>
+            <p class="mb-0">Plex looks at one video at a time, a few seconds each, so thousands take hours. It runs in the background, and you can cancel it on this page.</p>`;
         const start = $('lhFixStart');
         start.dataset.server = serverId;
         start.disabled = false;
@@ -566,14 +565,32 @@
 
     // ---------------------------------------------------------------- wiring
 
+    // The table is redrawn on every refresh, so the button that opened a dialog may be a new element by the time the
+    // dialog closes. Remember how to find it again and give it focus back (keyboard users otherwise land on the page top).
+    function rememberOpener(button) {
+        const parts = ['[data-action="' + button.dataset.action + '"]'];
+        ['server', 'library', 'feature', 'notShowing'].forEach(function (key) {
+            if (button.dataset[key] === undefined) return;
+            const attr = key === 'notShowing' ? 'data-not-showing' : 'data-' + key;
+            parts.push('[' + attr + '="' + CSS.escape(button.dataset[key]) + '"]');
+        });
+        state.opener = parts.join('');
+    }
+
+    function restoreFocus() {
+        const target = state.opener && document.querySelector(state.opener);
+        state.opener = null;
+        if (target && !target.disabled) target.focus();
+    }
+
     function onClick(event) {
         const button = event.target.closest('[data-action]');
         if (!button || button.disabled) return;
         const action = button.dataset.action;
         if (action === 'check') startCheck();
         else if (action === 'cancel') cancelCheck();
-        else if (action === 'fix') openFix(button.dataset.server);
-        else if (action === 'files') openFiles(button);
+        else if (action === 'fix') { rememberOpener(button); openFix(button.dataset.server); }
+        else if (action === 'files') { rememberOpener(button); openFiles(button); }
     }
 
     function init() {
@@ -585,7 +602,8 @@
             if (state.files.confirming) startJob();
             else askConfirm();
         });
-        $('lhFilesModal').addEventListener('hidden.bs.modal', function () { clearTimeout(state.filterTimer); });
+        $('lhFilesModal').addEventListener('hidden.bs.modal', function () { clearTimeout(state.filterTimer); restoreFocus(); });
+        $('lhFixModal').addEventListener('hidden.bs.modal', restoreFocus);
         $('lhFilesQuery').addEventListener('input', function (event) {
             clearTimeout(state.filterTimer);
             const value = event.target.value.trim();

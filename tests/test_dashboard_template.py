@@ -43,13 +43,16 @@ class TestDashboardPlacement:
         assert 'href="/settings#section-workers"' in workers
         assert ">Manage groups<" in workers
 
-    def test_quick_actions_has_four_tiles_and_no_libraries_tile_when_page_renders(self, dashboard_html):
+    def test_quick_actions_has_two_buttons_and_a_schedule_tile_when_page_renders(self, dashboard_html):
         quick = _section(dashboard_html, "quickActionsTitle", "jobStatsTitle")
         assert 'id="quickRunNextSchedule"' in quick
-        for href in ('href="/inspector"', 'href="/webhook-activity"', 'href="/logs"'):
-            assert href in quick
-        assert quick.count("dash-tile-link") == 4
-        assert 'id="quickWebhookPending"' in quick
+        assert quick.count("dash-tile-link") == 1
+        assert "showNewJobModal()" in quick
+        assert "showManualTriggerModal()" in quick
+        for href in ('href="/inspector"', 'href="/logs"'):
+            assert href not in quick
+        assert 'href="/webhook-activity"' in quick
+        assert 'id="quickWebhookPending"' not in dashboard_html
         assert "libraries on" not in quick
         assert "Counting libraries" not in dashboard_html
 

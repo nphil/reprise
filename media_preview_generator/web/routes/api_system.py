@@ -784,7 +784,7 @@ def get_log_history() -> Any:
     )
 
 
-_GITHUB_RELEASES_URL = "https://api.github.com/repos/stevezau/media_preview_generator/releases"
+_GITHUB_RELEASES_URL = "https://api.github.com/repos/nphil/reprise/releases"
 _RELEASES_CACHE: dict = {"result": None, "fetched_at": 0.0}
 _RELEASES_CACHE_TTL = 3600
 # gthread worker → N concurrent dashboard loads can race the cache populate;

@@ -9,7 +9,7 @@
             <div class="modal-header sm-header">
                 <span class="sm-logo sm-logo-lg" id="addServerLogoTile" data-vendor=""><i class="bi bi-plus-lg"></i></span>
                 <div class="sm-title">
-                    <h5 class="modal-title sm-name" id="serverModalTitle">Add Server</h5>
+                    <h5 class="modal-title sm-name" id="serverModalTitle">Add server</h5>
                     <div class="sm-sub" id="serverModalSubtitle">Choose which media server to connect</div>
                 </div>
                 <button type="button" class="btn-close flex-shrink-0" data-bs-dismiss="modal" aria-label="Close"></button>
@@ -17,8 +17,8 @@
             <ol class="sm-prog" id="addServerProgress" aria-label="Add server progress" style="--p:0">
                 <li class="sm-prog-trk" aria-hidden="true"><i class="sm-prog-fill"></i></li>
                 <li class="sm-prog-st on" data-step="type" aria-current="step"><span class="sm-prog-circ"><span class="sm-prog-n">1</span><i class="bi bi-check-lg"></i></span><b>Type</b><small>Pick a server type</small></li>
-                <li class="sm-prog-st" data-step="connect"><span class="sm-prog-circ"><span class="sm-prog-n">2</span><i class="bi bi-check-lg"></i></span><b>Connect</b><small>Credentials &amp; paths</small></li>
-                <li class="sm-prog-st" data-step="result"><span class="sm-prog-circ"><span class="sm-prog-n">3</span><i class="bi bi-check-lg"></i></span><b>Verify</b><small>Check &amp; import libraries</small></li>
+                <li class="sm-prog-st" data-step="connect"><span class="sm-prog-circ"><span class="sm-prog-n">2</span><i class="bi bi-check-lg"></i></span><b>Connect</b><small>Sign-in &amp; folders</small></li>
+                <li class="sm-prog-st" data-step="result"><span class="sm-prog-circ"><span class="sm-prog-n">3</span><i class="bi bi-check-lg"></i></span><b>Verify</b><small>Check &amp; load libraries</small></li>
             </ol>
             <div class="modal-body sm-add-body">
                 <!-- Step 1: pick a type -->
@@ -34,13 +34,13 @@
                         <button type="button" class="sm-tcard server-type-btn" data-type="emby">
                             <span class="sm-logo sm-logo-lg" data-vendor="emby"><img src="{{ url_for('static', filename='images/vendors/emby.svg') }}" alt="" width="26" height="26"></span>
                             <b>Emby</b>
-                            <span class="sm-tcard-d">Connect with a URL and a login or API key.</span>
+                            <span class="sm-tcard-d">Connect with its web address and a login or API key.</span>
                             <span class="pill">Login or API key</span>
                         </button>
                         <button type="button" class="sm-tcard server-type-btn" data-type="jellyfin">
                             <span class="sm-logo sm-logo-lg" data-vendor="jellyfin"><img src="{{ url_for('static', filename='images/vendors/jellyfin.svg') }}" alt="" width="26" height="26"></span>
                             <b>Jellyfin</b>
-                            <span class="sm-tcard-d">Connect with a URL and Quick Connect, a login or an API key.</span>
+                            <span class="sm-tcard-d">Connect with its web address and Quick Connect, a login or an API key.</span>
                             <span class="pill">Quick Connect, login or API key</span>
                         </button>
                     </div>

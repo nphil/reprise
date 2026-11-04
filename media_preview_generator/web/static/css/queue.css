@@ -26,15 +26,9 @@
 .dashboard-layout .queue-notice { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 10px 18px; background: var(--warn-soft, rgba(245, 158, 11, .12)); color: var(--bs-body-color); border-bottom: 1px solid var(--line); font-size: 13px; }
 .dashboard-layout .queue-notice.d-none { display: none; }
 .dashboard-layout .queue-notice > .bi { color: var(--warn, #f59e0b); }
-.dashboard-layout .seg { display: inline-flex; min-width: 0; max-width: 100%; padding: 3px; gap: 2px; border-radius: 10px; border: 1px solid var(--line); overflow-x: auto; scrollbar-width: none;
-    /* Fade edges appear only on the side that still has hidden tabs (local layers cover the scroll layers at the ends). */
-    background:
-        linear-gradient(to right, var(--inset) 30%, transparent) left center / 28px 100% no-repeat local,
-        linear-gradient(to left, var(--inset) 30%, transparent) right center / 28px 100% no-repeat local,
-        linear-gradient(to right, var(--panel-2), transparent) left center / 20px 100% no-repeat scroll,
-        linear-gradient(to left, var(--panel-2), transparent) right center / 20px 100% no-repeat scroll,
-        var(--inset); }
-.dashboard-layout .seg::-webkit-scrollbar { display: none; }
+/* The status buttons wrap onto a second line when the row is too narrow, so every one (All included) stays visible. */
+.dashboard-layout .seg { display: inline-flex; flex-wrap: wrap; min-width: 0; max-width: 100%; padding: 3px; gap: 2px; border-radius: 10px; border: 1px solid var(--line); background: var(--inset); }
+.dashboard-layout .queue-status-note { margin-top: 4px; font-size: 12px; line-height: 1.35; color: var(--muted); overflow-wrap: anywhere; }
 .dashboard-layout .seg button { flex: none; display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 9px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font-size: 13px; font-weight: 600; white-space: nowrap; transition: background-color .16s ease-out, color .16s ease-out; }
 .dashboard-layout .seg button:hover { color: var(--bs-body-color); }
 .dashboard-layout .seg button.on { background: var(--panel-2); color: var(--bs-body-color); box-shadow: var(--shadow-1); }
@@ -58,9 +52,9 @@
 .dashboard-layout .jobs-table { width: 100%; min-width: 980px; table-layout: fixed; border-collapse: collapse; --bs-table-bg: transparent; --bs-table-hover-bg: transparent; --bs-table-striped-bg: transparent; }
 .dashboard-layout .jobs-table thead th { position: sticky; top: 0; z-index: 1; padding: 10px 14px; background: var(--bs-secondary-bg, transparent); color: var(--faint); border-bottom: 1px solid var(--line); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; text-align: left; white-space: nowrap; }
 .dashboard-layout .jobs-table thead th.text-end { text-align: right; }
-.dashboard-layout .jobs-table th:nth-child(1) { width: 40px; }
+.dashboard-layout .jobs-table th:nth-child(1) { width: 52px; }
 .dashboard-layout .jobs-table th:nth-child(2) { width: 76px; }
-.dashboard-layout .jobs-table th:nth-child(4) { width: 260px; }
+.dashboard-layout .jobs-table th:nth-child(4) { width: 220px; }
 .dashboard-layout .jobs-table th:nth-child(5) { width: 104px; }
 .dashboard-layout .jobs-table th:nth-child(6) { width: 14%; }
 .dashboard-layout .jobs-table th:nth-child(7) { width: 100px; }
@@ -74,7 +68,7 @@
     .dashboard-layout .jobs-table thead th:nth-child(2), .dashboard-layout .jobs-table tbody .job-row > td.queue-id { padding-left: 8px; padding-right: 4px; }
     .dashboard-layout .jobs-table thead th:nth-child(3), .dashboard-layout .jobs-table tbody .job-row > td.queue-job { padding-left: 4px; }
 }
-.dashboard-layout .queue-select .form-check-input, .dashboard-layout .jobs-table th.queue-select .form-check-input { margin: 0; vertical-align: middle; }
+.dashboard-layout .queue-select .form-check-input, .dashboard-layout .jobs-table th.queue-select .form-check-input { margin: 0; width: 24px; height: 24px; vertical-align: middle; }
 .dashboard-layout .selection-count { font-size: 12px; color: var(--muted); font-weight: 600; }
 .dashboard-layout .queue-id .jid { padding: 0; background: transparent; color: var(--faint); font-family: var(--mono); font-size: 12px; }
 .dashboard-layout .queue-job-main { display: grid; grid-template-columns: 28px 30px minmax(0, 1fr); align-items: center; gap: 8px; }

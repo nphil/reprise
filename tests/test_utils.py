@@ -448,7 +448,7 @@ class TestNodeHints:
         )
 
     def test_the_apps_gpu_hints_name_a_heading_the_settings_page_shows(self, monkeypatch):
-        """The GPU section's heading is "GPU device tuning"; only its anchor is still gpu-configuration."""
+        """The GPU group's title is "GPU device tuning"; only its anchor is still gpu-configuration."""
         from pathlib import Path
 
         from media_preview_generator import utils
@@ -459,7 +459,8 @@ class TestNodeHints:
         headings = {
             heading.strip()
             for heading in re.findall(
-                r'class="settings-subheading"[^>]*>(?:<i [^>]*></i>)?([^<]+)', (templates / "settings.html").read_text()
+                r'class="(?:settings-subheading|fold-title)"[^>]*>(?:<i [^>]*></i>)?([^<]+)',
+                (templates / "settings.html").read_text(),
             )
         }
         monkeypatch.delenv("MODE", raising=False)

@@ -248,8 +248,9 @@ function _renderModalContext(job) {
     context.hidden = !job;
     if (liveHint) liveHint.hidden = !(job && job.status === 'running');
     if (errorBox) {
-        errorBox.hidden = !(job && job.error);
-        errorBox.innerHTML = job && job.error ? '<b>Job error</b>' + escapeHtml(job.error) : '';
+        const explained = job && typeof _jobExplainBlockHtml === 'function' ? _jobExplainBlockHtml(job) : '';
+        errorBox.hidden = !(job && (explained || job.error));
+        errorBox.innerHTML = explained || (job && job.error ? '<b>Job error</b>' + escapeHtml(job.error) : '');
     }
     if (!job) { body.replaceChildren(); return; }
     const cfg = job.config || {};
@@ -641,8 +642,9 @@ async function showLogsModal(jobId) {
     const autoScrollEl = document.getElementById('logsAutoScroll');
     autoScrollEl.checked = isRunning;
 
-    const modal = new bootstrap.Modal(document.getElementById('logsModal'));
-    modal.show();
+    const logsModalEl = document.getElementById('logsModal');
+    if (typeof _openModalReturningFocus === 'function') _openModalReturningFocus(logsModalEl);
+    else bootstrap.Modal.getOrCreateInstance(logsModalEl).show();
 
     refreshLogs();
 

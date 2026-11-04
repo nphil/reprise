@@ -136,15 +136,15 @@
                             <div class="sm-row2">
                                 <div class="sm-fld">
                                     <label class="sm-lab" for="editServerDisplayName">Display name
-                                        <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="What this server is called in the UI. Cosmetic only — pick anything memorable (e.g. 'Living Room Plex', 'NAS Jellyfin')."><i class="bi bi-info-circle"></i></button>
+                                        <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="The name Reprise shows for this server. Pick anything you will recognise, like 'Living Room Plex'."><i class="bi bi-info-circle"></i></button>
                                     </label>
                                     <input type="text" id="editServerDisplayName" class="form-control">
                                 </div>
                                 <div class="sm-fld">
-                                    <label class="sm-lab" for="editServerUrl">Server URL
+                                    <label class="sm-lab" for="editServerUrl">Server address (URL)
                                         <button type="button" class="info-icon info-icon-more" tabindex="0"
                                                 data-bs-toggle="tooltip" data-bs-placement="top"
-                                                title="How this app reaches your media server."
+                                                title="The web address Reprise uses to reach your media server."
                                                 data-explain-title="Server URL — Docker &amp; networking"
                                                 data-explain-template="infoServerUrlTpl"
                                                 aria-label="Explain Server URL">
@@ -157,7 +157,7 @@
                             </div>
                             <div class="sm-line">
                                 <label class="sm-lab" for="editServerVerifySsl">Verify SSL certificate
-                                    <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Checks the server's HTTPS certificate. Turn it off only for a self-signed one; it does nothing on plain HTTP."><i class="bi bi-info-circle"></i></button>
+                                    <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="For addresses starting with https://, Reprise checks that the server’s security certificate is trusted. Turn this off only if you made the certificate yourself (self-signed). It does nothing for http:// addresses."><i class="bi bi-info-circle"></i></button>
                                 </label>
                                 <div class="form-check form-switch markers-switch mb-0"><input type="checkbox" role="switch" id="editServerVerifySsl" class="form-check-input"></div>
                             </div>
@@ -174,11 +174,11 @@
 
                         <!-- Plex-only: config folder -->
                         <section id="editPlexConfigGroup" class="sm-sec d-none">
-                            <div class="sm-sec-h">Where previews are written</div>
+                            <div class="sm-sec-h">Where Reprise saves preview pictures</div>
                             <div class="sm-fld">
                                 <label class="sm-lab" for="editPlexConfigFolder">Plex config folder
                                     <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top"
-                                            title="Path inside this container to Plex's data folder (where this app writes preview bundles). Same value as Setup → Step 3."><i class="bi bi-info-circle"></i></button>
+                                            title="Plex’s own data folder (the “config folder”), as Reprise sees it from inside its container. Reprise saves preview pictures here. Same field as step 3 of the Setup wizard."><i class="bi bi-info-circle"></i></button>
                                 </label>
                                 <div class="input-group sm-vf has-validation">
                                     <input type="text" id="editPlexConfigFolder" class="form-control font-monospace">
@@ -190,9 +190,9 @@
                                     <div class="invalid-feedback small"></div>
                                     <div class="valid-feedback small">Path exists</div>
                                 </div>
-                                <div class="sm-hint">Where this server's preview bundles are written. <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Mirrors the Setup wizard Step 3 field." data-explain-title="Plex config folder" data-explain-template="infoEditPlexPathTpl"><i class="bi bi-info-circle"></i></button>
+                                <div class="sm-hint">Plex’s own data folder. Only used when preview thumbnails are on (see Processing). <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Same field as step 3 of the Setup wizard." data-explain-title="Plex config folder" data-explain-template="infoEditPlexPathTpl"><i class="bi bi-info-circle"></i></button>
 <template id="infoEditPlexPathTpl">
-    <p>Where this Plex server's preview bundles will be written. Mirrors the <a href="{{ url_for('main.setup_wizard') }}">Setup wizard</a> &rarr; Step 3 field.</p>
+    <p>The folder where this Plex server keeps its own files, as Reprise sees it. When preview thumbnails are on, Reprise saves this server’s preview pictures inside it. It is the same field as step 3 of the <a href="{{ url_for('main.setup_wizard') }}">Setup wizard</a>.</p>
 </template>
                                 </div>
                             </div>
@@ -200,25 +200,25 @@
 
                         <!-- Jellyfin-only: store trickplay off the media drive -->
                         <section id="editJellyfinOffMediaGroup" class="sm-sec d-none">
-                            <div class="sm-sec-h">Where previews are written</div>
+                            <div class="sm-sec-h">Where Reprise saves preview pictures</div>
                             <div class="sm-line">
                                 <div>
                                     <label class="sm-lab" for="editJellyfinSaveOffMedia">Store trickplay off the media drive
                                         <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top"
-                                                title="Write Jellyfin previews into Jellyfin's data folder instead of next to each video." data-explain-title="Store trickplay off the media drive" data-explain-template="infoJellyfinOffMediaTpl"><i class="bi bi-info-circle"></i></button>
+                                                title="Save Jellyfin’s preview pictures in Jellyfin’s own data folder instead of next to each video." data-explain-title="Store trickplay off the media drive" data-explain-template="infoJellyfinOffMediaTpl"><i class="bi bi-info-circle"></i></button>
                                     </label>
-                                    <div class="sm-hint">Previews go in Jellyfin's data folder, not next to videos. <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Off keeps previews next to the media; on uses Jellyfin's data folder." data-explain-title="Store trickplay off the media drive" data-explain-template="infoEditJfOffMediaHintTpl"><i class="bi bi-info-circle"></i></button>
+                                    <div class="sm-hint">“Trickplay” is Jellyfin’s name for seek-bar previews. Off: saved next to each video. On: saved in Jellyfin’s data folder instead. <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Off keeps previews next to the videos; on uses Jellyfin’s data folder." data-explain-title="Store trickplay off the media drive" data-explain-template="infoEditJfOffMediaHintTpl"><i class="bi bi-info-circle"></i></button>
 <template id="infoEditJfOffMediaHintTpl">
-    <p>Off (default) = previews live next to the media (<code>&lt;media&gt;.trickplay/</code>). On = previews live in Jellyfin's data folder (<code>&lt;config&gt;/data/trickplay/</code>).</p>
+    <p>Off (default): the preview pictures sit next to each video (in a <code>&lt;video name&gt;.trickplay</code> folder). On: they go in Jellyfin’s data folder (<code>&lt;data folder&gt;/data/trickplay/</code>).</p>
 </template>
                                     </div>
                                 </div>
                                 <div class="form-check form-switch markers-switch mb-0"><input type="checkbox" role="switch" id="editJellyfinSaveOffMedia" class="form-check-input"></div>
                             </div>
                             <div id="editJellyfinConfigFolderGroup" class="sm-fld d-none">
-                                <label class="sm-lab" for="editJellyfinConfigFolder">Jellyfin config folder (this container)
+                                <label class="sm-lab" for="editJellyfinConfigFolder">Jellyfin config folder (as Reprise sees it)
                                     <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top"
-                                            title="Where Jellyfin's config folder is mounted in this container. It must be mounted read-write (:rw)."><i class="bi bi-info-circle"></i></button>
+                                            title="Where Jellyfin’s data (config) folder is shared into Reprise’s container. Reprise must be allowed to write to it, so it can’t be shared read-only (:ro)."><i class="bi bi-info-circle"></i></button>
                                 </label>
                                 <div class="input-group sm-vf has-validation">
                                     <input type="text" id="editJellyfinConfigFolder" class="form-control font-monospace" placeholder="/jellyfin-config">
@@ -229,10 +229,10 @@
                                     <div class="valid-feedback small">Valid Jellyfin config folder</div>
                                 </div>
                                 <div class="sm-warnline" id="editJellyfinOffMediaWarning">
-                                    <i class="bi bi-exclamation-triangle-fill"></i><span>Writes to Jellyfin's config folder, not your media. Mount it :rw.</span>
-                                    <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="With this on, the app writes to Jellyfin's config dir (not your media). Click for the full requirements." data-explain-title="Jellyfin config folder" data-explain-template="infoEditJfOffMediaWarnTpl" aria-label="About the Jellyfin config folder"><i class="bi bi-info-circle"></i></button>
+                                    <i class="bi bi-exclamation-triangle-fill"></i><span>Saves into Jellyfin’s config folder, not your videos. Share it with write access (:rw).</span>
+                                    <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="With this on, Reprise writes into Jellyfin’s config folder instead of your media. Click for the full requirements." data-explain-title="Jellyfin config folder" data-explain-template="infoEditJfOffMediaWarnTpl" aria-label="About the Jellyfin config folder"><i class="bi bi-info-circle"></i></button>
 <template id="infoEditJfOffMediaWarnTpl">
-    <p>With this on, the app writes to Jellyfin's config dir (not your media). Jellyfin's <code>SaveTrickplayWithMedia</code> must be <strong>off</strong> &mdash; the <strong>Setup Health</strong> tab guides you and flags the plugin + read-write mount.</p>
+    <p>With this on, Reprise writes into Jellyfin’s config folder (its data folder) instead of your media. Jellyfin’s “save trickplay with media” setting must be <strong>off</strong>; the <strong>Setup Health</strong> tab guides you and checks the plugin and the write-access mount.</p>
 </template>
                                 </div>
                             </div>
@@ -528,6 +528,10 @@
                                 <i class="bi bi-arrow-clockwise me-1"></i>Refresh libraries
                             </button>
                         </div>
+                        <div class="sm-note d-none" id="editLibrariesPreviewsOffNote" role="note">
+                            <i class="bi bi-eye" aria-hidden="true"></i>
+                            <span>Preview thumbnails are off for this server (review only), so the Previews switches below do nothing until you turn them on in <a href="#edit-tab-processing" data-goto-section="processing">Processing</a>.</span>
+                        </div>
                         <!-- Previews switches come from servers.js; the Intro & Credits column (markers.library_ids)
                              is filled and shown by markers_server_tab.js while that tab's switch is on. -->
                         <div class="table-responsive">
@@ -564,29 +568,29 @@
                             <summary>Worked example + when you'd need this</summary>
                             <div class="sm-ex-box">
                                 <p class="mb-2">
-                                    Suppose your server stores a file at <code>/data_16tb/movies/Inception.mkv</code> but this app's container mounts that disk as <code>/mnt/plex/movies/Inception.mkv</code> — the server tells this app "the file is at /data_16tb/...", but this app can't open that path because it doesn't exist inside the container. Add a row:
+                                    Suppose your media server stores a file at <code>/data_16tb/movies/Inception.mkv</code>, but Reprise’s container shares that disk as <code>/mnt/plex/movies/Inception.mkv</code>. The server tells Reprise “the file is at /data_16tb/…”, and Reprise can’t open that path because it doesn’t exist inside its container. Add a row:
                                 </p>
                                 <ul class="mb-2">
-                                    <li><strong>Path on media server:</strong> <code>/data_16tb/movies</code></li>
-                                    <li><strong>Local path on this app:</strong> <code>/mnt/plex/movies</code></li>
+                                    <li><strong>Path on the media server:</strong> <code>/data_16tb/movies</code></li>
+                                    <li><strong>Same folder inside Reprise:</strong> <code>/mnt/plex/movies</code></li>
                                 </ul>
                                 <p class="mb-1">
-                                    <strong>Path on Apps</strong> (third column) is for when you trigger generation from <strong>Sonarr / Radarr / Tdarr</strong> webhooks and those apps see your media at a <em>different</em> path than your media server reports — e.g. Sonarr sends <code>/tv/Show/S01E01.mkv</code> but Plex reports <code>/mnt/Media/TV/Show/S01E01.mkv</code>. Enter that app's path root here so we can map it to your local mount. Leave blank if your webhooks already send the same paths the server uses (e.g. Plex/Emby/Jellyfin <code>library.new</code> webhooks, which resolve the path through the server).
+                                    <strong>Path used by Sonarr / Radarr</strong> (third column, optional) is for when Sonarr, Radarr or Tdarr trigger Reprise through a webhook and see your media at a <em>different</em> path than your media server reports. For example Sonarr sends <code>/tv/Show/S01E01.mkv</code> but Plex reports <code>/mnt/Media/TV/Show/S01E01.mkv</code>. Enter that app’s path here so Reprise can match it to your folder. Leave it blank if your webhooks already send the same paths the server uses (Plex, Emby and Jellyfin webhooks do, because they look the path up through the server).
                                 </p>
                             </div>
                         </details>
                         <table class="table table-sm sm-tbl sm-tbl-stack" id="editPathMappingsTable">
                             <thead><tr>
-                                <th>Path on Media Server
-                                    <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="The path your media server reports (what's stored in its database / shown in its admin UI)."><i class="bi bi-info-circle"></i></button>
+                                <th>Path on the media server
+                                    <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="The folder path your media server uses for these videos (the one shown in the server’s own settings)."><i class="bi bi-info-circle"></i></button>
                                 </th>
-                                <th>Local path on this app
-                                    <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="The path the same file appears at INSIDE this app's container — i.e. the volume mount target."><i class="bi bi-info-circle"></i></button>
+                                <th>Same folder inside Reprise
+                                    <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="The path where Reprise sees these same videos: where the folder is shared into Reprise’s container."><i class="bi bi-info-circle"></i></button>
                                 </th>
-                                <th>Path on Apps (Sonarr, Radarr, Webhooks)
+                                <th>Path used by Sonarr / Radarr (optional)
                                     <button type="button" class="info-icon info-icon-more" tabindex="0"
                                             data-bs-toggle="tooltip" data-bs-placement="top"
-                                            title="For Sonarr/Radarr/Tdarr webhooks that send a different path than your server reports."
+                                            title="For Sonarr, Radarr or Tdarr webhooks that send a different path than your media server reports."
                                             data-explain-title="Webhook path mapping"
                                             data-explain-template="infoWebhookPathTpl"
                                             aria-label="Explain webhook path mapping">
@@ -655,10 +659,10 @@
                                 <span class="pill" id="editVendorWebhookPluginBadge">Plugin required</span>
                             </div>
                             <div class="sm-card-b">
-                                <div class="sm-hint">Point your server's webhook plugin at this URL (one per server).</div>
+                                <div class="sm-hint">Point your server’s webhook plugin at this address (each server has its own).</div>
                                 <div class="sm-fld">
                                     <label class="sm-lab" for="editVendorWebhookUrl">Webhook URL
-                                        <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Pinned to this server's ID, so previews go only to this server." data-explain-title="Webhook URL" data-explain-template="infoVendorWebhookUrlTpl"><i class="bi bi-info-circle"></i></button>
+                                        <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="This address is made for this server only, so previews go only to this server." data-explain-title="Webhook URL" data-explain-template="infoVendorWebhookUrlTpl"><i class="bi bi-info-circle"></i></button>
                                     </label>
                                     <div class="input-group">
                                         <input type="text" class="form-control font-monospace" id="editVendorWebhookUrl" readonly>
@@ -669,7 +673,7 @@
                                 </div>
                                 <div id="editVendorWebhookAuthBlock" class="sm-warnline">
                                     <i class="bi bi-shield-lock-fill"></i>
-                                    <span><strong>Auth header (required).</strong> Add header <code id="editVendorWebhookHeaderName">X-Auth-Token</code> with value <code id="editVendorWebhookHeaderValuePlaceholder">[YOUR WEBHOOK SECRET]</code>.</span>
+                                    <span><strong>Sign-in header (required).</strong> Add a header named <code id="editVendorWebhookHeaderName">X-Auth-Token</code> with the value <code id="editVendorWebhookHeaderValuePlaceholder">[YOUR WEBHOOK SECRET]</code>.</span>
                                     <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Where to find the webhook secret and why a header is safer." data-explain-title="Webhook auth header" data-explain-template="infoEditWebhookTokenTpl" aria-label="About the auth header"><i class="bi bi-info-circle"></i></button>
 <template id="infoEditWebhookTokenTpl">
     <p>In your plugin's <strong>Headers</strong> / <strong>Request Headers</strong> section, add a custom header: Name <code>X-Auth-Token</code>, Value your webhook secret.</p>
@@ -718,10 +722,10 @@
                                 <div id="plexWebhookWarning" class="sm-warnline d-none"></div>
 
                                 <div class="sm-fld">
-                                    <label class="sm-lab" for="plexWebhookPublicUrl">URL Plex will POST to
-                                        <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Must be reachable from your Plex Media Server, not just your browser." data-explain-title="URL Plex will POST to" data-explain-template="infoEditPlexWebhookUrlTpl" aria-label="About the webhook URL"><i class="bi bi-info-circle"></i></button>
+                                    <label class="sm-lab" for="plexWebhookPublicUrl">Address Plex will notify
+                                        <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Plex has to be able to reach this address, not just your browser." data-explain-title="Address Plex will notify" data-explain-template="infoEditPlexWebhookUrlTpl" aria-label="About the webhook address"><i class="bi bi-info-circle"></i></button>
 <template id="infoEditPlexWebhookUrlTpl">
-    <p>Confirm the URL Plex will POST to. The default is the URL you're using right now, which works for most same-host setups. Override it if Plex is on a different machine or behind a different network/proxy.</p>
+    <p>Confirm the address Plex will send its notifications to. The default is the address you are using right now, which works for most setups where Plex and Reprise are on the same machine. Change it if Plex is on a different machine or behind a different network or proxy.</p>
     <p>It must be reachable from your <strong>Plex Media Server</strong>, not just your browser.</p>
     <p>Click <strong>Register with Plex</strong>. The global webhook secret (set under <a href="/automation#section-webhooks-settings">Triggers &rarr; Settings</a>) is embedded in the registered URL so Plex can authenticate. <strong>If you change the secret later</strong>, click Register again to push the new value.</p>
 </template>
@@ -757,7 +761,7 @@
                             </div>
                             <div class="sm-card-b">
                                 <div class="sm-hint" id="editRecentlyAddedBlurb">
-                                    Polls recently added items so files the webhook missed still get picked up. <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Polls this server's recently-added list on a schedule so files the live webhook missed (server down, plugin not configured) still get picked up." aria-label="About the Recently Added Scanner"><i class="bi bi-info-circle"></i></button>
+                                    Checks recently added items on a schedule, so files the webhook missed still get picked up. <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Reprise looks at this server’s recently added list on a schedule, so files the live webhook missed (server down, plugin not set up) still get picked up." aria-label="About the Recently Added Scanner"><i class="bi bi-info-circle"></i></button>
                                 </div>
                                 <div id="recentlyAddedScannerSummary" class="sm-hint">
                                     <span class="spinner-border spinner-border-sm me-1"></span>Loading scanners…
@@ -824,7 +828,7 @@
                                         <input class="form-check-input" type="checkbox" role="switch" id="editPlexChapterThumbnails" aria-describedby="editPlexChapterThumbnailsHelp">
                                     </div>
                                 </div>
-                                <div class="sm-hint">Check <a href="#" id="editPlexChapterHealthLink">Setup Health</a>. <a href="#edit-tab-general" class="processing-section-link" data-section="general">Plex database in Connection</a></div>
+                                <div class="sm-hint">Check <a href="#edit-tab-health" class="processing-section-link" data-section="health" id="editPlexChapterHealthLink">Setup Health</a>. <a href="#edit-tab-general" class="processing-section-link" data-section="general">Plex database in Connection</a></div>
                             </div></div>
                         </section>
                         <!-- Intro & Credits: this server's switch and status. Filled by markers_server_tab.js; its library
@@ -851,7 +855,7 @@
                                 </div>
 
                                 <div class="sm-hint" id="markersLibrariesPointer">
-                                    Choose which libraries get markers on the <a href="#" class="markers-libraries-link">Libraries</a> tab once this is on.
+                                    Choose which libraries get markers on the <a href="#edit-tab-libraries" class="markers-libraries-link">Libraries</a> tab once this is on.
                                 </div>
 
                                 <div class="sm-line markers-opt d-none" id="markersPlexRedetectGroup">
@@ -907,9 +911,9 @@
                                     <i class="bi bi-info-circle"></i> <span>Loudness is written through the Plex database node, which needs version 1.2.0 or newer.</span>
                                 </div>
                                 <div class="sm-hint" id="loudnessLibrariesPointer">
-                                    Choose movie and TV libraries on the <a href="#" class="loudness-libraries-link">Libraries</a> tab. <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Music libraries are not supported." data-explain-title="Loudness libraries" data-explain-template="infoEditLoudnessLibsTpl"><i class="bi bi-info-circle"></i></button>
+                                    Choose movie and TV libraries on the <a href="#edit-tab-libraries" class="loudness-libraries-link">Libraries</a> tab. <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Music libraries are not supported." data-explain-title="Loudness libraries" data-explain-template="infoEditLoudnessLibsTpl"><i class="bi bi-info-circle"></i></button>
 <template id="infoEditLoudnessLibsTpl">
-    <p>Choose movie and TV libraries on the <a href="#" class="loudness-libraries-link">Libraries</a> tab once this is on. Music libraries are not supported. Playback Normalize Loudness requires Plex Pass or Plex Home access and Plex audio transcoding.</p>
+    <p>Choose movie and TV libraries on the <a href="#edit-tab-libraries" class="loudness-libraries-link">Libraries</a> tab once this is on. Music libraries are not supported. Playback Normalize Loudness requires Plex Pass or Plex Home access and Plex audio transcoding.</p>
 </template>
                                 </div>
                             </div></div>

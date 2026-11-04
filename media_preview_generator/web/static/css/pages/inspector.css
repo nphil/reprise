@@ -671,13 +671,16 @@ button.insp-row:focus-visible {
 
 .insp-head {
     display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
     align-items: flex-start;
-    gap: 24px;
+    gap: 16px 24px;
 }
 
+/* The title keeps at least 320px; the buttons drop below it when they cannot fit beside it. */
 .insp-head-text {
     display: flex;
+    flex: 1 1 320px;
     flex-direction: column;
     gap: 8px;
     min-width: 0;
@@ -722,9 +725,10 @@ button.insp-row:focus-visible {
 
 .insp-actions {
     display: flex;
+    flex: 0 1 auto;
     flex-wrap: wrap;
     justify-content: flex-end;
-    flex-shrink: 0;
+    margin-left: auto;
 }
 
 .insp-confirm-bar {
@@ -2302,8 +2306,14 @@ button.insp-season-row:focus-visible {
         gap: 12px;
     }
 
+    /* Stacked: the title's 320px minimum width would otherwise become a minimum height. */
+    .insp-head-text {
+        flex: 0 1 auto;
+    }
+
     .insp-actions {
         justify-content: flex-start;
+        margin-left: 0;
         padding-top: 0;
     }
 
@@ -2337,6 +2347,19 @@ button.insp-season-row:focus-visible {
     .insp select {
         min-width: 44px;
         min-height: 44px;
+    }
+
+    /* The coloured intro/credits bars sit in 18px lanes; stretching them to 44px stacks them on top of each other. */
+    .insp .insp-band {
+        min-width: 0;
+        min-height: 0;
+    }
+
+    /* A path cut off with "…" cannot be read; on a phone it wraps instead. */
+    .insp-path {
+        white-space: normal;
+        overflow-wrap: anywhere;
+        text-overflow: clip;
     }
 
     .insp-title {
@@ -2951,7 +2974,7 @@ button.insp-row:focus-visible,
     }
 
     .insp {
-        --insp-gutter: 62px;
+        --insp-gutter: 84px;
     }
 
     .insp-title {
@@ -3041,4 +3064,12 @@ button.insp-row:focus-visible,
 .insp-card > .insp-card-heading + .insp-ev,
 .insp-servers-head + .insp-server {
     border-top: 0;
+}
+
+/* Light theme: the shell maps the intro colour's ink to its dark accent ink, which on the mid-purple intro bar and
+ * flags reads at only 3:1. White on that purple is 5.9:1. */
+html[data-bs-theme="light"] .insp .insp-band.is-ours.is-intro,
+html[data-bs-theme="light"] .insp .insp-edge.is-ours.is-intro .insp-edge-flag,
+html[data-bs-theme="light"] .insp .insp-adj-line.is-ours.is-intro .insp-adj-flag {
+    color: #fff;
 }

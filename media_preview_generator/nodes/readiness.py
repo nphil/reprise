@@ -375,7 +375,7 @@ def _media_access(details: NodeDetails) -> list[dict[str, Any]]:
             "about this app's own access to them, not the node: fix it on Media Servers.",
             reason=", ".join(skipped),
             help_url=SERVERS_URL,
-            help_label="Fix on Media Servers",
+            help_label="Fix in Connections",
         )
         # A note, not a problem of the node: shown on its own line, outside the Must fix / Recommended buckets.
         row["informational"] = True

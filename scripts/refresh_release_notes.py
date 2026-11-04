@@ -34,7 +34,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-REPO = "stevezau/media_preview_generator"
+REPO = "nphil/reprise"
 LIMIT = 30  # plenty of room for upgraders coming from very old versions
 OUT_PATH = Path(__file__).resolve().parent.parent / "media_preview_generator" / "release_notes.json"
 

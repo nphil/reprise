@@ -13,6 +13,7 @@
                     {% with prefix='job', libraries_tip='Which libraries this job processes, for this run only.' %}{% include '_job_libraries.html' %}{% endwith %}
                     <section class="ov-sec" id="jobOptionsGroup">
                         <div class="ov-sec-h"><span class="ov-n" aria-hidden="true"></span>Options</div>
+                        <p class="ov-note" id="jobPreviewsOffNote" role="status" hidden></p>
                         <div class="ov-fld" id="jobProcessingModeGroup">
                             <div class="ov-lbl" id="jobProcessingModeLabel">Processing Mode
                                 <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Missing only skips files that already have a preview. Regenerate all redoes every file, e.g. after changing thumbnail quality." data-explain-title="Processing Mode" data-explain-template="infoJobProcessingModeTpl" aria-label="Missing only skips files that already have a preview. Regenerate all redoes every file, e.g. after changing thumbnail quality."><i class="bi bi-info-circle" aria-hidden="true"></i></button>
@@ -42,7 +43,7 @@
                 <span class="ov-sum" id="jobSummary" aria-live="polite"></span>
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                 <button type="button" class="btn btn-primary" id="jobStartButton" onclick="startNewJob()">
-                    <i class="bi bi-play-fill me-1" aria-hidden="true"></i><span id="jobStartLabel">Start previews job</span>
+                    <i class="bi bi-play-fill me-1" aria-hidden="true"></i><span id="jobStartLabel">Start previews</span>
                 </button>
             </div>
         </div>

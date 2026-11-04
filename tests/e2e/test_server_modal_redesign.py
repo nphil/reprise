@@ -1017,10 +1017,11 @@ class TestServersPageLayouts:
         expect(authed_page.locator("#serverSummary")).to_contain_text("5 servers")
         expect(authed_page.locator("#serverSummaryStatus")).to_contain_text("need", timeout=10000)
 
+        # The rows above a connection problem line up in every card; the problem block is what makes a card taller.
         offsets = authed_page.evaluate(
             """() => [...document.querySelectorAll('.srv-card')].map(card => {
                 const top = card.getBoundingClientRect().top;
-                return ['.srv-top', '.srv-host', '.srv-issue', '.srv-lib', '.srv-foot'].map(
+                return ['.srv-top', '.srv-host', '.srv-issue', '.srv-lib'].map(
                     sel => Math.round(card.querySelector(sel).getBoundingClientRect().top - top));
             })"""
         )

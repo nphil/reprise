@@ -19,6 +19,7 @@ from ._mocks import (
     mock_setup_status,
     mock_system_status,
 )
+from .conftest import expand_settings_folds
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -34,6 +35,7 @@ def settings_page(authed_page: Page, app_url: str) -> Page:
     mock_settings_backups(authed_page)
     capture_settings_save(authed_page)
     authed_page.goto(f"{app_url}/settings")
+    expand_settings_folds(authed_page)
     authed_page.wait_for_load_state("domcontentloaded")
     return authed_page
 

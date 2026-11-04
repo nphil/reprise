@@ -376,6 +376,17 @@ def wizard_page(page: Page, context: BrowserContext, app_url_wizard: str, sessio
 # ---------------------------------------------------------------------------
 
 
+def expand_settings_folds(page: Page) -> None:
+    """Open every collapsed group on Settings → Advanced (Processing options keeps its expert groups folded).
+
+    A control inside a closed ``<details>`` is not visible to the browser, so a test that fills or clicks one opens
+    its group first. Tests of the folding itself do not call this.
+    """
+    page.evaluate(
+        "() => document.querySelectorAll('.settings-page details.fold').forEach((fold) => { fold.open = true; })"
+    )
+
+
 def accept_app_confirm(page: Page, timeout: int = 3000) -> None:
     """Click the in-app ``appConfirm`` Bootstrap modal's OK button.
 

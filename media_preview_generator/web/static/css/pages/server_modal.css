@@ -42,6 +42,9 @@
 .sm-hint { font-size: 12.5px; line-height: 1.4; color: var(--muted); min-width: 0; }
 .sm-hint code, .sm-lead code { padding: 1px 5px; border-radius: 4px; background: var(--inset); color: var(--sm-text); font-size: 12px; }
 .sm-hint a, .sm-lead a, .sm-ex a { text-decoration: underline; text-underline-offset: 2px; }
+.sm-note { display: flex; align-items: flex-start; gap: 10px; margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-ctl); background: var(--inset); color: var(--muted); font-size: 13px; line-height: 1.45; }
+.sm-note > i { flex: none; margin-top: 2px; color: var(--accent-text); }
+.sm-note a { text-decoration: underline; text-underline-offset: 2px; }
 .sm-lead { color: var(--muted); font-size: 13.5px; margin: 0; }
 .sm-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
 .sm-line > :first-child { min-width: 0; }
@@ -87,6 +90,8 @@
 /* Switches: amber when on, the same control everywhere in the modal. */
 .sm-modal .form-switch .form-check-input, .sm-step .form-switch .form-check-input { margin: 0; float: none; cursor: pointer; }
 .sm-modal .form-switch, .sm-step .form-switch { padding-left: 0; display: flex; align-items: center; min-height: 0; margin: 0; }
+/* Switches are at least 24px tall (a comfortable target), the header one included. */
+.sm-modal .form-switch .form-check-input, .sm-step .form-switch .form-check-input { width: 44px; height: 24px; flex: none; }
 
 /* Segmented method / choice control. */
 .sm-mseg { display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 3px; border-radius: 10px; background: var(--inset); border: 1px solid var(--line); }
@@ -192,6 +197,9 @@
 .sm-health.d-none { display: none; }
 .sm-hsum { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .sm-hsum-title { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 16px; font-weight: 700; }
+/* The (i) sits right after the title, so a narrow header wraps the Re-check button, never the (i) alone. */
+.sm-hsum > .sm-hsum-title { order: -2; }
+.sm-hsum > .info-icon { order: -1; margin-left: -4px; }
 .sm-health-body { display: grid; gap: 12px; }
 .readiness-bucket { border: 1px solid var(--line); border-radius: var(--radius-card); overflow: hidden; margin: 0 !important; }
 .readiness-bucket > summary { display: flex; align-items: center; gap: 10px !important; padding: 12px 16px !important; border: 0; border-radius: 0 !important; background: var(--inset); font-weight: 700; list-style: none; cursor: pointer; }
@@ -360,7 +368,27 @@
 #editServerModal #editPathMappingsTable, #editServerModal #editExcludePathsTable { min-width: 0; }
 #editServerModal #edit-tab-paths, #editServerModal #edit-tab-excludes { overflow-x: visible; }
 
-/* ---------- Tablet and phone ------------------------------------------------------------------------------- */
+/* Path mappings and exclude rules: fixed column widths and wrapping headings so nothing runs past the dialog; below
+ * 1100px each row stacks into labelled fields (each with its ⓘ). Phones get one field per line. */
+#editServerModal #editPathMappingsTable, #editServerModal #editExcludePathsTable { table-layout: fixed; width: 100%; }
+#editServerModal #editPathMappingsTable th, #editServerModal #editExcludePathsTable th { white-space: normal; vertical-align: bottom; }
+#editPathMappingsTable th:nth-child(1) { width: 29%; }
+#editPathMappingsTable th:nth-child(2) { width: 38%; }
+#editPathMappingsTable th:nth-child(3) { width: 29%; }
+#editServerModal #editPathMappingsTable .sm-col-x, #editServerModal #editExcludePathsTable .sm-col-x { width: 48px; }
+#editServerModal #editExcludePathsTable .sm-col-type { width: 240px; }
+#editServerModal .sm-tbl td { min-width: 0; }
+@media (max-width: 1100px) {
+    .sm-tbl-stack, .sm-tbl-stack tbody, .sm-tbl-stack td { display: block; width: 100%; }
+    .sm-tbl-stack thead { display: none; }
+    .sm-tbl-stack tr { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 4px 14px; width: 100%; padding: 12px 0; border-bottom: 1px solid var(--line); }
+    .sm-tbl-stack td { border: 0; padding: 4px 0; }
+    .sm-tbl-stack td.sm-cell-x { display: flex; justify-content: flex-end; grid-column: 1 / -1; }
+    #editPathMappingsTable td:nth-child(3) { grid-column: 1 / -1; }
+    #editExcludePathsTable td:nth-child(1) { grid-column: 1 / -1; }
+    .sm-cell-lab { display: flex; align-items: center; gap: 4px; margin-bottom: 4px; font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--faint); }
+}
+
 @media (max-width: 900px) {
     #editServerModal .sm-body { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
     #editServerModal .sm-rail.nav-tabs { flex-direction: row; overflow-x: auto; overflow-y: hidden; border-right: 0; border-bottom: 1px solid var(--line); padding: 8px 10px; scroll-snap-type: x proximity; }
@@ -386,14 +414,9 @@
     .markers-kv > div:not(.markers-kv-label) { margin-bottom: 8px; }
     .rd-row { grid-template-columns: 4px minmax(0, 1fr); }
     .rd-acts { grid-column: 2; justify-content: flex-start; }
-    /* Path mappings and exclude rules stack, each cell labelled (with its ⓘ); the libraries table keeps its header
-     * so the column ⓘs stay reachable, and just tightens up. */
-    .sm-tbl-stack, .sm-tbl-stack tbody, .sm-tbl-stack tr, .sm-tbl-stack td { display: block; width: 100%; }
-    .sm-tbl-stack thead { display: none; }
-    .sm-tbl-stack tr { padding: 10px 0; border-bottom: 1px solid var(--line); }
-    .sm-tbl-stack td { border: 0; padding: 4px 0; }
-    .sm-tbl-stack td.sm-cell-x { display: flex; justify-content: flex-end; }
-    .sm-cell-lab { display: flex; align-items: center; gap: 4px; margin-bottom: 4px; font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--faint); }
+    /* The stacked tables above go to one field per line on phones; the libraries table keeps its header so the
+     * column ⓘs stay reachable, and just tightens up. */
+    .sm-tbl-stack tr { grid-template-columns: minmax(0, 1fr); }
     .sm-libs th, .sm-libs td { padding: 8px 4px; white-space: normal; }
     .sm-libs th { font-size: 11px; }
     #editServerModal #editTestConnectionBtn { min-height: 40px; }

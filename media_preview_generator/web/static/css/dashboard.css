@@ -60,7 +60,7 @@
 .dashboard-layout .dash-server-logo .vendor-logo { margin: 0 !important; vertical-align: baseline !important; }
 .dashboard-layout .dash-server-name { font-weight: 600; line-height: 1.2; }
 .dashboard-layout .dash-server-host { color: var(--faint); font-size: 12px; font-family: var(--mono); }
-.dashboard-layout .dash-server.is-failed .dash-server-name { color: var(--bad); }
+.dashboard-layout .dash-server-state { margin-top: 2px; color: var(--muted); font-size: 12px; line-height: 1.35; overflow-wrap: anywhere; }
 .dashboard-layout .system-version-row:not(:has(#dashboardUpdateBadge:not(.d-none))) { display: none; }
 .dashboard-layout .dash-foot { margin-top: auto; padding-top: 12px; border-top: 1px solid var(--line); display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
 .dashboard-layout .dash-foot code { font-family: var(--mono); font-size: 12px; color: var(--faint); background: transparent; padding: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -81,22 +81,25 @@
 .dashboard-layout .stepper output { min-width: 26px; text-align: center; font-weight: 600; font-variant-numeric: tabular-nums; }
 
 /* Quick actions */
-.dashboard-layout .dash-qa-links { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: 1fr; gap: 10px; }
+.dashboard-layout .dash-qa-help { margin: -2px 2px 6px; color: var(--muted); font-size: 12px; line-height: 1.4; }
+.dashboard-layout .dash-qa-links { display: grid; grid-template-columns: minmax(0, 1fr); }
+/* With no schedule there is nothing to run, so the tile is not shown at all; the Job statistics card says "No schedules" and links to Automation. */
+.dashboard-layout .dash-qa-links:has(#quickRunNextSchedule:disabled) { display: none; }
+.dashboard-layout .dash-qa-more { margin-top: auto; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; min-height: 28px; color: var(--accent-text); font-size: 13px; font-weight: 600; text-decoration: none; }
+.dashboard-layout .dash-qa-more:hover { text-decoration: underline; }
+.dashboard-layout .dash-qa-more small { color: var(--muted); font-size: 12px; font-weight: 400; }
 .dashboard-layout .dash-qa-links button.dash-tile-link { background: transparent; text-align: left; font: inherit; cursor: pointer; }
-.dashboard-layout .dash-qa-links button.dash-tile-link:disabled { opacity: .6; cursor: not-allowed; }
 .dashboard-layout .dash-tile-link { min-height: 44px; position: relative; min-width: 0; }
 .dashboard-layout .dash-tile-link > span { min-width: 0; }
-.dashboard-layout .dash-tile-link small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dashboard-layout .dash-tile-link b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dashboard-layout .dash-tile-pill { margin-left: auto; min-width: 20px; padding: 0 6px; border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-size: 11px; font-weight: 600; text-align: center; }
+.dashboard-layout .dash-tile-link small, .dashboard-layout .dash-tile-link b { overflow-wrap: anywhere; }
 .dashboard-layout .dash-tile-link { display: flex; align-items: center; gap: 10px; padding: 12px; border-radius: var(--radius-ctl); border: 1px solid var(--line); color: var(--bs-body-color); text-decoration: none; transition: background-color .16s ease-out, border-color .16s ease-out; }
 .dashboard-layout .dash-tile-link:hover { background: var(--inset); border-color: var(--line-strong); color: var(--bs-body-color); }
 .dashboard-layout .dash-tile-link > i { font-size: 18px; color: var(--muted); }
 .dashboard-layout .dash-tile-link b { display: block; font-size: 13px; line-height: 1.2; }
-.dashboard-layout .dash-tile-link small { color: var(--faint); font-size: 12px; }
+.dashboard-layout .dash-tile-link small { color: var(--muted); font-size: 12px; }
 
 /* Job statistics */
-.dashboard-layout .dash-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.dashboard-layout .dash-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; }
 .dashboard-layout .dash-stat { padding: 10px 12px; border-radius: var(--radius-ctl); background: var(--inset); border: 1px solid var(--line); min-width: 0; }
 .dashboard-layout .dash-stat-label { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--muted); }
 .dashboard-layout .dash-stat-value { font-size: 26px; font-weight: 700; line-height: 1.15; }
@@ -111,9 +114,10 @@
 .dashboard-layout .dash-mix i.warn { background: var(--warn); }
 .dashboard-layout .dash-mix i.run { background: var(--run); }
 .dashboard-layout .dash-schedule { margin-top: auto; display: grid; gap: 10px; }
-.dashboard-layout .dash-sched { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 12px; border-radius: var(--radius-card); background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent); }
+.dashboard-layout .dash-sched { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; padding: 12px; border-radius: var(--radius-card); background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent); }
+.dashboard-layout .dash-sched > div { flex: 1 1 130px; min-width: 0; }
 .dashboard-layout .dash-sched.is-empty { background: var(--inset); border-color: var(--line); }
-.dashboard-layout .dash-sched-ico { width: 40px; height: 40px; display: grid; place-items: center; border-radius: 10px; background: var(--accent); color: var(--accent-ink); font-size: 19px; }
+.dashboard-layout .dash-sched-ico { flex: none; width: 40px; height: 40px; display: grid; place-items: center; border-radius: 10px; background: var(--accent); color: var(--accent-ink); font-size: 19px; }
 .dashboard-layout .dash-sched.is-empty .dash-sched-ico { background: var(--panel-2); color: var(--muted); }
 .dashboard-layout .dash-sched-text { min-width: 0; }
 .dashboard-layout .dash-sched-label { font-size: 12px; font-weight: 600; color: var(--accent-text); }
@@ -127,7 +131,7 @@
 
 /* Phones and narrow windows: icon controls are finger-sized whatever the pointer reports. */
 @media (max-width: 575.98px) {
-    .dashboard-layout .stepper button, .dashboard-layout .ibtn, .dashboard-layout .dash-btn-sm, .dashboard-layout .dash-tile-link, .dashboard-layout .btn.dash-btn, .dashboard-layout .btn.dash-btn-primary { min-width: 44px; min-height: 44px; }
+    .dashboard-layout .stepper button, .dashboard-layout .ibtn, .dashboard-layout .dash-btn-sm, .dashboard-layout .dash-tile-link, .dashboard-layout .dash-qa-more, .dashboard-layout .btn.dash-btn, .dashboard-layout .btn.dash-btn-primary { min-width: 44px; min-height: 44px; }
 }
 
 /* ---- phone: system details start open; the toggle collapses them to the one-line summary ---- */

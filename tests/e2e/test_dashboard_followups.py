@@ -42,18 +42,21 @@ def _worker(job_id: str | None = "abcd1234-0000-4000-8000-000000000001") -> dict
 
 @pytest.mark.e2e
 class TestQuickActions:
-    def test_quick_actions_shows_four_tiles_and_no_libraries_tile(self, authed_page: Page, app_url: str) -> None:
+    def test_quick_actions_has_two_start_buttons_and_hides_the_schedule_tile_without_schedules(
+        self, authed_page: Page, app_url: str
+    ) -> None:
         mock_dashboard_defaults(authed_page)
         mock_worker_groups(authed_page)
         authed_page.goto(app_url + "/dashboard")
         quick = authed_page.locator(".dashboard-quick-card")
-        expect(quick.locator(".dash-tile-link")).to_have_count(4)
+        expect(quick.get_by_role("button", name="Start new job")).to_be_visible()
+        expect(quick.get_by_role("button", name="Process a file or folder")).to_be_visible()
         expect(quick.locator("#libraryList")).to_have_count(0)
         expect(quick).not_to_contain_text("libraries on")
-        for link, href in (("Inspector", "/inspector"), ("Webhook activity", "/webhook-activity"), ("Logs", "/logs")):
-            expect(quick.get_by_role("link", name=link)).to_have_attribute("href", href)
-        heights = quick.locator(".dash-tile-link").evaluate_all("els => els.map(e => e.getBoundingClientRect().height)")
-        assert all(height >= 44 for height in heights)
+        for link in ("Inspector", "Logs"):
+            expect(quick.get_by_role("link", name=link)).to_have_count(0)
+        expect(quick.get_by_role("link", name="Webhook activity")).to_have_attribute("href", "/webhook-activity")
+        expect(quick.locator("#quickRunNextSchedule")).to_be_hidden()
 
     def test_run_next_schedule_tile_is_disabled_when_there_are_no_schedules(
         self, authed_page: Page, app_url: str
@@ -97,18 +100,18 @@ class TestQuickActions:
         authed_page.locator("#quickRunNextSchedule").click()
         expect(authed_page.locator(".toast", has_text="Scheduler is down")).to_be_visible()
 
-    def test_webhook_activity_tile_pill_shows_pending_count_and_hides_at_zero(
+    def test_pending_webhooks_chip_shows_count_in_jobs_header_and_hides_at_zero(
         self, authed_page: Page, app_url: str
     ) -> None:
         mock_dashboard_defaults(authed_page)
         mock_worker_groups(authed_page)
         authed_page.route("**/api/webhooks/pending", lambda r: _fulfill_json(r, {"pending": [{"id": 1}, {"id": 2}]}))
         authed_page.goto(app_url + "/dashboard")
-        pill = authed_page.locator("#quickWebhookPending")
-        expect(pill).to_have_text("2")
+        chip = authed_page.locator("#pendingWebhooksChip")
+        expect(chip).to_contain_text("2 webhooks pending")
         authed_page.route("**/api/webhooks/pending", lambda r: _fulfill_json(r, {"pending": []}))
         authed_page.evaluate("loadPendingWebhooks()")
-        expect(pill).to_be_hidden()
+        expect(chip).to_be_hidden()
 
 
 @pytest.mark.e2e

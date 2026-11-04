@@ -1134,6 +1134,7 @@ def preview_file_path():
 
 
 _READ_ONLY_IS_FINE_NOTE = "Read-only is fine: Reprise writes nothing here while preview thumbnails are off."
+_FOLDER_UNUSED_NOTE = "Not used while preview thumbnails are off (review only)."
 
 
 def _review_only_requested(data: dict) -> bool:
@@ -1142,6 +1143,17 @@ def _review_only_requested(data: dict) -> bool:
     A read-only config folder is then correct, so the folder checks report a note instead of an error.
     """
     return data.get("preview_thumbnails") is False
+
+
+def _folder_problem(data: dict, payload: dict, message: str):
+    """A config-folder problem: an error normally, a muted note when this server's preview thumbnails are off.
+
+    With thumbnails off nothing is written to the folder, so a missing or wrong one must not show a red error;
+    the sentence stays in the note for whoever turns previews on later.
+    """
+    if _review_only_requested(data):
+        return jsonify({**payload, "error": None, "note": f"{_FOLDER_UNUSED_NOTE} {message}"})
+    return jsonify({**payload, "error": message})
 
 
 @api.route("/settings/validate-plex-config-folder", methods=["POST"])
@@ -1212,52 +1224,50 @@ def validate_plex_config_folder():
                 f"mount). Mount your host Plex config folder there with "
                 f"-v /your/host/path:{canonical_root}, then enter {canonical_root} here."
             )
-        return jsonify(
+        return _folder_problem(
+            data,
             {
                 "exists": exists_outside_root,
                 "valid_plex_structure": False,
                 "shard_count": 0,
                 "writable": False,
                 "detail": "",
-                "error": msg,
-            }
+            },
+            msg,
         )
     if not os.path.exists(resolved):
-        return jsonify(
-            {
-                "exists": False,
-                "valid_plex_structure": False,
-                "shard_count": 0,
-                "writable": False,
-                "detail": "",
-                "error": "Folder not found",
-            }
+        return _folder_problem(
+            data,
+            {"exists": False, "valid_plex_structure": False, "shard_count": 0, "writable": False, "detail": ""},
+            "Folder not found",
         )
 
     media_path = os.path.join(resolved, "Media")
     localhost_path = os.path.join(media_path, "localhost")
 
     if not os.path.exists(media_path):
-        return jsonify(
+        return _folder_problem(
+            data,
             {
                 "exists": True,
                 "valid_plex_structure": False,
                 "shard_count": 0,
                 "writable": os.access(resolved, os.W_OK),
                 "detail": "",
-                "error": 'Missing "Media" subfolder — this does not look like a Plex config folder',
-            }
+            },
+            'Missing "Media" subfolder — this does not look like a Plex config folder',
         )
     if not os.path.exists(localhost_path):
-        return jsonify(
+        return _folder_problem(
+            data,
             {
                 "exists": True,
                 "valid_plex_structure": False,
                 "shard_count": 0,
                 "writable": os.access(resolved, os.W_OK),
                 "detail": "",
-                "error": 'Missing "Media/localhost" subfolder — this does not look like a Plex config folder',
-            }
+            },
+            'Missing "Media/localhost" subfolder — this does not look like a Plex config folder',
         )
 
     try:
@@ -1342,6 +1352,12 @@ def validate_jellyfin_config_folder():
         )
 
     data = _json_object()
+
+    def _jf_problem(message, *, exists=False, writable=False):
+        if _review_only_requested(data):
+            return _resp(exists=exists, writable=writable, note=f"{_FOLDER_UNUSED_NOTE} {message}")
+        return _resp(exists=exists, writable=writable, error=message)
+
     raw_path = (data.get("path") or "").strip()
     if not raw_path:
         return _resp()
@@ -1350,19 +1366,17 @@ def validate_jellyfin_config_folder():
 
     probe = os.path.realpath(os.path.normpath(raw_path))
     if not os.path.isdir(probe):
-        return _resp(error="Folder not found in this container")
+        return _jf_problem("Folder not found in this container")
 
     writable = os.access(probe, os.W_OK)
     marker = jellyfin_config_data_marker()
     if not looks_like_jellyfin_config_dir(probe):
-        return _resp(
+        return _jf_problem(
+            f"This doesn't look like Jellyfin's config dir — no '{marker}/', 'plugins/' or "
+            "'config/' inside. Point it at the folder mounted into Jellyfin as /config "
+            f"(containing '{marker}/'), not a media folder or unrelated path.",
             exists=True,
             writable=writable,
-            error=(
-                f"This doesn't look like Jellyfin's config dir — no '{marker}/', 'plugins/' or "
-                "'config/' inside. Point it at the folder mounted into Jellyfin as /config "
-                f"(containing '{marker}/'), not a media folder or unrelated path."
-            ),
         )
     if not writable:
         if _review_only_requested(data):

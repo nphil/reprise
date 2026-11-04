@@ -80,7 +80,8 @@
         </div>
     </section>
 
-    <!-- Quick actions: two buttons and a 2x2 grid of shortcut tiles. -->
+    <!-- Quick actions: the two ways to start work, a one-tap "run the next schedule" that only appears when a schedule exists, and
+         a link to Webhook activity. Inspector and Logs are Settings tabs; a waiting-webhook count shows in the Jobs header. -->
     <section class="card dash-card dashboard-quick-card" aria-labelledby="quickActionsTitle">
         <div class="card-header">
             <span id="quickActionsTitle" role="heading" aria-level="2"><i class="bi bi-lightning me-2" aria-hidden="true"></i>Quick actions</span>
@@ -90,26 +91,19 @@
                 <button class="btn btn-primary dash-btn-primary" onclick="showNewJobModal()">
                     <i class="bi bi-play-fill me-2" aria-hidden="true"></i>Start new job
                 </button>
+                <p class="dash-qa-help">Check whole libraries and process what needs it.</p>
                 <button class="btn btn-outline-secondary dash-btn" onclick="showManualTriggerModal()">
                     <i class="bi bi-file-earmark-play me-2" aria-hidden="true"></i>Process a file or folder
                 </button>
+                <p class="dash-qa-help">Do just one file or folder, right now.</p>
             </div>
 
             <div class="dash-qa-links">
                 <button type="button" class="dash-tile-link" id="quickRunNextSchedule" aria-label="Run next schedule now" disabled>
                     <i class="bi bi-calendar-check" aria-hidden="true"></i><span><b id="quickRunNextTitle">No schedules</b><small id="quickRunNextSub">Nothing to run</small></span>
                 </button>
-                <a class="dash-tile-link" href="{{ url_for('main.inspector') }}">
-                    <i class="bi bi-search" aria-hidden="true"></i><span><b>Inspector</b><small>Check a file</small></span>
-                </a>
-                <a class="dash-tile-link" href="{{ url_for('main.webhook_activity_page') }}" title="Webhook activity">
-                    <i class="bi bi-broadcast" aria-hidden="true"></i><span><b>Webhook activity</b><small>Incoming events</small></span>
-                    <span class="dash-tile-pill" id="quickWebhookPending" aria-label="Pending webhooks" hidden>0</span>
-                </a>
-                <a class="dash-tile-link" href="{{ url_for('main.logs_page') }}">
-                    <i class="bi bi-terminal" aria-hidden="true"></i><span><b>Logs</b><small>Live tail</small></span>
-                </a>
             </div>
+            <a class="dash-qa-more" href="{{ url_for('main.webhook_activity_page') }}"><i class="bi bi-broadcast" aria-hidden="true"></i>Webhook activity<small>what your servers told Reprise</small></a>
         </div>
     </section>
 

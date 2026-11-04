@@ -219,12 +219,16 @@ class RepriseStore:
             )
         return version
 
-    def reconcile_library(self, server_id, library_id, seen_identities):
-        """Deactivate absent bindings only after a complete authoritative scan."""
+    def reconcile_library(self, server_id, library_id, seen_identities, *, keep_rating_keys=frozenset()):
+        """Deactivate bindings a complete scan of the library no longer lists.
+
+        An episode whose media the scan could not read (``keep_rating_keys``) keeps its bindings: nothing can be said
+        of it. Every other absent binding is gone from Plex, so one unreadable file no longer keeps every file a
+        Sonarr upgrade replaced listed as a row nothing can clear."""
         seen = {_json(asdict(identity)) for identity in seen_identities}
         with self.transaction() as c:
             rows = c.execute(
-                "SELECT rowid,version_id,identity,metadata FROM reprise_bindings WHERE server_id=? AND active=1",
+                "SELECT rowid,version_id,rating_key,identity,metadata FROM reprise_bindings WHERE server_id=? AND active=1",
                 (server_id,),
             ).fetchall()
             removed = 0
@@ -232,11 +236,34 @@ class RepriseStore:
                 if (
                     str(json.loads(row["metadata"]).get("library_id")) == str(library_id)
                     and row["identity"] not in seen
+                    and row["rating_key"] not in keep_rating_keys
                 ):
                     c.execute("UPDATE reprise_bindings SET active=0 WHERE rowid=?", (row["rowid"],))
                     self._invalidate_binding_change(c, row["version_id"])
                     removed += 1
             return removed
+
+    def drop_unlisted_media(self, server_id, library_id, listed):
+        """Deactivate the bindings of some episodes for media Plex no longer lists.
+
+        ``listed`` maps a rating key to the (media id, part id) pairs Plex lists for it now. A scan of a few files
+        registers only those, so it cannot tell what is gone from what it did not look at; this does, for the
+        episodes it read in full."""
+        removed = 0
+        with self.transaction() as c:
+            for rating_key, media in listed.items():
+                for row in c.execute(
+                    "SELECT rowid,version_id,media_id,part_id,metadata FROM reprise_bindings "
+                    "WHERE server_id=? AND rating_key=? AND active=1",
+                    (server_id, rating_key),
+                ).fetchall():
+                    in_library = str(json.loads(row["metadata"]).get("library_id")) == str(library_id)
+                    if not in_library or (row["media_id"], row["part_id"]) in media:
+                        continue
+                    c.execute("UPDATE reprise_bindings SET active=0 WHERE rowid=?", (row["rowid"],))
+                    self._invalidate_binding_change(c, row["version_id"])
+                    removed += 1
+        return removed
 
     def get_media(self, media_version_id):
         with self.marker_store._reading() as c:

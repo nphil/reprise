@@ -1,45 +1,7 @@
-        <!-- Overview -->
-        <div class="card section-card" id="section-schedules-overview">
-            <div role="heading" aria-level="2" class="card-header">
-                <i class="bi bi-info-circle me-2"></i>Overview
-            </div>
-            <div class="card-body">
-                <p class="lead-copy mb-3">
-                    Schedules run jobs on a timer so you don't have to start them by hand. Tick any of Previews, Intro &amp; Credits and Plex loudness, then choose which files:
-                </p>
-                <ul class="mb-3">
-                    <li>
-                        <strong>Whole library</strong> — check every file in the chosen libraries and do whatever is missing. Good for weekly or nightly runs.
-                    </li>
-                    <li>
-                        <strong>Recently added</strong> — a fast poll that only looks at what was added in the last few minutes or hours. Good for tight, frequent intervals (every 15 min) so fresh imports are handled quickly. If your downloader (Sonarr/Radarr/Tdarr) can fire a webhook on import, the
-                        <a href="#section-webhooks-sonarr-radarr"
-                           onclick="showAutomationTab('triggers'); setTimeout(function(){ var el=document.getElementById('section-webhooks-sonarr-radarr'); if(el) el.scrollIntoView({behavior:'smooth',block:'start'}); }, 100); return false;">Triggers tab</a> is even faster — it fires the moment new media lands.
-                    </li>
-                </ul>
-                <div class="small text-muted">
-                    You can have as many schedules as you like. <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Example schedules that can coexist." data-explain-title="Multiple schedules" data-explain-template="infoScheduleExamplesTpl"><i class="bi bi-info-circle"></i></button>
-<template id="infoScheduleExamplesTpl">
-    <p>You can have as many schedules as you like — e.g. <em>"Nightly full scan of Movies at 2 AM"</em> and <em>"Recently Added scan every 15 minutes with 1h lookback"</em> can coexist.</p>
-</template>
-
-                </div>
-            </div>
-        </div>
-
-        <div class="note" id="section-schedules-quiet-hours">
-            <span class="tile" aria-hidden="true"><i class="bi bi-moon-stars"></i></span>
-            <div>
-                <strong>Jobs request work; worker groups provide capacity.</strong>
-                <p>Jobs wait while their groups are outside available hours. A global pause skips scheduled runs. A schedule's optional Stop pauses its own current work.</p>
-                <a href="/settings#section-worker-quiet-hours">Edit the global pause schedule in Workers</a>
-            </div>
-        </div>
-
-        <!-- All Schedules -->
+        <!-- All schedules: the list comes first, the explanations sit behind disclosures below it. -->
         <div class="card section-card" id="section-schedules-list">
             <div role="heading" aria-level="2" class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
-                <span><i class="bi bi-calendar-event me-2"></i>All Schedules <span class="pill ms-2" id="scheduleCountPill" hidden></span></span>
+                <span><i class="bi bi-calendar-event me-2"></i>Your schedules <span class="pill ms-2" id="scheduleCountPill" hidden></span></span>
                 <button class="btn btn-sm btn-primary" onclick="showNewScheduleModal()">
                     <i class="bi bi-plus me-1"></i>Add Schedule
                 </button>
@@ -68,6 +30,37 @@
                         </tbody>
                     </table>
                 </div>
+            </div>
+        </div>
+
+        <div class="note" id="section-schedules-quiet-hours">
+            <span class="tile" aria-hidden="true"><i class="bi bi-moon-stars"></i></span>
+            <div>
+                <strong>Need to pause everything for a while?</strong>
+                <p>The global pause skips scheduled runs, and jobs wait while their worker groups are outside their available hours. A schedule&rsquo;s own optional Stop time pauses only that schedule&rsquo;s current work.</p>
+                <a href="/settings#section-worker-quiet-hours">Edit the global pause schedule in Workers</a>
+            </div>
+        </div>
+
+        <div class="card section-card" id="section-schedules-overview">
+            <div class="card-body">
+                <details class="g">
+                    <summary>How schedules work</summary>
+                    <div>
+                        <p class="mb-2">A schedule starts work on a timer so you do not have to. Tick any of Previews, Intro &amp; Credits and Plex loudness, then choose which files:</p>
+                        <ul class="mb-2">
+                            <li>
+                                <strong>Whole library</strong>: checks every file in the chosen libraries and does whatever is missing. Good for a nightly or weekly run.
+                            </li>
+                            <li>
+                                <strong>Recently added</strong>: a quick check of only what arrived in the last few minutes or hours. Good for frequent runs (every 15 minutes). If Sonarr, Radarr or Tdarr can send a webhook when they import a file, the
+                                <a href="#section-webhooks-sonarr-radarr"
+                                   onclick="showAutomationTab('triggers'); setTimeout(function(){ var el=document.getElementById('section-webhooks-sonarr-radarr'); if(el) el.scrollIntoView({behavior:'smooth',block:'start'}); }, 100); return false;">Triggers tab</a> is even faster: it fires the moment new media lands.
+                            </li>
+                        </ul>
+                        <p class="mb-0">You can have as many schedules as you like, for example a nightly full scan of Movies at 2 AM and a Recently added scan every 15 minutes looking back one hour.</p>
+                    </div>
+                </details>
             </div>
         </div>
 
@@ -125,7 +118,7 @@
                         <div class="ov-seg ov-seg-full" role="radiogroup" aria-label="Schedule type">
                             <span class="ov-seg-opt"><input type="radio" name="scheduleType" id="scheduleTypeTime" value="specific-time" checked onchange="onScheduleTypeChange()"><label for="scheduleTypeTime"><i class="bi bi-clock" aria-hidden="true"></i>Specific Time</label></span>
                             <span class="ov-seg-opt"><input type="radio" name="scheduleType" id="scheduleTypeInterval" value="interval" onchange="onScheduleTypeChange()"><label for="scheduleTypeInterval"><i class="bi bi-arrow-repeat" aria-hidden="true"></i>Interval</label></span>
-                            <span class="ov-seg-opt"><input type="radio" name="scheduleType" id="scheduleTypeCron" value="cron" onchange="onScheduleTypeChange()"><label for="scheduleTypeCron"><i class="bi bi-terminal" aria-hidden="true"></i>Cron Expression</label></span>
+                            <span class="ov-seg-opt"><input type="radio" name="scheduleType" id="scheduleTypeCron" value="cron" onchange="onScheduleTypeChange()"><label for="scheduleTypeCron"><i class="bi bi-terminal" aria-hidden="true"></i>Advanced (cron)</label></span>
                         </div>
                         <div id="scheduleFieldsTime" class="ov-sec">
                             <div class="ov-fld ov-narrow">

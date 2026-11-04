@@ -74,7 +74,7 @@ The top bar has **Dashboard**, **Servers**, **Automation**, **Settings** and **T
 ### Dashboard Features
 
 - **System** — each media server (Plex, Emby, Jellyfin) with its connection state, one line per worker group with its worker count, and the app version. With no server set up, a card links to the **Servers** page.
-- **Quick actions** — **Start new job**, **Process a file or folder**, **Run next schedule now**, and links to the Inspector, Webhook activity and Logs.
+- **Quick actions** — **Start new job**, **Process a file or folder**, and **Run next schedule now** (shown only when a schedule exists). The Inspector, Logs and Webhook activity are tabs in Settings; a "webhooks pending" button appears in the **Jobs** header when webhooks are waiting.
 - **Job statistics** — Pending, Running, Completed, Failed, Cancelled and Total tiles, an outcome bar and the next schedule.
 - **Workers** — one card per worker group, with a row and **−** / **+** stepper for each device (including devices on [nodes](#remote-nodes)), and **Pause** / **Resume** and **Manage groups** in the header.
 - **Jobs** — the job queue, with status tabs, search, filters and per-job controls.

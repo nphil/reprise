@@ -9,7 +9,7 @@
     };
     const activeRefreshes = new Set(), rangeViews = new WeakMap();
     let reviewRequest = 0, referenceRequest = 0, queueTimer = null, messageTimer = null, uid = 0;
-    const narrow = window.matchMedia('(max-width: 899.98px)');
+    const narrow = window.matchMedia('(max-width: 1099.98px)'); /* the list stacks above the review (reprise.css) */
 
     /* ── small helpers ─────────────────────────────────────────────────────────────────────────────────── */
     const terminalJob = status => ['completed', 'failed', 'cancelled'].includes(status);
@@ -38,10 +38,14 @@
     const kindLabel = kind => ({ intro: 'intro', credits: 'credits', recap: 'recap', preview: 'next-episode preview' }[kind] || kind || 'section');
     const decisionLabel = status => ({ approved: 'Approved', rejected: 'Rejected' }[status] || 'Needs review');
     const isCode = text => typeof text === 'string' && /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/.test(text);
+    /* A changed file is one status with several causes. The service says which (`stale`: label, message, next, action); a payload without it is the plain "file changed" case. */
+    const LEGACY_STALE = { label: 'File changed', message: 'This file has changed since Reprise last read it.', next: 'Refresh the library so Reprise reads the new file, then analyze it again.', action: 'refresh' };
+    const staleOf = x => (x && x.freshness === 'stale' ? x.stale || LEGACY_STALE : null);
+    const needsRefresh = x => staleOf(x)?.action === 'refresh';
 
     function message(text, error = false) {
         const n = $('rpMessage'); clearTimeout(messageTimer);
-        n.textContent = text; n.classList.toggle('error', error); n.hidden = !text;
+        $('rpMessageText').textContent = text; n.classList.toggle('error', error); n.hidden = !text;
         if (text && !error) messageTimer = setTimeout(() => { n.hidden = true; }, 9000);
     }
     async function api(path, options = {}) {
@@ -85,10 +89,10 @@
     function episodeStatus(item) {
         const job = activeJobFor(item.id);
         if (job) {
-            const pct = typeof job.progress?.percent === 'number' && job.status === 'running' ? ` ${Math.round(job.progress.percent)}%` : '';
+            const pct = typeof job.progress?.percent === 'number' && job.status === 'running' && (jobMediaIds(job) || []).length === 1 ? ` ${Math.round(job.progress.percent)}%` : ''; /* a job's percent belongs to the job, not to each episode in it */
             return { label: job.status === 'running' ? `Analyzing${pct}` : 'Waiting to analyze', tone: 'busy' };
         }
-        if (item.freshness === 'stale') return { label: 'File changed', tone: 'warning' };
+        const stale = staleOf(item); if (stale) return { label: stale.label, tone: 'warning' };
         switch (item.analysis_status) {
             case 'complete': {
                 const r = item.ranges;
@@ -113,12 +117,14 @@
     function paintChip(chip, status) { chip.textContent = status.label; if (status.tone) chip.dataset.tone = status.tone; else delete chip.dataset.tone; }
 
     /* ── library list ───────────────────────────────────────────────────────────────────────────────────── */
-    function selectOptions(select, values, all) {
+    function selectOptions(select, values, all, name = String) {
         const previous = select.value; select.replaceChildren(option('', all));
-        values.forEach(v => select.append(option(String(v), String(v))));
+        values.forEach(v => select.append(option(String(v), name(v))));
         if (values.some(v => String(v) === previous)) select.value = previous;
     }
-    function showSkeleton() { const box = $('rpLibraryList'); clear(box); const s = el('div', null, 'rp-skeleton'); s.setAttribute('aria-hidden', 'true'); for (let i = 0; i < 6; i++) s.append(el('i')); box.append(s); }
+    /* The scroller holds the rows and "Show more"; it is only on screen while it has something to show, so an empty or failed list takes no room. */
+    function syncScroll() { $('rpScroll').hidden = !$('rpLibraryList').hasChildNodes(); }
+    function showSkeleton() { const box = $('rpLibraryList'); clear(box); const s = el('div', null, 'rp-skeleton'); s.setAttribute('aria-hidden', 'true'); for (let i = 0; i < 6; i++) s.append(el('i')); box.append(s); syncScroll(); }
     function libraryQuery(extra = {}) {
         const q = new URLSearchParams({ limit: '100', ...extra });
         if ($('rpSearch').value.trim()) q.set('search', $('rpSearch').value.trim());
@@ -126,9 +132,17 @@
         if ($('rpSeason').value) q.set('season', $('rpSeason').value);
         return q;
     }
+    /* The server's own rule (list_media): a show is a substring, a season is exact, a search looks in the title and the show. The page uses it to tell whether an episode belongs in the list the filters ask for. */
+    function matchesFilters(item) {
+        const search = $('rpSearch').value.trim().toLowerCase(), show = $('rpShow').value.toLowerCase(), season = $('rpSeason').value;
+        if (show && !String(item.show_title || '').toLowerCase().includes(show)) return false;
+        if (season && String(item.season) !== season) return false;
+        return !search || `${item.title || ''} ${item.show_title || ''}`.toLowerCase().includes(search);
+    }
+    const clearFilters = () => { $('rpSearch').value = ''; $('rpShow').value = ''; $('rpSeason').value = ''; return loadLibrary(); };
     function applyFilters(result) {
         if (Array.isArray(result.shows)) selectOptions($('rpShow'), result.shows, 'All shows');
-        if (Array.isArray(result.seasons)) selectOptions($('rpSeason'), result.seasons, 'All seasons');
+        if (Array.isArray(result.seasons)) selectOptions($('rpSeason'), result.seasons, 'All seasons', v => `Season ${v}`);
     }
     async function loadLibrary(append = false) {
         const seq = ++state.request;
@@ -138,12 +152,12 @@
             const result = await api('/api/reprise/media?' + q); if (seq !== state.request) return;
             if (!Array.isArray(result.items)) throw new Error('The library response was incomplete.');
             state.items = append ? state.items.concat(result.items) : result.items; state.cursor = result.next_cursor || null;
-            applyFilters(result); renderLibrary(); renderReferences();
+            applyFilters(result); renderLibrary(); renderReferences(); if (!append) reconcileOpenEpisode();
         } catch (error) { if (seq === state.request) renderLibraryError(error); }
     }
     /* After a job finishes, re-read the pages already on screen so every status is current without losing the user's place. */
     async function reloadLoaded() {
-        const seq = ++state.request, want = Math.max(100, state.items.length), box = $('rpLibraryList'), scroll = box.scrollTop;
+        const seq = ++state.request, want = Math.max(100, state.items.length), box = $('rpScroll'), scroll = box.scrollTop;
         try {
             let items = [], cursor = null, last = null;
             do {
@@ -157,12 +171,12 @@
         } catch (_) { /* the next poll tries again */ }
     }
     function renderLibraryError(error) {
-        const box = $('rpLibraryState'); clear($('rpLibraryList')); box.hidden = false; box.replaceChildren(el('span', error.message || 'The library could not be loaded.'), document.createElement('br'), button('Try again', () => loadLibrary()));
-        $('rpMore').hidden = true;
+        const box = $('rpLibraryState'); clear($('rpLibraryList')); syncScroll(); box.hidden = false; box.replaceChildren(el('span', error.message || 'The library could not be loaded.'), document.createElement('br'), button('Try again', () => loadLibrary()));
+        $('rpMore').hidden = true; $('rpLibraryHint').hidden = true; $('rpSelectAll').hidden = true;
     }
     function renderEmpty(filtered) {
         const box = $('rpLibraryState'); clear(box); box.hidden = false;
-        if (filtered) { box.append(el('span', 'No episodes match these filters.'), document.createElement('br'), button('Clear filters', () => { $('rpSearch').value = ''; $('rpShow').value = ''; $('rpSeason').value = ''; loadLibrary(); })); return; }
+        if (filtered) { box.append(el('span', 'No episodes match these filters.'), document.createElement('br'), button('Clear filters', clearFilters)); return; }
         box.append(el('strong', 'No episodes yet'), document.createElement('br'), el('span', 'Reprise lists episodes after it reads them from Plex.'));
         const slot = el('div'); box.append(slot);
         const offer = libs => {
@@ -178,7 +192,7 @@
         if (!state.items.length) renderEmpty(filtered);
         for (const item of state.items) {
             const row = el('div', null, 'rp-episode'), label = el('label');
-            const check = el('input'); check.type = 'checkbox'; check.checked = state.selected.has(item.id); check.setAttribute('aria-label', `Select ${longName(item)} for analysis`);
+            const check = el('input'); check.type = 'checkbox'; check.checked = state.selected.has(item.id); check.dataset.mediaId = item.id; check.setAttribute('aria-label', `Select ${longName(item)} for analysis`);
             check.addEventListener('change', () => { check.checked ? state.selected.add(item.id) : state.selected.delete(item.id); renderSelection(); });
             const open = button('', () => openItem(item), 'rp-episode-open'); open.dataset.mediaId = item.id;
             if (state.item?.id === item.id) open.setAttribute('aria-current', 'true');
@@ -187,7 +201,7 @@
             open.setAttribute('aria-label', `${longName(item)}, ${chip.textContent}`); open.append(copy, chip);
             label.append(check); row.append(label, open); target.append(row);
         }
-        $('rpMore').hidden = !state.cursor; renderSelection();
+        syncScroll(); $('rpMore').hidden = !state.cursor; renderSelection(); renderNext();
     }
     function paintStatuses() {
         const byId = new Map(state.items.map(i => [i.id, i]));
@@ -196,10 +210,23 @@
             const chip = open.querySelector('.rp-chip'); paintChip(chip, episodeStatus(item));
             open.setAttribute('aria-label', `${longName(item)}, ${chip.textContent}`);
         });
+        renderNext();
     }
+    /* Where no episode is open, offer the first listed one that is waiting for a decision, so the next review is one tap away. */
+    function renderNext() {
+        const waiting = state.items.find(i => !needsRefresh(i) && !activeJobFor(i.id) && i.ranges && (i.ranges.to_review || 0) + (i.ranges.suggested || 0) > 0);
+        $('rpNext').hidden = !waiting; if (!waiting) return;
+        const next = $('rpNextBtn'); next.textContent = `Review next: ${episodeName(waiting)} (${episodeStatus(waiting).label})`; next.onclick = () => openItem(waiting);
+    }
+    /* An episode can be ticked for analysis unless its file must be refreshed first (analysis refuses it) or it is already being analyzed. */
+    const canSelect = item => !needsRefresh(item) && !activeJobFor(item.id);
     function renderSelection() {
-        const n = state.selected.size; $('rpSelectBar').hidden = !n; $('rpLibraryHint').hidden = !!n || !state.items.length;
-        $('rpSelectCount').textContent = `${plural(n, 'episode')} selected`; $('rpAnalyze').textContent = n === 1 ? 'Analyze episode' : `Analyze ${n} episodes`;
+        const n = state.selected.size, listed = new Set(state.items.map(i => i.id)), away = [...state.selected].filter(id => !listed.has(id)).length;
+        $('rpSelectBar').hidden = !n;
+        const count = $('rpSelectCount'); count.textContent = `${plural(n, 'episode')} selected` + (away ? `, ${away} not in this list` : ''); count.classList.toggle('rp-sr', !away);
+        $('rpAnalyze').textContent = n === 1 ? 'Analyze episode' : `Analyze ${n} episodes`;
+        const pickable = state.items.filter(canSelect), all = pickable.length > 0 && pickable.every(i => state.selected.has(i.id)), toggle = $('rpSelectAll');
+        toggle.hidden = pickable.length < 2; toggle.textContent = all ? 'Deselect all' : state.cursor ? `Select ${pickable.length} shown` : 'Select all'; /* with more pages to load, "all" would overstate it */
     }
     async function loadLibraries() {
         if (state.libraries) return state.libraries;
@@ -209,7 +236,7 @@
 
     /* ── analysis ───────────────────────────────────────────────────────────────────────────────────────── */
     async function analyze(ids) {
-        const usable = ids.filter(id => { const item = state.items.find(i => i.id === id) || (state.item?.id === id ? state.item : null); return !item || item.freshness !== 'stale'; });
+        const usable = ids.filter(id => { const item = state.items.find(i => i.id === id) || (state.item?.id === id ? state.item : null); return !item || !needsRefresh(item); });
         if (!usable.length) return message('These files have changed since Reprise last read them. Refresh the library, then analyze them again.', true);
         try {
             const job = await api('/api/reprise/analyses', { method: 'POST', body: { media_version_ids: usable } });
@@ -221,6 +248,26 @@
         } catch (error) {
             message(/Invalid request|Request failed \(400\)/.test(error.message) ? "Reprise couldn't start the analysis. The file may have changed or moved: refresh the library and try again." : error.message, true);
         }
+    }
+
+    /* ── the open episode follows the list ──────────────────────────────────────────────────────────────── */
+    /* A filter or search that leaves the open episode out closes it, so the review never shows an episode the list does not. With unsaved
+       changes it stays open and says why, because closing would lose them. */
+    function closeEpisode() {
+        ++reviewRequest; ++referenceRequest;
+        for (const id of ['rpVideo', 'rpReferenceVideo']) { const video = $(id); video.pause(); video.removeAttribute('src'); video.dataset.mediaId = ''; video.load(); }
+        state.item = null; state.result = null; state.edits = []; state.changes = []; state.dirty = false;
+        $('rpReview').hidden = true; $('rpReviewEmpty').hidden = false; $('rpOffList').hidden = true; renderNext();
+        document.querySelectorAll('.rp-episode-open[aria-current]').forEach(row => row.removeAttribute('aria-current'));
+    }
+    function syncOffList() {
+        const off = !!state.item && !matchesFilters(state.item); $('rpOffList').hidden = !off; if (!off) return;
+        $('rpOffListText').textContent = "This episode isn't in the filtered list." + (state.dirty ? ' It stays open because you have unsaved changes.' : '');
+    }
+    function reconcileOpenEpisode() {
+        const item = state.item; if (!item) return;
+        if (matchesFilters(item) || state.dirty) return syncOffList();
+        const name = episodeName(item); closeEpisode(); message(`Closed ${name}: it isn't in the filtered list.`);
     }
 
     /* ── opening an episode ─────────────────────────────────────────────────────────────────────────────── */
@@ -239,7 +286,7 @@
         Object.assign(video.dataset, { mediaId: item.id, duration: item.duration_ms || '0', origin: '0', preview: 'false', desired: '0' });
         $('rpVideoOrigin').textContent = ''; $('rpVideoPreview').hidden = true; $('rpVideoError').hidden = true;
         video.src = '/api/reprise/media/' + encodeURIComponent(item.id) + '/stream'; video.load();
-        renderReferences(); clear($('rpRanges')); clear($('rpTimeline')); clear($('rpEvidence')); $('rpSave').disabled = true; $('rpAddKeep').disabled = true; $('rpAnalyzeOne').disabled = true;
+        renderReferences(); syncOffList(); clear($('rpRanges')); clear($('rpTimeline')); clear($('rpEvidence')); $('rpSave').disabled = true; $('rpAddKeep').disabled = true; $('rpAnalyzeOne').disabled = true;
         if (narrow.matches) document.querySelector('.rp-workspace').scrollIntoView({ block: 'start' });
         try {
             const result = await api(`/api/reprise/media/${encodeURIComponent(item.id)}/result`); if (request !== reviewRequest) return;
@@ -268,15 +315,15 @@
         const job = activeJobFor(item.id), analyzeBtn = $('rpAnalyzeOne');
         if (r) {
             // The open episode's own result is the freshest truth: keep its list row and header chip in step with it.
-            item.analysis_status = r.analysis_status; item.freshness = r.freshness;
+            item.analysis_status = r.analysis_status; item.freshness = r.freshness; item.stale = r.stale;
             const count = test => state.edits.filter(test).length;
             if (r.analysis_status === 'complete' && !state.dirty) { const open = state.edits.filter(x => isSuggestion(x) && x.review_status === 'proposed'); item.ranges = { skip: count(x => x.action === 'skip'), keep: count(x => x.action === 'keep'), proposed: count(x => x.review_status === 'proposed'), approved: count(x => x.review_status === 'approved'), to_review: count(x => x.action === 'skip' && x.review_status === 'proposed' && !isSuggestion(x)), suggested: open.length, suggested_by: suggesterNames(open) }; }
         }
         paintChip($('rpStatusChip'), episodeStatus(item)); paintStatuses();
-        const stale = !!r && r.freshness === 'stale', again = !!r && ['failed', 'cancelled', 'unsupported'].includes(r.analysis_status);
-        analyzeBtn.hidden = stale; analyzeBtn.disabled = !r || !!job;
+        const stale = staleOf(r), again = !!r && ['failed', 'cancelled', 'unsupported'].includes(r.analysis_status);
+        analyzeBtn.hidden = needsRefresh(r); analyzeBtn.disabled = !r || !!job;
         analyzeBtn.textContent = job ? 'Analyzing…' : r && r.analysis_status === 'complete' ? 'Analyze again' : again ? 'Try again' : 'Analyze';
-        analyzeBtn.classList.toggle('primary', !r || r.analysis_status !== 'complete');
+        analyzeBtn.classList.toggle('primary', !r || r.analysis_status !== 'complete' || !!stale);
         if (job) {
             const pct = typeof job.progress?.percent === 'number' ? Math.max(0, Math.min(100, job.progress.percent)) : null;
             return setOutcome(job.status === 'running' ? 'running' : 'queued', job.status === 'running' ? 'Analyzing this episode…' : 'Waiting for its turn to be analyzed…',
@@ -288,9 +335,10 @@
         if (!r) return;
         const reasons = rawReasons(r), plain = [...new Set((r.reasons || []).filter(x => x !== 'unapproved_or_unverified').map(plainReason).filter(Boolean))];
         const details = box => { if (reasons.length) { const d = el('details'); d.append(el('summary', 'Details'), el('ul')); reasons.forEach(x => d.lastChild.append(el('li', x))); box.append(d); } };
-        if (r.freshness === 'stale') {
-            return setOutcome('stale', 'This file has changed since Reprise last read it.', 'Refresh the library so Reprise reads the new file, then analyze it again.', box => {
-                const actions = el('div', null, 'rp-actions'); actions.append(button('Refresh library', startRefresh)); box.append(actions); details(box);
+        if (stale) {
+            return setOutcome('stale', stale.message, stale.next, box => {
+                if (stale.action === 'refresh') { const actions = el('div', null, 'rp-actions'); actions.append(button('Refresh library', startRefresh)); box.append(actions); }
+                details(box);
             });
         }
         switch (r.analysis_status) {
@@ -359,6 +407,7 @@
         video.pause(); video.currentTime = Math.max(0, (start - origin) / 1000);
         const stop = () => { if (fileTime(video) >= end || video.ended) { video.pause(); video.removeEventListener('timeupdate', stop); } };
         video._rpStop = stop; video.addEventListener('timeupdate', stop); video.play().catch(error => { video.removeEventListener('timeupdate', stop); fail(error); });
+        video.scrollIntoView({ block: 'nearest' }); /* the player may be far above the section being previewed */
     }
     function setAudio(select, identities) {
         const ids = [...new Set((identities || []).map(i => i.audio_stream_id).filter(Boolean))]; select.replaceChildren(option('', 'Select audio'));
@@ -391,7 +440,9 @@
             const url = new URL(job.preview.url, location.origin); if (url.origin !== location.origin) throw new Error('Invalid preview address.');
             if (!Number.isInteger(job.preview.origin_ms) || !Number.isInteger(job.preview.duration_ms) || job.preview.duration_ms <= 0) throw new Error('Preview timing is unavailable.');
             Object.assign(video.dataset, { origin: String(job.preview.origin_ms), previewDuration: String(job.preview.duration_ms), preview: 'true' });
-            video.src = url.pathname + url.search; video.addEventListener('loadedmetadata', () => { video.currentTime = Math.max(0, (desired - job.preview.origin_ms) / 1000); }, { once: true }); video.load();
+            video.src = url.pathname + url.search; video.addEventListener('loadedmetadata', () => { video.currentTime = Math.max(0, (desired - job.preview.origin_ms) / 1000); }, { once: true });
+            if (video.id === 'rpVideo') video.addEventListener('loadeddata', () => { $('rpVideoError').hidden = true; }, { once: true }); /* the preview plays, so the earlier "can't play this file" no longer applies */
+            video.load();
             note.textContent = 'This preview starts at ' + ms(job.preview.origin_ms) + ' in the episode and covers about 90 seconds.'; trigger.hidden = true;
         } catch (error) { note.textContent = error.message; } finally { trigger.disabled = false; }
     }
@@ -415,8 +466,8 @@
         const current = r.freshness === 'current' && r.result_revision != null;
         $('rpSave').disabled = !state.dirty || !current; $('rpDiscard').disabled = !state.dirty; $('rpAddKeep').disabled = !current;
         $('rpSaveBar').hidden = !state.dirty;
-        $('rpSaveState').textContent = r.freshness !== 'current' ? 'This file has changed, so its review can’t be saved until the library is refreshed.' : state.dirty ? 'You have unsaved changes.' : 'Saving a review never changes Plex.';
-        renderOutcome();
+        $('rpSaveState').textContent = r.freshness !== 'current' ? (staleOf(r)?.action === 'analyze' ? 'This result is out of date, so its review can’t be saved until you analyze it again.' : 'This file has changed, so its review can’t be saved until the library is refreshed.') : state.dirty ? 'You have unsaved changes.' : 'Saving a review never changes Plex.';
+        syncOffList(); renderOutcome();
     }
     function renderEvidence() {
         const box = $('rpEvidence'), r = state.result; clear(box);
@@ -534,7 +585,7 @@
     function describeJob(job) {
         const ids = jobMediaIds(job), terminal = terminalJob(job.status);
         if (job.operation === 'refresh') {
-            const done = terminal && job.refresh ? `Added or updated ${plural(job.refresh.registered, 'episode')}; ${job.refresh.skipped} skipped.` : '';
+            const done = terminal && job.refresh ? `Added or updated ${plural(job.refresh.registered, 'episode')}; ${job.refresh.skipped} skipped` + (job.refresh.removed ? `; ${job.refresh.removed} removed (no longer in Plex).` : '.') : '';
             return { title: 'Refreshing the library', detail: done };
         }
         if (job.operation === 'preview') return { title: 'Preparing a playable preview', detail: '' };
@@ -564,7 +615,7 @@
         const actions = terminal ? [] : job.pause_requested ? ['resume', 'cancel'] : job.status === 'running' ? ['pause', 'cancel'] : ['pending', 'queued'].includes(job.status) ? ['cancel'] : [];
         if (actions.length) {
             const group = el('div', null, 'rp-job-actions');
-            for (const action of actions) group.append(button(action[0].toUpperCase() + action.slice(1), async () => { try { await api('/api/reprise/jobs/' + encodeURIComponent(job.id) + '/' + action, { method: 'POST', body: {} }); await loadQueue(); } catch (error) { fail(error); } }, 'rp-btn' + (action === 'cancel' ? ' quiet' : '')));
+            for (const action of actions) group.append(button(action[0].toUpperCase() + action.slice(1), async () => { try { await api('/api/reprise/jobs/' + encodeURIComponent(job.id) + '/' + action, { method: 'POST', body: {} }); await loadQueue(); } catch (error) { fail(error); } }));
             row.append(group);
         }
         return row;
@@ -573,9 +624,9 @@
         const jobs = state.jobs.slice().sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
         const active = jobs.filter(j => !terminalJob(j.status)), finished = jobs.filter(j => terminalJob(j.status));
         const root = $('rpQueue'), section = $('rpActivity'); section.hidden = !jobs.length; if (!jobs.length) return;
-        clear(root); const shown = active.concat(state.showOlder ? finished : finished.slice(0, 3));
+        clear(root); const shown = active.concat(state.showOlder ? finished : finished.slice(0, 2));
         shown.forEach(job => root.append(renderJobRow(job)));
-        if (finished.length > 3) root.append(button(state.showOlder ? 'Show less' : `Show ${finished.length - 3} earlier`, () => { state.showOlder = !state.showOlder; renderActivity(); }, 'rp-btn quiet rp-activity-more'));
+        if (finished.length > 2) root.append(button(state.showOlder ? 'Show less' : `Show ${finished.length - 2} earlier`, () => { state.showOlder = !state.showOlder; renderActivity(); }, 'rp-btn quiet rp-activity-more'));
         const toggle = $('rpActivityToggle'); root.hidden = state.activityHidden && !active.length; toggle.textContent = root.hidden ? 'Show' : 'Hide'; toggle.setAttribute('aria-expanded', String(!root.hidden));
     }
     async function loadQueue() {
@@ -639,6 +690,15 @@
     $('rpAnalyze').addEventListener('click', () => analyze([...state.selected])); $('rpSelectClear').addEventListener('click', () => { state.selected.clear(); renderLibrary(); });
     $('rpAnalyzeOne').addEventListener('click', () => { if (state.item && (!state.dirty || confirm('Discard unsaved review changes and analyze again?'))) analyze([state.item.id]); });
     $('rpActivityToggle').addEventListener('click', () => { const root = $('rpQueue'); state.activityHidden = !root.hidden; root.hidden = state.activityHidden; $('rpActivityToggle').textContent = root.hidden ? 'Show' : 'Hide'; $('rpActivityToggle').setAttribute('aria-expanded', String(!root.hidden)); });
+    $('rpSelectAll').addEventListener('click', () => {
+        const pickable = state.items.filter(canSelect), all = pickable.every(i => state.selected.has(i.id));
+        pickable.forEach(i => all ? state.selected.delete(i.id) : state.selected.add(i.id));
+        document.querySelectorAll('.rp-episode input[type=checkbox]').forEach(box => { box.checked = state.selected.has(box.dataset.mediaId); });
+        renderSelection();
+    });
+    $('rpMessageClose').addEventListener('click', () => message(''));
+    $('rpOffListClear').addEventListener('click', clearFilters);
+    $('rpOffListClose').addEventListener('click', () => { if (!state.dirty || confirm('Discard unsaved review changes?')) closeEpisode(); });
     $('rpVideo').addEventListener('error', () => { $('rpVideoError').hidden = false; $('rpVideoPreview').hidden = !$('rpVideoAudio').value && $('rpVideoAudioWrap').hidden ? true : false; if ($('rpVideoAudio').options.length === 2) $('rpVideoPreview').hidden = false; });
     $('rpReference').addEventListener('change', event => {
         const video = $('rpReferenceVideo');

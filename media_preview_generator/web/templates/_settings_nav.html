@@ -21,7 +21,7 @@
 
 {% macro settings_sidebar(here) %}
 {% set base = '' if here == 'settings' else url_for('main.settings') %}
-<nav id="settings-sidebar" class="settings-sidebar d-none d-lg-block" aria-label="Settings sections">
+<nav id="settings-sidebar" class="settings-sidebar d-none d-xl-block" aria-label="Settings sections">
     <div class="settings-nav-group">Run</div>
     <a class="nav-link" href="{{ base }}#section-workers"><i class="bi bi-cpu" aria-hidden="true"></i>Workers</a>
     {# The Nodes page, not a section of Settings: worker groups pick their node devices from it. #}

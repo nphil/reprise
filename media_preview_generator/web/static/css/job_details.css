@@ -1,3 +1,18 @@
+/* "What happened" block for a failed, cancelled or warned job: plain title and next step, raw text folded behind Technical details. */
+.job-explain.job-detail-error { display: block; padding: 10px 12px; border-radius: var(--radius-ctl); background: var(--inset); border: 1px solid var(--line-strong); color: var(--bs-body-color); font-size: 13px; }
+.job-explain.job-detail-error.bad { background: var(--bad-soft); border-color: color-mix(in srgb, var(--bad) 30%, transparent); }
+.job-explain.job-detail-error.warn { background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 30%, transparent); }
+.job-explain.job-detail-error .job-detail-heading { margin: 0 0 4px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.job-explain-title { font-weight: 600; color: var(--bs-emphasis-color); }
+.job-explain-hint { color: var(--bs-body-color); }
+.job-tech { margin-top: 8px; }
+.job-tech > summary { display: inline-flex; align-items: center; min-height: 28px; cursor: pointer; color: var(--muted); font-size: 12px; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+.job-tech > p { margin-top: 4px; padding: 8px 10px; border-radius: var(--radius-xs); background: var(--panel-2); }
+#logsModal .ov-errbox:has(.job-explain) { display: block; padding: 0; background: transparent; color: var(--bs-body-color); }
+#logsModal .ov-errbox .job-explain { margin: 0; }
+@media (max-width: 575.98px), (pointer: coarse) { .job-tech > summary { min-height: 44px; } }
+#logsModal .ov-tbar-search .btn { min-width: 32px; min-height: 32px; }
+#logsModal .form-switch .form-check-input { width: 44px; height: 24px; }
 /* Job Details: the table density rules for the Files tab. The dialog, header, facts and toolbars are in overlays.css. */
 /* !important below beats the inline column widths and Bootstrap utilities (p-3, ms-auto) in the modal markup. */
 #logsModal .job-file-heading { display: flex; align-items: flex-start; min-width: 0; gap: .5rem; }

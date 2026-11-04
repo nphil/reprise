@@ -110,6 +110,39 @@ def test_real_database_review_rescan_failure_and_replacement(tmp_path):
     reopened.close()
 
 
+def test_reconcile_drops_what_plex_no_longer_lists_but_keeps_an_episode_the_scan_could_not_read(tmp_path):
+    marker = MarkerStore(str(tmp_path / "markers.db"))
+    store = RepriseStore(marker)
+
+    def register(name, rating_key, media_id):
+        path = tmp_path / (name + ".mkv")
+        path.write_bytes(name.encode())
+        identity = PlaybackIdentity(
+            "machine", rating_key, media_id, media_id, "/part/" + media_id, path.stat().st_size, 1000, "a"
+        )
+        store.register_media(
+            media_version(str(path), 1000, "timing"), identity, server_id="local", metadata={"library_id": "7"}
+        )
+        return identity
+
+    # Sonarr replaced episode 10's file: Plex lists the new media, the old row would stay "File changed" for good.
+    old_1080p, new_2160p = register("old-1080p", "10", "100"), register("new-2160p", "10", "101")
+    unreadable, fine = register("unreadable", "20", "200"), register("fine", "30", "300")
+    gone = register("gone", "40", "400")
+    # The scan listed the new media and episode 30, and could not read episode 20.
+    removed = store.reconcile_library("local", "7", [new_2160p, fine], keep_rating_keys={"20"})
+    assert removed == 2
+    assert store.resolve_binding(old_1080p) is None and store.resolve_binding(gone) is None
+    assert all(store.resolve_binding(identity) is not None for identity in (new_2160p, unreadable, fine))
+    # A scan of a few files looks at those episodes only: another episode's row is not its to judge.
+    replaced = register("old-2", "50", "500")
+    live, other = register("new-2", "50", "501"), register("other", "60", "600")
+    assert store.drop_unlisted_media("local", "7", {"50": {("501", "501")}}) == 1
+    assert store.resolve_binding(replaced) is None
+    assert store.resolve_binding(live) is not None and store.resolve_binding(other) is not None
+    marker.close()
+
+
 def test_client_rotation_persists_only_hash(tmp_path):
     marker = MarkerStore(str(tmp_path / "markers.db"))
     store = RepriseStore(marker)

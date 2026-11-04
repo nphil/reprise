@@ -24,10 +24,11 @@ html:has(.settings-page) { scroll-padding-top: 7.25rem; }
 }
 html[data-bs-theme="dark"] .settings-page .settings-header { background: var(--plex-gray); }
 .settings-header-row { display: flex; align-items: center; gap: 0.875rem; }
-.settings-header-title { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 0.25rem 0.875rem; }
-.settings-page .settings-header .page-title { font-size: 1.25rem; font-weight: 600; }
+.settings-page .settings-header .page-title { margin: 0; font-size: 1.25rem; font-weight: 600; white-space: nowrap; }
 .settings-page .settings-header .page-title .bi { color: var(--faint); }
-.settings-page .settings-header .page-subtitle { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.8125rem; color: var(--muted); }
+.settings-page .settings-header .page-actions { margin-left: auto; flex: none; }
+/* The one sentence that explains saving sits under the sticky bar, so it can wrap and is never cut off. */
+.settings-page .settings-intro { max-width: 70ch; margin: 0 0 1rem; font-size: 0.875rem; color: var(--muted); }
 .settings-mobile-nav { display: none; }
 
 /* Save indicator: dot + text; the per-phase colour comes from data-phase set by autosave.js. */
@@ -165,13 +166,13 @@ html[data-bs-theme="dark"] .settings-page .settings-header { background: var(--p
 .sr-title { display: inline-flex; align-items: center; gap: 0.375rem; font-size: 0.9375rem; font-weight: 600; color: var(--bs-body-color); margin: 0; }
 .sr-title small { color: var(--faint); }
 .sr-hint { max-width: 80ch; margin-top: 0.125rem; font-size: 0.8125rem; font-weight: 400; color: var(--muted); }
-.faint-note { color: var(--faint); }
+.faint-note { color: var(--muted); }
 .sr-control { display: flex; align-items: center; justify-content: flex-end; gap: 0.625rem; min-width: 0; }
 .sr-control > .form-select, .sr-control > .form-control { width: 100%; max-width: 320px; }
 .sr-control .input-group { width: auto; max-width: 200px; flex-wrap: nowrap; }
-.sr-control .input-group:has(> .has-stepper) { max-width: 220px; }
+.sr-control .input-group:has(> .has-stepper) { max-width: 100%; }
 .sr-control > .input-group-sm, .sr-control > .input-group { margin: 0; }
-.sr-control-pair .form-select { max-width: 160px; }
+.sr-control-pair .form-select { max-width: 200px; }
 .setting-row-wide { grid-column: 1 / -1; margin: 0.25rem 0 0; }
 .settings-page .alert { border-radius: var(--radius-ctl); }
 
@@ -191,7 +192,7 @@ html[data-bs-theme="dark"] .settings-page .settings-header { background: var(--p
 .settings-page .input-group:not(:has(.input-group)) > .form-control.has-stepper { width: 4.75rem; flex: 0 0 auto; text-align: center; font-weight: 600; font-variant-numeric: tabular-nums; }
 .settings-page a:not(.btn):not(.nav-link) { color: var(--accent-text); }
 .settings-page .form-switch { margin: 0; padding-left: 0; min-height: 0; }
-.settings-page .form-switch .form-check-input { margin: 0; float: none; width: 2.375rem; height: 1.375rem; cursor: pointer; }
+.settings-page .form-switch .form-check-input { margin: 0; float: none; width: 2.5rem; height: 1.5rem; cursor: pointer; }
 .settings-page .form-range { accent-color: var(--accent); }
 .settings-page .form-range::-webkit-slider-runnable-track { height: 0.375rem; border-radius: 99px; background: var(--line-strong); }
 .settings-page .form-range::-moz-range-track { height: 0.375rem; border-radius: 99px; background: var(--line-strong); }
@@ -223,7 +224,11 @@ html[data-bs-theme="dark"] .settings-page .settings-header { background: var(--p
 .update-hint > .bi { color: var(--warn); }
 .form-actions { display: flex; align-items: center; justify-content: flex-end; gap: 0.75rem; padding-top: 0.5rem; flex-wrap: wrap; }
 .form-actions #customTokenResult { margin-right: auto; }
+.form-actions #passwordResult { flex: 1 1 14rem; min-width: 0; margin-right: auto; font-size: 0.875rem; }
+.form-actions #passwordResult:empty { display: none; }
 .form-actions-start { justify-content: flex-start; padding-top: 0.5rem; }
+.settings-page .info-modal-link, .settings-page .vk-why-toggle { display: inline-flex; align-items: center; min-height: 1.5rem; }
+.settings-page .vk-why-toggle { padding: 0 0.5rem !important; }
 .form-actions-split { justify-content: flex-start; margin-top: 0.75rem; padding-top: 0.875rem; border-top: 1px solid var(--line); }
 .flex-fill { flex: 1; }
 
@@ -335,7 +340,7 @@ html[data-bs-theme="dark"] .settings-page .settings-header { background: var(--p
 .btn-check:checked + label.day-chip { background: var(--accent-soft); border-color: transparent; color: var(--accent-text); }
 .btn-check:focus-visible + label.day-chip { outline: 2px solid var(--accent); }
 .day-presets { display: inline-flex; gap: 2px; margin-left: 0.25rem; }
-.day-presets button { padding: 2px 6px; border: 0; border-radius: var(--radius-xs); background: transparent; color: var(--muted); font-size: 0.75rem; font-weight: 500; }
+.day-presets button { min-height: 1.5rem; padding: 0 0.5rem; border: 0; border-radius: var(--radius-xs); background: transparent; color: var(--muted); font-size: 0.75rem; font-weight: 500; }
 .day-presets button:hover { background: var(--inset); color: var(--bs-body-color); }
 .tz-note { display: flex; gap: 0.375rem; align-items: flex-start; margin: 0.5rem 0 0; font-size: 0.75rem; color: var(--muted); }
 .tz-note .bi { margin-top: 0.125rem; color: var(--faint); }
@@ -433,6 +438,14 @@ html[data-bs-theme="dark"] .settings-page .settings-header { background: var(--p
 .fold .chev, .markers-advanced .chev { margin-left: auto; color: var(--faint); transition: transform 0.2s; }
 .fold[open] > summary .chev { transform: rotate(180deg); }
 .fold-body { padding: 0.25rem 0.875rem 0.875rem; }
+.fold-text { flex: 1; min-width: 0; display: grid; gap: 0.125rem; }
+.fold-sub { font-size: 0.8125rem; font-weight: 400; color: var(--muted); }
+.fold > summary { min-height: 2.75rem; }
+.fold > summary:hover { background: var(--panel-2); border-radius: 10px; }
+.fold-tools { display: flex; align-items: center; gap: 0.25rem; padding: 0.5rem 0 0.125rem; font-size: 0.8125rem; color: var(--muted); }
+.fold-tools-text { min-width: 0; }
+.settings-fold + .settings-fold { margin-top: 0.5rem; }
+.setting-row.is-disabled .sr-control { opacity: 0.5; }
 .markers-steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.625rem; }
 .settings-page .markers-step { padding: 0.75rem; gap: 0.25rem; border-radius: 10px; background: var(--panel-2); border-color: var(--line); }
 .markers-step-title { display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; font-weight: 600; color: var(--bs-body-color); }
@@ -485,12 +498,11 @@ html[data-bs-theme="dark"] .settings-page .settings-header { background: var(--p
 .state-pill.warn { background: var(--warn-soft); color: var(--warn); }
 
 /* ───────── Responsive ───────── */
-@media (max-width: 991.98px) {
-    html:has(.settings-page) { scroll-padding-top: 10.25rem; }
+@media (max-width: 1199.98px) {
     .settings-layout { grid-template-columns: minmax(0, 1fr); }
     .settings-page .settings-header { margin: -1rem calc(-1 * var(--page-gutter)) 0.75rem; padding: 0.5rem var(--page-gutter); }
-    .settings-page .settings-header .page-subtitle { display: none; }
     .settings-mobile-nav { display: block; margin-top: 0.5rem; }
+    .settings-header-row .settings-mobile-nav { flex: 0 1 18rem; min-width: 0; margin: 0; }
     .settings-mobile-nav .form-select { height: 2.75rem; }
     .settings-content { padding-bottom: 60vh; }
 }
@@ -516,6 +528,8 @@ html[data-bs-theme="dark"] .settings-page .settings-header { background: var(--p
     .week-field-days { width: 100%; }
     .settings-page .info-icon { min-width: 2rem; min-height: 2rem; margin: -0.5rem 0; }
     .settings-page .markers-source-arrows .btn-link { min-width: 2rem; min-height: 2rem; }
+    .settings-page .form-switch .form-check-input { width: 3rem; height: 1.75rem; }
+    .day-presets button { min-height: 2rem; padding: 0 0.625rem; }
 }
 @media (max-width: 700px) {
     #workerGroupSettings .lbl-long { display: none; }
@@ -527,6 +541,8 @@ html[data-bs-theme="dark"] .settings-page .settings-header { background: var(--p
     .settings-page .section-card > .card-body { padding: 0.25rem 0.75rem 0.625rem; }
     .settings-page .section-card > .card-header { padding: 0.75rem; }
     .settings-page { --settings-nav-h: 3.8rem; }
+    .settings-header-row { flex-wrap: wrap; row-gap: 0.5rem; }
+    .settings-header-row .settings-mobile-nav { order: 3; flex: 1 1 100%; }
     html:has(.settings-page) { scroll-padding-top: 10.5rem; }
 }
 @media (prefers-reduced-motion: reduce) {

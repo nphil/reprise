@@ -6,6 +6,7 @@
     --lh-hatch-intro: repeating-linear-gradient(45deg, var(--t-intro) 0 2px, transparent 2px 4px);
     --lh-hatch-chapters: repeating-linear-gradient(45deg, var(--t-chapters) 0 2px, transparent 2px 4px);
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 1rem;
 }
 
@@ -158,11 +159,22 @@
 
 .lh-table tbody tr:last-child > * { border-bottom: 0; }
 .lh-table td { min-width: 11rem; }
+
+/* Tablet widths: five feature columns at 11rem would run off the card, so they get a little narrower. */
+@media (max-width: 1199.98px) {
+    .lh-table th,
+    .lh-table td { padding: 0.7rem 0.6rem; }
+    .lh-table td { min-width: 8.5rem; }
+}
 .lh-lib b { font-weight: 600; }
 .lh-sub { color: var(--muted); font-size: 0.8rem; }
 
 .lh-cell { display: grid; gap: 0.3rem; justify-items: start; }
 .lh-todo {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    min-height: 28px;
     background: none;
     border: 0;
     padding: 0;
@@ -186,6 +198,7 @@
 .lh-note { color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
 
 .lh-warn-note {
+    min-height: 28px;
     background: none;
     border: 0;
     padding: 0;
@@ -195,7 +208,7 @@
     text-underline-offset: 3px;
 }
 
-.lh-link { font-size: 0.85rem; }
+.lh-link { display: inline-block; padding-block: 0.2rem; font-size: 0.85rem; }
 
 .lh-bar {
     display: flex;
@@ -253,13 +266,16 @@
 .lh-kv dt { font-weight: 400; color: var(--muted); }
 .lh-kv dd { margin: 0; font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; }
 
-/* Phone: the table's columns stack under each library, each cell labelled by its column. */
-@media (max-width: 640px) {
+/* Narrow screens: five columns no longer fit, so each library becomes a block with its cells in a wrapping grid (one column on a phone), each cell labelled by its column. */
+@media (max-width: 1100px) {
     .lh-table thead { display: none; }
-    .lh-table tr,
-    .lh-table th,
-    .lh-table td { display: block; }
-    .lh-table td { min-width: 0; border-bottom: 0; padding-block: 0.4rem; }
+    .lh-table,
+    .lh-table tbody { display: block; }
+    .lh-table tbody tr { display: grid; grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr)); border-bottom: 1px solid var(--line); padding-bottom: 0.5rem; }
+    .lh-table tbody tr:last-child { border-bottom: 0; }
+    .lh-table th.lh-lib { grid-column: 1 / -1; }
+    .lh-table td { display: block; min-width: 0; border-bottom: 0; padding-block: 0.4rem; }
+    .lh-table td[colspan] { grid-column: span 2; }
     .lh-table td::before {
         content: attr(data-label);
         display: block;
@@ -268,5 +284,11 @@
         text-transform: uppercase;
         letter-spacing: 0.04em;
     }
-    .lh-table tbody tr { border-bottom: 1px solid var(--line); padding-bottom: 0.5rem; }
+}
+
+@media (max-width: 640px) {
+    .lh-table tbody tr { display: block; }
+    .lh-todo,
+    .lh-warn-note { min-height: 40px; }
+    .lh-link { padding-block: 0.6rem; }
 }

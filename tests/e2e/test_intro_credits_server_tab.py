@@ -717,7 +717,7 @@ class TestPlexTab:
                 {"plex_pass": True, "plex_version": "1.43"},
                 ["✓ Active"],
             ),
-            ("disabled", "This server is turned off on the Servers page", {}, ["How markers get here"]),
+            ("disabled", "This server is turned off in Settings, under Connections", {}, ["How markers get here"]),
         ],
     )
     def test_not_ready_states_show_the_message(
@@ -741,11 +741,11 @@ class TestPlexTab:
         )
         _open_tab(authed_page, app_url, server)
         block = authed_page.locator("#markersStatusBlock")
-        expect(block).to_contain_text("Couldn't check this server right now", timeout=5000)
+        expect(block).to_contain_text("Reprise can’t reach this server right now", timeout=5000)
         calls_before = captured["status_calls"]
 
         captured["state"]["status_code"] = 200
-        block.locator("a", has_text="Retry").click()
+        block.get_by_role("button", name="Try again").click()
         expect(block).to_contain_text("✓ Active", timeout=5000)
         assert captured["status_calls"] == calls_before + 1
 

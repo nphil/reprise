@@ -83,7 +83,7 @@ class TestLibraryHealthPage:
         expect(card.get_by_role("button", name="8 to do")).to_be_visible()
         expect(card).to_contain_text("Not used for films")
         expect(card).to_contain_text("Off for this library")
-        expect(card.get_by_role("link", name="Change in Servers")).to_have_attribute("href", "/servers")
+        expect(card.get_by_role("link", name="Change in Connections")).to_have_attribute("href", "/servers")
         expect(authed_page.locator("#lhSide")).to_contain_text("Last checked")
         expect(authed_page.get_by_role("button", name="3 not showing in Plex")).to_be_visible()
         expect(authed_page.get_by_role("progressbar")).to_have_count(0)
@@ -196,7 +196,7 @@ class TestLibraryHealthPage:
 
         sports = authed_page.locator(".lh-table tbody tr", has_text="Sports")
         expect(sports.get_by_text(off)).to_have_count(1)
-        expect(sports.get_by_role("link", name="Change in Servers")).to_have_count(1)
+        expect(sports.get_by_role("link", name="Change in Connections")).to_have_count(1)
         expect(sports.locator("td[colspan='2']")).to_have_count(1)
         expect(sports).to_contain_text("4 done")
         tv = authed_page.locator(".lh-table tbody tr", has_text="TV Shows")

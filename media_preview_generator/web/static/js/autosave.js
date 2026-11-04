@@ -212,8 +212,8 @@
                     : 'unknown error';
                 ind.className = 'autosave-indicator error small';
                 ind.innerHTML =
-                    '<a href="#" class="text-danger text-decoration-none" data-autosave-retry="1">' +
-                    '<i class="bi bi-exclamation-triangle me-1"></i>Not saved — Retry' +
+                    '<a href="#" class="text-danger text-decoration-none" data-autosave-retry="1" title="Click to try saving again">' +
+                    '<i class="bi bi-exclamation-triangle me-1"></i>Couldn\u2019t save. Try again' +
                     '</a>';
                 // Attach retry handler
                 const link = ind.querySelector('[data-autosave-retry]');

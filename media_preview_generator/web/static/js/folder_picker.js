@@ -125,16 +125,16 @@
         let cum = '';
         const items = segs.map((seg, i) => {
             if (i === 0) {
-                return `<li class="breadcrumb-item"><a href="#" data-fp-path="/">/</a></li>`;
+                return `<li class="breadcrumb-item"><button type="button" class="btn btn-link p-0 align-baseline" data-fp-path="/" aria-label="Top folder">/</button></li>`;
             }
             cum += '/' + seg;
             const isLast = i === segs.length - 1;
             return isLast
                 ? `<li class="breadcrumb-item active" aria-current="page">${escapeHtml(seg)}</li>`
-                : `<li class="breadcrumb-item"><a href="#" data-fp-path="${escapeHtml(cum)}">${escapeHtml(seg)}</a></li>`;
+                : `<li class="breadcrumb-item"><button type="button" class="btn btn-link p-0 align-baseline" data-fp-path="${escapeHtml(cum)}">${escapeHtml(seg)}</button></li>`;
         });
         el.innerHTML = `<ol class="breadcrumb mb-0">${items.join('')}</ol>`;
-        el.querySelectorAll('a[data-fp-path]').forEach((a) => {
+        el.querySelectorAll('button[data-fp-path]').forEach((a) => {
             a.addEventListener('click', (ev) => {
                 ev.preventDefault();
                 _loadPath(ev.currentTarget.dataset.fpPath);

@@ -6,6 +6,16 @@
 
 .wh-page .section-card { border-radius: var(--radius-card); overflow: hidden; }
 
+/* "What do the outcomes mean?" sits under the table so the words in the Status column are explained without hovering. */
+.wh-legend { margin-top: 14px; padding: 4px 16px; border: 1px solid var(--line); border-radius: var(--radius-ctl); background: var(--inset); color: var(--muted); font-size: 13px; }
+.wh-legend > summary { display: flex; align-items: center; gap: 8px; min-height: 40px; font-weight: 600; cursor: pointer; list-style: none; color: var(--bs-body-color); }
+.wh-legend > summary::-webkit-details-marker { display: none; }
+.wh-legend > summary::before { content: "\F285"; font-family: bootstrap-icons; font-size: 11px; }
+.wh-legend[open] > summary::before { transform: rotate(90deg); }
+.wh-legend dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 4px 0 12px; }
+.wh-legend dt { font-weight: 600; color: var(--bs-body-color); }
+.wh-legend dd { margin: 0; }
+@media (max-width: 575.98px) { .wh-legend dl { grid-template-columns: 1fr; gap: 0; } .wh-legend dd { margin-bottom: 8px; } }
 .wh-ibtn { width: 32px; height: 32px; display: inline-grid; place-items: center; flex: none; padding: 0; border: 1px solid transparent; border-radius: var(--radius-xs); background: transparent; color: var(--muted); transition: background-color .16s ease-out, color .16s ease-out; }
 .wh-ibtn:hover:not(:disabled) { background: var(--inset); color: var(--bs-body-color); }
 .wh-ibtn:disabled { opacity: .5; }
@@ -99,7 +109,11 @@
 }
 @media (max-width: 700px) {
     .history-filters { padding: 12px 14px; }
-    .wh-seg { width: 100%; order: -1; }
+    /* Outcome tabs wrap onto a second line so every outcome and its count stays visible without sideways scrolling. */
+    .wh-seg { width: 100%; order: -1; flex-wrap: wrap; overflow-x: visible; }
+    .wh-seg button { height: 36px; }
+    .wh-fbtn, .wh-search input { height: 40px; }
+    .wh-exp-slot:empty { display: none; }
     .wh-search { flex-basis: 100%; max-width: none; }
     .history-filters .dropdown { flex: 1; }
     .history-filters .dropdown .wh-fbtn { width: 100%; justify-content: space-between; }

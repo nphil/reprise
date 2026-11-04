@@ -204,7 +204,7 @@ def test_logs_raw_structured_group_filter_and_download_keep_facts(authed_page, a
     authed_page.locator("#logGroupSource").check()
     expect(authed_page.locator(".log-source-heading")).to_have_count(2)
     authed_page.locator("#logSource").select_option("publisher")
-    expect(authed_page.locator("#logCount")).to_have_text("1 of 2 lines")
+    expect(authed_page.locator("#logCount")).to_have_text("1 of 2 messages shown")
     authed_page.locator(".log-line:not(.log-line-hidden)").click()
     authed_page.locator("#logViewBtn").click()
     authed_page.locator("#logView").select_option("raw")
@@ -258,7 +258,10 @@ def test_pending_resume_cannot_override_new_vendor_choice(wizard_page, app_url_w
     pending = []
     wizard_page.route("**/api/servers/saved-server", lambda route: pending.append(route))
     wizard_page.goto(app_url_wizard + "/setup")
-    wizard_page.wait_for_timeout(200)
+    for _ in range(100):  # the resume request is made after load; a busy machine can take longer than a fixed 200 ms
+        if pending:
+            break
+        wizard_page.wait_for_timeout(50)
     assert pending
     wizard_page.locator('.wizard-vendor-btn[data-vendor="plex"]').click()
     _fulfill_json(pending[0], {"id": "saved-server", "type": "emby", "name": "Old Emby"})

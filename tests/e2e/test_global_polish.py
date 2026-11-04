@@ -147,7 +147,7 @@ class TestPageGutter:
         first_element = {
             "/dashboard": ".dashboard-layout .card",
             "/servers": ".servers-page h1",
-            "/automation": ".automation-sidebar, .automation-mobile-nav",
+            "/automation": ".automation-page h1.page-title",
             "/settings": ".settings-page .page-title",
             "/logs": "h1.page-title",
             "/webhook-activity": "h1.page-title",

@@ -10,7 +10,7 @@
 .rp-sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .rp-header,.rp-section-head,.rp-actions,.rp-filter-row,.rp-ep-head{display:flex;align-items:center;gap:12px}
 .rp-header,.rp-section-head,.rp-ep-head{justify-content:space-between}
-.rp-header{gap:24px;margin-bottom:20px}.rp-header p{margin-top:4px}
+.rp-header{gap:24px;margin-bottom:20px}.rp-header p{margin-top:4px}.rp-header>.rp-actions{flex:0 0 auto}.rp-header .rp-btn{white-space:nowrap}
 .rp-section-head{margin-bottom:12px}
 .rp-actions{flex-wrap:wrap}
 .reprise [hidden]{display:none!important}
@@ -48,48 +48,57 @@
 .rp-search{position:relative;display:block}
 .rp-search i{position:absolute;left:13px;top:50%;transform:translateY(-50%);color:var(--lu-ink-3);pointer-events:none}
 .rp-search input{padding-left:38px!important}
-.rp-filter-row{align-items:end;margin:12px 0}.rp-filter-row label{flex:1;min-width:0}
+.rp-filter-row{align-items:stretch;margin:12px 0}.rp-filter-row label{flex:1;min-width:0;margin:0}.rp-filter-row label select{margin-top:0}
 .rp-inline-field{margin-top:12px;max-width:320px}
-.rp-hint{margin:0 0 8px;font-size:13.5px}
+.rp-listbar{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 6px}
+.rp-hint{margin:0;font-size:13.5px;line-height:1.4}
+.rp-listbar .rp-btn{flex:0 0 auto;min-height:36px;padding:4px 10px;font-size:13.5px}
 .rp-state{padding:20px 4px;color:var(--lu-ink-2);font-size:14px}
 .rp-state .rp-btn{margin-top:12px}
 .rp-error,.rp-message.error{color:var(--lu-danger)}
 .rp-message{margin:0 0 16px;padding:14px 16px;background:var(--lu-glass);border:1px solid var(--lu-edge-soft);border-radius:var(--lu-radius-control);color:var(--lu-ink)}
 .rp-message.error{border-color:var(--lu-danger)}
 .rp-message .rp-actions{margin-top:12px}
+/* Status line: stays in view while the page scrolls, because errors from the list and the pane happen far from the top. */
+.rp-toast{position:sticky;top:12px;z-index:25;display:flex;align-items:flex-start;gap:8px;padding:8px 8px 8px 16px}
+.rp-toast #rpMessageText{flex:1;min-width:0;padding-top:6px;overflow-wrap:anywhere}
+.rp-toast .rp-btn{flex:0 0 auto;min-height:36px;padding:4px 10px}
 
 /* Panels and the two-pane layout */
 .rp-library,.rp-workspace,.rp-panel{min-width:0;padding:20px;background:var(--lu-sheet);border:1px solid var(--lu-edge-soft);border-radius:var(--lu-radius-card)}
 .rp-panel{margin-top:16px}.rp-panel:first-of-type{margin-top:0}
 .rp-layout{display:grid;grid-template-columns:minmax(320px,390px) minmax(0,1fr);gap:16px;align-items:start}
 .rp-hardware{display:flex;align-items:center;flex-wrap:wrap;gap:2px 8px;margin-top:6px;font-size:13.5px;color:var(--lu-ink-2)}
-.rp-hardware i{color:var(--lu-ink-3)}.rp-hardware .rp-btn{min-height:40px;padding:2px 10px;font-size:13.5px}
+.rp-hardware i{margin-right:8px;color:var(--lu-ink-3)}.rp-hw{min-width:0}.rp-hardware .rp-btn{min-height:40px;padding:2px 10px;font-size:13.5px}
 .rp-online{margin-top:8px;max-width:640px}
 .rp-online .rp-switch .form-check-label{white-space:normal}
 .rp-online .rp-note{margin:0}
-.rp-library{position:sticky;top:16px;display:flex;flex-direction:column;max-height:calc(100vh - 140px);min-height:360px;padding:16px}
+/* The library pane is a bounded column: head, filters, list bar, Activity and the select bar keep their own size and the episode
+   scroller takes what is left, so the list can neither collapse to nothing nor spill out of the pane. Activity is capped in viewport
+   units because a percentage cap does nothing in a pane that has no fixed height. */
+.rp-library{position:sticky;top:16px;display:flex;flex-direction:column;max-height:calc(100vh - 32px);max-height:calc(100dvh - 32px);padding:16px}
+.rp-library>*{flex:0 0 auto}.rp-library>.rp-scroll{flex:0 1 auto}
 .rp-library .rp-section-head{margin-bottom:10px}
 
 /* Episode list */
-.rp-episodes{min-height:0;overflow-y:auto;margin:0 -8px;padding:0 8px;overscroll-behavior:contain}
+.rp-scroll{min-height:0;overflow-y:auto;margin:0 -8px;padding:4px 8px;overscroll-behavior:contain}
 .rp-episode{display:flex;align-items:center;gap:4px;border-top:1px solid var(--lu-edge-soft)}
 .rp-episode:first-child{border-top:0}
 .rp-episode>label{display:flex;align-items:center;justify-content:center;flex:0 0 40px;height:var(--lu-target)}
 .rp-episode>label input{width:20px;height:20px;margin:0!important}
-.rp-episode-open{display:flex;align-items:center;justify-content:space-between;gap:10px;flex:1;min-width:0;min-height:60px;padding:8px 10px;border:0;border-radius:var(--lu-radius-row);
+.rp-episode-open{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:6px 10px;flex:1;min-width:0;min-height:60px;padding:8px 10px;border:0;border-radius:var(--lu-radius-row);
   background:transparent;color:var(--lu-ink);font:inherit;text-align:left;cursor:pointer}
 .rp-episode-open:hover{background:var(--lu-hover-wash)}
 .rp-episode-open[aria-current=true]{background:var(--lu-selected-wash)}
-.rp-episode-copy{display:grid;gap:2px;min-width:0}
+.rp-episode-copy{display:grid;gap:2px;flex:1 1 9rem;min-width:0}
 .rp-episode-name{font-weight:700;overflow-wrap:anywhere}
 .rp-episode-context{color:var(--lu-ink-2);font-size:12.5px;line-height:1.4;overflow-wrap:anywhere}
 .rp-episode-open .rp-chip{flex:0 0 auto}
 .rp-skeleton{display:grid;gap:10px;padding:8px 0}.rp-skeleton i{display:block;height:48px;border-radius:var(--lu-radius-row);background:var(--lu-hover-wash)}
-.rp-selectbar{display:grid;gap:8px;flex:0 0 auto;margin-top:12px;padding:12px;border:1px solid var(--lu-edge);border-radius:var(--lu-radius-row);background:var(--lu-glass)}
-.rp-selectbar-row{display:flex;align-items:center;justify-content:space-between;gap:12px;font-weight:650}
-.rp-selectbar .rp-btn.quiet{min-height:36px;padding:4px 10px}
-.rp-selectbar>.rp-btn{width:100%}
-.rp-library>#rpMore{margin-top:8px;flex:0 0 auto}
+.rp-selectbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:10px;padding-top:12px;border-top:1px solid var(--lu-edge-soft)}
+.rp-selectbar>.rp-btn.primary{flex:1 1 auto}.rp-selectbar>.rp-btn.quiet{padding:4px 12px}
+.rp-selectbar>#rpSelectCount:not(.rp-sr){flex:1 0 100%;color:var(--lu-ink-2);font-size:13.5px;font-weight:650}
+.rp-scroll>#rpMore{width:100%;margin:8px 0 4px}
 
 /* Activity */
 .rp-jobs{display:grid;gap:0}
@@ -102,18 +111,23 @@
 .rp-bar span{display:block;height:100%;border-radius:inherit;background:var(--lu-accent);transition:width .4s ease-out}
 .rp-job[data-status=failed] .rp-job-main strong{color:var(--lu-danger)}
 .rp-activity-more{margin-top:8px}
-.rp-activity{flex:0 0 auto;max-height:42%;margin-top:12px;padding-top:12px;overflow-y:auto;border-top:1px solid var(--lu-edge-soft)}
-.rp-activity .rp-section-head{margin-bottom:8px}.rp-activity h2{font-size:16px}
+/* Head stays put; only the jobs scroll, inside a cap in viewport units (a percentage would do nothing in a pane without a fixed height). */
+.rp-activity{display:flex;flex-direction:column;max-height:clamp(7rem,26vh,15rem);margin-top:10px;padding-top:10px;border-top:1px solid var(--lu-edge-soft)}
+.rp-activity>.rp-section-head{flex:0 0 auto;margin-bottom:4px}.rp-activity h2{font-size:16px}.rp-activity .rp-section-head .rp-btn{min-height:36px;padding:4px 10px}
+.rp-activity>.rp-jobs{flex:1 1 auto;min-height:0;overflow-y:auto;margin:0 -6px;padding:0 6px;overscroll-behavior:contain}
 .rp-job-actions{display:flex;gap:8px;flex:0 0 auto}
-.rp-activity .rp-job{flex-direction:column;align-items:stretch;gap:8px}.rp-activity .rp-job-actions .rp-btn{min-height:40px;padding:6px 14px}
+.rp-activity .rp-job{flex-direction:column;align-items:stretch;gap:8px;padding:10px 0}.rp-activity .rp-job:first-child{padding-top:0}.rp-activity .rp-job-actions .rp-btn{min-height:36px;padding:4px 14px}
 
 /* Review pane */
 .rp-intro{display:grid;gap:12px;max-width:62ch;padding:8px 4px}
 .rp-steps{display:grid;gap:10px;padding-left:22px;color:var(--lu-ink-2)}.rp-steps b{color:var(--lu-ink)}
-.rp-ep-head{align-items:flex-start;gap:16px;margin-bottom:12px}
+.rp-ep-head{align-items:flex-start;flex-wrap:wrap;gap:10px 16px;margin-bottom:12px}
 .rp-back{display:none}#rpLibraryTitle{scroll-margin-top:96px}
-.rp-ep-title{min-width:0}.rp-ep-title h2{font-size:22px;overflow-wrap:anywhere}.rp-ep-title p{margin-top:2px}
-.rp-ep-head .rp-actions{flex:0 0 auto;justify-content:flex-end}
+/* The title's own width decides the line: a short title keeps the status and Analyze beside it, a long one pushes them below instead of being squeezed into a sliver. */
+.rp-ep-title{flex:1 1 auto;min-width:0}.rp-ep-title h2{font-size:22px;overflow-wrap:break-word;text-wrap:balance}.rp-ep-title p{margin-top:2px}
+.rp-ep-head .rp-actions{flex:0 0 auto}
+.rp-offlist{margin:0 0 12px;padding:12px 14px;border:1px solid var(--lu-warning);border-radius:var(--lu-radius-control);background:var(--lu-glass)}
+.rp-offlist p{margin-bottom:8px;color:var(--lu-ink)}
 .rp-outcome{display:grid;gap:6px;margin-bottom:16px;padding:14px 16px;border:1px solid var(--lu-edge-soft);border-radius:var(--lu-radius-control);background:var(--lu-glass);color:var(--lu-ink)}
 .rp-outcome strong{font-size:15px;font-weight:750}
 .rp-outcome p{color:var(--lu-ink-2);font-size:14px}
@@ -128,6 +142,8 @@
 .rp-outcome ul{margin:6px 0 0;padding-left:20px;color:var(--lu-ink-2);font-size:13.5px}
 .rp-player video,.rp-disclosure video{display:block;width:100%;max-height:min(44vh,330px);aspect-ratio:16/9;background:#000;border-radius:var(--lu-radius-control)}
 .rp-player .rp-actions,.rp-player p{margin-top:8px}
+/* A file the browser cannot play leaves an empty grey box; hide it until a preview works, so the reason and the way out come first. */
+.rp-player:has(#rpVideoError:not([hidden])) #rpVideo{display:none}
 .rp-timeline-block{margin-top:20px}
 .rp-timeline{position:relative;height:56px;margin:4px 0 8px;border-radius:var(--lu-radius-control);background:var(--lu-canvas);border:1px solid var(--lu-edge-soft);overflow:hidden}
 .rp-timeline-segment{position:absolute;top:8px;height:14px;min-width:3px;border-radius:3px;background:var(--lu-accent)}
@@ -187,7 +203,7 @@ html[data-bs-theme=light] .rp-seg label:is([data-value=approved],[data-value=rej
 .rp-facts{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:6px 16px;font-size:14px}
 .rp-facts dt{color:var(--lu-ink-2)}.rp-facts dd{overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
 .rp-evidence-row{display:grid;gap:6px;padding:10px 0;border-top:1px solid var(--lu-edge-soft)}
-.rp-evidence-row:first-child{border-top:0}
+.rp-evidence-row:first-child{border-top:0}#rpEvidence>.rp-note:first-child{margin-bottom:10px}
 .rp-secret{margin:12px 0;padding:14px 16px;background:var(--lu-glass);border:1px solid var(--lu-warning);border-radius:var(--lu-radius-control)}
 .rp-secret output{display:block;margin:10px 0;overflow-wrap:anywhere;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13.5px}
 .rp-client{display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--lu-edge-soft)}
@@ -199,12 +215,16 @@ html[data-bs-theme=light] .rp-seg label:is([data-value=approved],[data-value=rej
 .rp-switch .form-check-input{float:none;flex:none;margin:0;width:2.75em;height:1.5em}
 .rp-switch .form-check-label{color:var(--lu-ink);font-size:15px;font-weight:600;white-space:nowrap}
 
-@media (max-width:1100px){.rp-layout{grid-template-columns:minmax(280px,340px) minmax(0,1fr)}}
-@media (max-width:899.98px){
+/* Two panes need room for the review as well as the list: below 1100px (the sidebar takes 232px of it) the list stacks above the review. */
+@media (min-width:1100px) and (max-height:660px){
+  .rp-library{position:static;max-height:none}
+  .rp-library>.rp-scroll{max-height:min(60vh,26rem)}
+}
+@media (max-width:1099.98px){
   .rp-layout{grid-template-columns:1fr}
   .rp-library{position:static;max-height:none}
-  .rp-episodes{max-height:min(55vh,460px)}
-  .rp-ep-head{flex-wrap:wrap}.rp-ep-head .rp-actions{justify-content:flex-start}
+  .rp-library>.rp-scroll{max-height:min(55vh,460px);overscroll-behavior:auto}
+  .rp-activity{max-height:min(40vh,15rem);overscroll-behavior:auto}
   .rp-back{display:inline-flex;align-items:center;gap:6px;min-height:44px;margin-bottom:2px;color:var(--lu-accent-text);font-weight:600;text-decoration:none}
   .rp-back:hover{text-decoration:underline}
 }

@@ -295,8 +295,8 @@ def _plex_status(server: Any) -> dict:
 
 def _preview_capability(server: Any, config: ServerConfig, settings: ServerMarkersSettings) -> dict:
     if not config.enabled:
-        # A server turned off on the Servers page is never contacted.
-        return _capability(Capability.DISABLED, "This server is turned off on the Servers page")
+        # A server turned off under Settings, then Connections, is never contacted.
+        return _capability(Capability.DISABLED, "This server is turned off in Settings, under Connections")
     if server is None:
         return _capability(Capability.MISCONFIGURED, "Couldn't set up a connection to this server; check its settings")
     try:

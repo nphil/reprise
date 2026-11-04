@@ -11,7 +11,7 @@
     <header class="page-header log-heading">
         <div>
             <h1 class="page-title">Logs</h1>
-            <p class="page-subtitle mb-0">Live app messages. Filter by level, source or text.</p>
+            <p class="page-subtitle mb-0">Live messages from the app. Filter by level, source or text.</p>
         </div>
         <div class="page-actions">
             <button type="button" class="log-ibtn danger" id="logClearBtn" aria-label="Clear log buffer" title="Clear log buffer"><i class="bi bi-trash"></i></button>
@@ -20,11 +20,14 @@
         </div>
     </header>
     <section class="log-toolbar card" aria-label="Log filters">
-        <div class="log-seg" role="group" aria-label="Minimum level to show">
+        <div class="log-level-group">
+        <span class="log-seg-label" id="logLevelLabel">Show</span>
+        <div class="log-seg" role="group" aria-labelledby="logLevelLabel" title="Shows messages at this level and anything more serious">
             <button type="button" class="log-level-btn" data-level="DEBUG">Debug</button>
             <button type="button" class="log-level-btn" data-level="INFO">Info</button>
             <button type="button" class="log-level-btn" data-level="WARNING">Warning</button>
             <button type="button" class="log-level-btn" data-level="ERROR">Error</button>
+        </div>
         </div>
 
         <div class="log-search">
@@ -51,8 +54,8 @@
 
         <!-- Right-side status group: server-side level, visible-line count and one live/connection pill. -->
         <div class="log-status">
-            <span id="serverLevelBadge" class="log-pill" title="Server log level (change in Settings)">…</span>
-            <span id="logCount" class="log-count">0 lines</span>
+            <span id="serverLevelBadge" class="log-pill" title="The app only writes down messages at this level or more serious. Change it under Settings → Advanced → Logging.">…</span>
+            <span id="logCount" class="log-count" aria-live="polite">0 messages</span>
             <span class="log-pill warn" id="logConnPill">
                 <span id="liveIndicator">Connecting</span>
                 <span id="logConnStatus" class="visually-hidden">connecting...</span>
@@ -83,7 +86,7 @@
         </div>
 
         <button type="button" id="followPill" class="log-follow">
-            <i class="bi bi-arrow-down-short"></i> New logs — click to follow
+            <i class="bi bi-arrow-down-short"></i> Jump to latest
         </button>
 
         <div class="log-nav-btns">
@@ -125,6 +128,15 @@
     const noMatch = document.getElementById('logNoMatch');
     const connPill = document.getElementById('logConnPill');
     let historyRetry = null;
+
+    // Fill whatever room is left under the page header, however tall the header is on this screen.
+    const logPage = document.querySelector('.log-page');
+    function fitLogPage() {
+        const top = logPage.getBoundingClientRect().top + window.scrollY;
+        logPage.style.setProperty('--log-page-h', Math.max(window.innerHeight - top, 420) + 'px');
+    }
+    fitLogPage();
+    window.addEventListener('resize', fitLogPage);
 
     // Retry is only offered for history load failures, not for e.g. an invalid regex.
     function showFeedback(message) {
@@ -183,6 +195,14 @@
     let suppressScroll = 0;
     let historyError = '';
 
+    // "91 messages", or "12 of 91 messages shown" while a filter hides some.
+    function setCount(visible, total) {
+        const n = value => value.toLocaleString();
+        countEl.textContent = visible === total
+            ? n(total) + (total === 1 ? ' message' : ' messages')
+            : n(visible) + ' of ' + n(total) + ' messages shown';
+    }
+
     const LEVEL_CLASS = {
         DEBUG: 'log-level-debug',
         INFO: 'log-level-info',
@@ -196,12 +216,12 @@
 
     function applyServerLevel(level) {
         serverLevel = level;
-        serverLevelBadge.innerHTML = '<i class="bi bi-sliders"></i>Server: ' + escapeHtml(level);
+        serverLevelBadge.innerHTML = '<i class="bi bi-sliders" aria-hidden="true"></i>Records ' + escapeHtml(level.charAt(0) + level.slice(1).toLowerCase()) + ' and up';
         const minRank = LEVEL_RANK[level] ?? 0;
         document.querySelectorAll('.log-level-btn').forEach(btn => {
             const rank = LEVEL_RANK[btn.dataset.level] ?? 0;
             btn.disabled = rank < minRank;
-            if (rank < minRank) btn.title = 'Not available — server log level is currently set to ' + level + '. Lower the log level in Settings to see this.';
+            if (rank < minRank) btn.title = 'Not available. The app only records ' + level.toLowerCase() + ' messages and more serious ones. Change that under Settings \u2192 Advanced \u2192 Logging.';
             else btn.title = '';
         });
     }
@@ -272,7 +292,7 @@
         newWhileAway = 0;
         followPill.style.display = 'none';
         liveIndicator.style.opacity = '1';
-        if (socket && socket.connected) liveIndicator.innerHTML = '<span class="live-dot"></span>Live';
+        if (socket && socket.connected) liveIndicator.innerHTML = '<span class="live-dot"></span>Updating live';
         scrollToBottom();
     }
 
@@ -280,13 +300,13 @@
         if (!following) return;
         following = false;
         liveIndicator.style.opacity = '0.3';
-        if (socket && socket.connected) { liveIndicator.textContent = 'Follow paused'; liveIndicator.style.opacity = '1'; }
+        if (socket && socket.connected) { liveIndicator.textContent = 'Paused while you read'; liveIndicator.style.opacity = '1'; }
     }
 
     function showFollowPill() {
         followPill.style.display = 'inline-flex';
         followPill.innerHTML = '<i class="bi bi-arrow-down-short"></i> ' +
-            (newWhileAway > 0 ? newWhileAway + ' new — click to follow' : 'Click to follow');
+            (newWhileAway > 0 ? newWhileAway + ' new, jump to latest' : 'Jump to latest');
     }
 
     container.addEventListener('scroll', () => {
@@ -312,6 +332,9 @@
         span.tabIndex = 0;
         span.setAttribute('role', 'button');
         span.setAttribute('aria-expanded', 'false');
+        const rawMsg = data.msg || '';
+        // Very long or many-line messages (stack traces, big lists) show their first few lines until clicked.
+        if (rawMsg.length > 500 || (rawMsg.match(/\n/g) || []).length >= 6) span.classList.add('log-long');
         if (data.mod && !Array.from(sourceSelect.options).some(option => option.value === data.mod)) sourceSelect.add(new Option(data.mod, data.mod));
 
         const ts = '<span class="log-ts">' + escapeHtml(data.ts || '') + '</span>';
@@ -368,7 +391,7 @@
             oldestTs = data.oldest_ts || '';
             hasMore = data.has_more;
             loadOlderBtn.style.display = hasMore ? 'block' : 'none';
-            countEl.textContent = lineCount.toLocaleString() + ' log lines';
+            setCount(lineCount, lineCount);
             regroupLogs();
             scrollToBottom();
             applySearch();
@@ -398,7 +421,7 @@
             container.insertBefore(frag, refNode);
             oldestTs = data.oldest_ts || oldestTs;
             hasMore = data.has_more;
-            countEl.textContent = lineCount.toLocaleString() + ' log lines';
+            setCount(lineCount, lineCount);
             suppressScroll = Date.now() + 300;
             container.scrollTop += container.scrollHeight - scrollBefore;
         }
@@ -424,7 +447,7 @@
         socket.on('connect', () => {
             connBadge.textContent = 'connected';
             connPill.className = 'log-pill ok';
-            liveIndicator.innerHTML = following ? '<span class="live-dot"></span>Live' : 'Follow paused';
+            liveIndicator.innerHTML = following ? '<span class="live-dot"></span>Updating live' : 'Paused while you read';
             socket.emit('set_level', { level: currentLevel });
         });
 
@@ -455,7 +478,7 @@
             else break;
         }
 
-        countEl.textContent = lineCount.toLocaleString() + ' log lines';
+        setCount(lineCount, lineCount);
         regroupLogs();
         applySearch();
 
@@ -477,7 +500,7 @@
         newWhileAway = 0;
         followPill.style.display = 'none';
         loadOlderBtn.style.display = 'none';
-        countEl.textContent = '0 lines';
+        setCount(0, 0);
     }
 
     // --- Search ---
@@ -506,7 +529,7 @@
                 line.classList.add('log-line-hidden');
             }
         }
-        countEl.textContent = `${visible.toLocaleString()} of ${lineCount.toLocaleString()} lines`;
+        setCount(visible, lineCount);
         container.querySelectorAll('.log-source-group').forEach(group => { group.hidden = !group.querySelector('.log-line:not(.log-line-hidden)'); });
         noMatch.hidden = !(lineCount && !visible);
         showFeedback(historyError);

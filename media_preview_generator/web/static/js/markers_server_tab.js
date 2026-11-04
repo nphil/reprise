@@ -408,14 +408,14 @@
     function renderStatusError() {
         const block = $('#markersStatusBlock');
         if (!block) return;
-        block.innerHTML = `<div class="small text-muted"><i class="bi bi-exclamation-circle me-1"></i>Couldn't check this server right now · <a href="#" class="markers-status-retry">Retry</a></div>`;
+        block.innerHTML = `<div class="small text-muted"><i class="bi bi-exclamation-circle me-1" aria-hidden="true"></i>Reprise can’t reach this server right now. <button type="button" class="btn btn-link btn-sm p-0 align-baseline markers-status-retry">Try again</button></div>`;
     }
 
     // refresh=1 drops the few-seconds-old cached answer first: what "Check again" is for.
     async function fetchStatus(server, { refresh = false } = {}) {
         const seq = tab.loadSeq;
         const block = $('#markersStatusBlock');
-        if (block) block.innerHTML = '<div class="text-muted small"><span class="spinner-border spinner-border-sm me-1"></span>Checking…</div>';
+        if (block) block.innerHTML = '<div class="text-muted small" role="status"><span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>Checking this server. If it does not answer, this can take a few seconds…</div>';
         let data = null;
         try {
             const query = refresh ? '?refresh=1' : '';

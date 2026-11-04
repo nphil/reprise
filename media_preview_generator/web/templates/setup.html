@@ -63,21 +63,21 @@
         <div class="card setup-card">
             <div class="card-body">
                 <h2 class="setup-step-title">Choose your media server</h2>
-                <p class="setup-lead">Pick your first server. You can add more from the Servers page later.</p>
+                <p class="setup-lead">Pick the server your shows live on. You can add more later in Settings, under Connections.</p>
 
                 <!-- Vendor picker (visible by default) -->
                 <div id="vendorPicker" class="setup-vendors">
                     <button type="button" class="wizard-vendor-btn" data-vendor="plex">
                         <span class="vendor-logo"><img src="{{ url_for('static', filename='images/vendors/plex.svg') }}" width="24" height="24" alt=""></span>
-                        <span class="vendor-text"><b>Plex</b><small>auto-discovery via plex.tv</small></span>
+                        <span class="vendor-text"><b>Plex</b><small>Sign in with your Plex account</small></span>
                     </button>
                     <button type="button" class="wizard-vendor-btn" data-vendor="emby">
                         <span class="vendor-logo"><img src="{{ url_for('static', filename='images/vendors/emby.svg') }}" width="24" height="24" alt=""></span>
-                        <span class="vendor-text"><b>Emby</b><small>URL + API key or password</small></span>
+                        <span class="vendor-text"><b>Emby</b><small>Server address, then a key or password</small></span>
                     </button>
                     <button type="button" class="wizard-vendor-btn" data-vendor="jellyfin">
                         <span class="vendor-logo"><img src="{{ url_for('static', filename='images/vendors/jellyfin.svg') }}" width="24" height="24" alt=""></span>
-                        <span class="vendor-text"><b>Jellyfin</b><small>Quick Connect or URL+key</small></span>
+                        <span class="vendor-text"><b>Jellyfin</b><small>Quick Connect, or server address and key</small></span>
                     </button>
                 </div>
 
@@ -101,7 +101,7 @@
 
                     <details id="manualConnectDetails" class="text-start">
                         <summary class="text-muted" style="cursor: pointer;">
-                            <i class="bi bi-sliders me-1"></i>Can&rsquo;t reach <code>plex.tv</code>? Enter server details manually
+                            <i class="bi bi-sliders me-1"></i><span>Can&rsquo;t reach <code>plex.tv</code>? Enter server details manually</span>
                         </summary>
                         <p class="text-muted small mt-2 mb-3">
                             Use this if your network blocks <code>plex.tv</code>. <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Or paste a URL and token directly; libraries appear on the next step." data-explain-title="Enter a URL and token" data-explain-template="infoSetupManualPlexTpl"><i class="bi bi-info-circle"></i></button>
@@ -156,7 +156,7 @@
             </div>
             <div class="setup-card-footer">
                 <button type="button" class="btn btn-outline-secondary btn-sm" id="skipSetupBtn"
-                        title="Mark setup complete and add servers later from the Servers page">
+                        title="Mark setup complete and add your server later in Settings, under Connections">
                     <i class="bi bi-skip-forward me-1"></i>Skip for now
                 </button>
                 <button type="button" class="btn btn-primary d-none" id="step1Next" disabled>
@@ -171,7 +171,7 @@
         <div class="card setup-card">
             <div class="card-body">
                 <h2 class="setup-step-title">Connect your server</h2>
-                <p class="setup-lead">Pick the server to use, then choose which libraries to process.</p>
+                <p class="setup-lead">Check the server below, then choose the libraries Reprise should look at.</p>
 
                 <fieldset class="setup-group">
                     <legend>Server</legend>
@@ -214,11 +214,11 @@
                 </fieldset>
 
                 <fieldset class="setup-group" id="librariesCard" style="display: none;">
-                    <legend>Libraries to monitor
+                    <legend>Libraries to check
                         <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top"
-                                title="Which libraries this app may touch on this server, for every kind of job." data-explain-title="Libraries to monitor" data-explain-template="infoSetupLibrariesTpl"><i class="bi bi-info-circle"></i></button>
+                                title="Which libraries Reprise may use on this server, for every kind of job." data-explain-title="Libraries to check" data-explain-template="infoSetupLibrariesTpl"><i class="bi bi-info-circle"></i></button>
                     </legend>
-                    <p class="setup-helper">Tick the libraries this app should monitor on this server. Tick none to monitor all.</p>
+                    <p class="setup-helper">Tick the libraries Reprise should look at. Pick at least one; you can change this later.</p>
 
                     <div id="libraryLoading" class="text-center py-3 d-none">
                         <div class="spinner-border text-primary" role="status">
@@ -250,10 +250,25 @@
         <div class="card setup-card">
             <div class="card-body">
                 <h2 class="setup-step-title">Where are your files?</h2>
-                <p class="setup-lead">Check that this app can see your media, and where previews are written.</p>
+                <p class="setup-lead">Reprise reads your video files directly, so it has to be able to see them. Check one real file below.</p>
 
+                <section class="setup-path-preview" aria-labelledby="setupPathPreviewHeading">
+                    <h3 class="setup-legend" id="setupPathPreviewHeading">Check a real file</h3>
+                    <p class="setup-helper">Paste the path of one video file, as your media server shows it, to see whether Reprise can open it. <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="What this check does and does not do." data-explain-title="Check a file path" data-explain-template="infoSetupSamplePathTpl"><i class="bi bi-info-circle"></i></button>
+<template id="infoSetupSamplePathTpl">
+    <p>Paste the path of one video file, as your media server (or a Sonarr or Radarr webhook) reports it. This uses your path mappings (Advanced), including unsaved edits, and checks whether Reprise can read that file. It does not create previews or confirm which library the file belongs to.</p>
+</template>
+</p>
+                    <label class="form-label small" for="setupSamplePath">Path of one video file</label>
+                    <div class="input-group">
+                        <input class="form-control" id="setupSamplePath" type="text" placeholder="/media/movies/Example.mkv" autocomplete="off" maxlength="4096">
+                        <button class="btn btn-outline-secondary" type="button" id="setupCheckFile"><i class="bi bi-search me-1"></i>Check file</button>
+                    </div>
+                    <div id="setupPathPreviewResult" class="small mt-2" role="status" aria-live="polite"></div>
+                </section>
                 <fieldset class="setup-group" id="step3PlexConfigSection">
-                    <legend>Plex data</legend>
+                    <legend>Preview thumbnails (optional)</legend>
+                    <p class="setup-helper">Only used if Reprise should also write preview thumbnails into Plex. Reviewing intros and credits works without it.</p>
                     {# id is wizardPlexConfigFolder (not plexConfigFolder) to avoid
                        colliding with the same-named input inside the included
                        _server_connection_form partial — that one is hidden in
@@ -284,25 +299,10 @@
 </div>
                     <div class="form-text mt-1">
                         <i class="bi bi-info-circle text-muted me-1"></i>
-                        Already past Setup? Change this any time on
-                        <a href="{{ url_for('main.servers_page') }}">Servers</a> &rarr; your Plex card &rarr; <strong>Edit</strong> &rarr; <strong>Connection</strong>.
+                        You can change this later in Settings, under <a href="{{ url_for('main.servers_page') }}">Connections</a>: edit your Plex server, then open <strong>Connection</strong>.
                     </div>
                 </fieldset>
 
-                <section class="setup-path-preview" aria-labelledby="setupPathPreviewHeading">
-                    <h3 class="setup-legend" id="setupPathPreviewHeading">Check a real file</h3>
-                    <p class="setup-helper">Paste a media file path reported by your server or webhook. <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="What this check does and does not do." data-explain-title="Check a file path" data-explain-template="infoSetupSamplePathTpl"><i class="bi bi-info-circle"></i></button>
-<template id="infoSetupSamplePathTpl">
-    <p>Paste a media file path reported by your server or webhook. This uses your path mappings (Advanced), including unsaved edits, and checks whether this container can read that file. It does not generate previews or confirm library ownership.</p>
-</template>
-</p>
-                    <label class="form-label small" for="setupSamplePath">File path on the server or webhook</label>
-                    <div class="input-group">
-                        <input class="form-control" id="setupSamplePath" type="text" placeholder="/media/movies/Example.mkv" autocomplete="off" maxlength="4096">
-                        <button class="btn btn-outline-secondary" type="button" id="setupCheckFile"><i class="bi bi-search me-1"></i>Check file</button>
-                    </div>
-                    <div id="setupPathPreviewResult" class="small mt-2" role="status" aria-live="polite"></div>
-                </section>
 
                 <details class="setup-advanced" id="setupAdvancedDetails">
                     <summary>
@@ -405,12 +405,12 @@
     <div class="setup-step" data-step="4">
         <div class="card setup-card">
             <div class="card-body">
-                <h2 class="setup-step-title">Processing options</h2>
-                <p class="setup-lead">Sensible defaults are already filled in.</p>
+                <h2 class="setup-step-title">Speed and hardware</h2>
+                <p class="setup-lead">Reprise works on your processor (CPU) alone. A graphics card (GPU) is optional and only makes analysis faster. The defaults are fine; you can change all of this later in Settings, under Advanced.</p>
 
                 <fieldset class="setup-group">
-                <legend>GPU device tuning</legend>
-                <p class="setup-helper">GPU workers use both GPU and CPU. <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="How HDR and Dolby Vision change CPU use." data-explain-title="GPU workers" data-explain-template="infoSetupGpuTpl"><i class="bi bi-info-circle"></i></button>
+                <legend>Graphics card (optional)</legend>
+                <p class="setup-helper">Reprise can use a graphics card to decode video faster. <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="How HDR and Dolby Vision change CPU use." data-explain-title="GPU workers" data-explain-template="infoSetupGpuTpl"><i class="bi bi-info-circle"></i></button>
 <template id="infoSetupGpuTpl">
     <p>GPU workers may use both GPU and CPU. The bundled FFmpeg can decode H.264 and HEVC on NVIDIA (NVDEC) and VA-API GPUs, which Reprise's analysis uses automatically; GPU acceleration of thumbnails and Dolby Vision Profile 5 colour accuracy are not established for this build.</p>
 </template>
@@ -430,6 +430,14 @@
                 </button>
                 </fieldset>
 
+                <details class="setup-advanced" id="setupStep4Advanced">
+                    <summary>
+                        <i class="bi bi-sliders" aria-hidden="true"></i>
+                        <span>Advanced</span>
+                        <small>worker groups, thumbnails</small>
+                        <i class="bi bi-chevron-down setup-chevron" aria-hidden="true"></i>
+                    </summary>
+                    <div class="setup-advanced-body">
                 <div class="setup-group settings-page" id="workerGroupSettings"><p class="text-body-secondary">Loading worker groups…</p></div>
 
                 <fieldset class="setup-group">
@@ -459,6 +467,8 @@
                     </div>
                 </div>
                 </fieldset>
+                    </div>
+                </details>
             </div>
             <div class="setup-card-footer">
                 <button type="button" class="btn btn-outline-secondary" id="step4Back">
@@ -1378,7 +1388,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 document.getElementById('gpuConfigList').innerHTML =
                     '<div class="alert alert-warning mb-0">' +
                     '<i class="bi bi-exclamation-triangle me-2"></i>' +
-                    'No GPU detected. Configure a CPU worker group below.</div>';
+                    'No graphics card (GPU) found. Reprise will use your processor (CPU), which works fine; a GPU only makes it faster.</div>';
             }
         } catch (error) {
             document.getElementById('gpuDetecting').classList.add('d-none');
@@ -1460,8 +1470,8 @@ document.addEventListener('DOMContentLoaded', function() {
     if (skipBtn) {
         skipBtn.addEventListener('click', async function() {
             const skipConfirm = (typeof window.appConfirm === 'function')
-                ? await window.appConfirm("Skip the wizard? You'll need to add a media server from the Servers page before previews can be generated.", { title: 'Skip setup wizard', confirmText: 'Skip', variant: 'warning' })
-                : window.confirm("Skip the wizard? You'll need to add a media server from the Servers page before previews can be generated.");
+                ? await window.appConfirm("Skip setup? You'll need to add your media server in Settings, under Connections, before Reprise can list your shows.", { title: 'Skip setup', confirmText: 'Skip setup', variant: 'warning' })
+                : window.confirm("Skip setup? You'll need to add your media server in Settings, under Connections, before Reprise can list your shows.");
             if (!skipConfirm) {
                 return;
             }

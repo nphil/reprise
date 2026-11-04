@@ -20,10 +20,10 @@ from ..gpu.ffmpeg_capabilities import ffmpeg_binary
 from ..servers.ownership import apply_path_mappings
 from . import scan_cache
 from .admission import admit_references, pair_provenance
-from .identity import is_current, media_version
+from .identity import currency, media_version
 from .models import SUGGESTION_ORIGINS, AnalysisRefused, CandidateWindow, PlaybackIdentity
 from .policy import eligible_ranges
-from .verification_profile import PROFILE_FINGERPRINT
+from .verification_profile import POLICY_VERSION, PROFILE_FINGERPRINT, is_current_profile
 
 _SERVICE = None
 
@@ -31,6 +31,75 @@ NOT_IN_LIBRARY = "This episode is not in the library any more. Refresh the libra
 CHANGED_ON_DISK = (
     "This file changed on disk after the library was last refreshed. Refresh the library, then analyze it again."
 )
+
+# Why the Library says a row is not current, in plain words. ``action`` is the button that helps: a refresh re-reads
+# the files, an analysis redoes the comparison. Each cause gets its own wording: a file Sonarr upgraded is gone, not
+# "changed", and an engine update changes no file at all.
+STALE_REASONS = {
+    "file_missing": (
+        "File missing",
+        "This file is no longer on disk. It was renamed, replaced or removed after Reprise last read it, "
+        "for example by a Sonarr or Radarr upgrade.",
+        "Refresh the library so Reprise reads the file that is there now.",
+        "refresh",
+    ),
+    "file_changed": (
+        "File changed",
+        "This file has changed since Reprise last read it.",
+        "Refresh the library so Reprise reads the new file, then analyze it again.",
+        "refresh",
+    ),
+    "file_unavailable": (
+        "File unavailable",
+        "Reprise can't open this file right now.",
+        "Check that your media storage is available, then refresh the library.",
+        "refresh",
+    ),
+    "library_unavailable": (
+        "Media folder unavailable",
+        "Reprise can't open the media folder for this library right now.",
+        "If your storage is still starting up, wait a moment and refresh the library.",
+        "refresh",
+    ),
+    "library_changed": (
+        "Library settings changed",
+        "The Plex server, library or folder mapping Reprise saved for this file no longer matches.",
+        "Refresh the library so the file is read with the current settings.",
+        "refresh",
+    ),
+    "plex_changed": (
+        "Plex changed",
+        "Plex's details for this episode changed after it was analyzed.",
+        "Analyze it again so the result matches what Plex has now.",
+        "analyze",
+    ),
+    "needs_reanalysis": (
+        "Analyze again",
+        "Reprise's comparison method was updated after this episode was analyzed.",
+        "Analyze it again to review it with the current method.",
+        "analyze",
+    ),
+    "comparison_changed": (
+        "Comparison changed",
+        "An episode this one was compared with has changed or is gone.",
+        "Analyze it again so it is compared with the episodes in the library now.",
+        "analyze",
+    ),
+}
+
+
+def _stale(code):
+    label, message, next_step, action = STALE_REASONS[code]
+    return {"code": code, "label": label, "message": message, "next": next_step, "action": action}
+
+
+def _result_stale_reason(result):
+    """Why a stored analysis no longer counts although its file is as it was read."""
+    if result.policy_version == "binding-changed":
+        return "plex_changed"
+    if result.policy_version != POLICY_VERSION or not all(is_current_profile(e.metrics) for e in result.evidence):
+        return "needs_reanalysis"
+    return "comparison_changed"
 
 
 def _suggesters(ranges):
@@ -251,13 +320,16 @@ class RepriseService:
             raise ValueError("Select an enabled Plex library")
         return cfg, server, library
 
-    def _local_path(self, cfg, library, remote):
-        roots = [
+    def _library_roots(self, cfg, library):
+        return [
             os.path.realpath(p)
             for root in library.remote_paths
             for p in apply_path_mappings(root, cfg.path_mappings)
             if os.path.isabs(p)
         ]
+
+    def _local_path(self, cfg, library, remote):
+        roots = self._library_roots(cfg, library)
         paths = {
             os.path.realpath(p)
             for p in apply_path_mappings(remote, cfg.path_mappings)
@@ -359,6 +431,7 @@ class RepriseService:
             raise ValueError("Duplicate Plex episodes in library response")
         registered = skipped = 0
         seen = []
+        unreadable, touched, listed = set(), set(), {}
         total = len(rows)
         if progress_callback:
             progress_callback(0, total)
@@ -381,8 +454,15 @@ class RepriseService:
                 raise ValueError("Incomplete Plex episode metadata")
             item = detail[0]
             media_rows = item.get("Media", [])
+            if requested is not None:
+                listed[rating_key] = {
+                    (str(media.get("id")), str(part.get("id")))
+                    for media in media_rows
+                    for part in media.get("Part", [])
+                }
             if not media_rows and requested is None:
                 skipped += 1
+                unreadable.add(rating_key)
             for media in media_rows:
                 checkpoint()
                 parts = media.get("Part", [])
@@ -395,6 +475,7 @@ class RepriseService:
                         continue
                 if len(parts) != 1:
                     skipped += 1
+                    unreadable.add(rating_key)
                     continue
                 part = parts[0]
                 try:
@@ -462,9 +543,11 @@ class RepriseService:
                         seen.append(identity)
                         if requested is not None:
                             matched.add(path)
+                            touched.add(rating_key)
                     registered += 1
                 except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError, json.JSONDecodeError):
                     skipped += 1
+                    unreadable.add(rating_key)
             if progress_callback:
                 progress_callback(index + 1, total)
         checkpoint()
@@ -472,38 +555,60 @@ class RepriseService:
             raise ValueError("Library configuration changed during refresh")
         if requested is not None:
             skipped = max(skipped, len(requested - matched))
-        return {"registered": registered, "skipped": skipped, "seen": seen, "config_signature": config_signature}
+        return {
+            "registered": registered,
+            "skipped": skipped,
+            "seen": seen,
+            # What a refresh may drop afterwards: an episode whose media this scan could not read keeps its entries.
+            "unreadable": frozenset(unreadable),
+            # Scoped scans only: the media Plex lists now for each episode a requested file was registered for.
+            "listed": {key: media for key, media in listed.items() if key in touched and key not in unreadable},
+            "config_signature": config_signature,
+        }
 
     def _bindings(self, version_id):
         return self.store.get_bindings(version_id)
 
-    def _valid_binding(self, version, identity, server_id, metadata):
+    def _binding_problem(self, version, identity, server_id, metadata):
+        """Why this binding no longer describes a readable file (a ``STALE_REASONS`` code), or None while it does."""
         # Resolution is deliberately read-only and never contacts Plex or decodes media.
         try:
             cfg = self.registry.get_config(server_id)
             if not cfg or not cfg.enabled or getattr(cfg.type, "value", cfg.type) != "plex":
-                return False
+                return "library_changed"
             if cfg.server_identity and cfg.server_identity != identity.plex_machine_identifier:
-                return False
+                return "library_changed"
             if not cfg.server_identity and metadata.get("server_url") != cfg.url:
-                return False
+                return "library_changed"
             library = next(
                 (lib for lib in cfg.libraries if lib.enabled and str(lib.id) == str(metadata["library_id"])), None
             )
-            if not library or not is_current(version):
-                return False
+            if not library:
+                return "library_changed"
+            gone = currency(version)
+            if gone == "missing":
+                roots = self._library_roots(cfg, library)
+                # Storage that is not mounted (an array still starting) loses every file at once.
+                return "library_unavailable" if roots and not any(os.path.isdir(r) for r in roots) else "file_missing"
+            if gone == "unreachable":
+                return "file_unavailable"
+            if gone:
+                return "file_changed"
             if metadata.get("mapping_fingerprint") != _mapping_fingerprint(cfg, library):
-                return False
+                return "library_changed"
             remote_path = metadata.get("remote_part_path")
             if not isinstance(remote_path, str) or not remote_path:
-                return False
-            return (
-                identity.duration_ms == version.duration_ms
-                and identity.part_size_bytes == version.size_bytes
-                and self._local_path(cfg, library, remote_path) == version.canonical_path
-            )
+                return "library_changed"
+            if identity.duration_ms != version.duration_ms or identity.part_size_bytes != version.size_bytes:
+                return "library_changed"
+            if self._local_path(cfg, library, remote_path) != version.canonical_path:
+                return "library_changed"
+            return None
         except (KeyError, TypeError, ValueError, OSError):
-            return False
+            return "library_changed"
+
+    def _valid_binding(self, version, identity, server_id, metadata):
+        return self._binding_problem(version, identity, server_id, metadata) is None
 
     def _references_current(self, result):
         for version_id in {result.media_version_id} | {
@@ -527,6 +632,10 @@ class RepriseService:
         return True
 
     def lookup(self, identity):
+        return self._lookup(identity)[0]
+
+    def _lookup(self, identity):
+        """``(answer, why)``: the answer clients get, and, when its freshness is "stale", the ``STALE_REASONS`` code."""
         answer = {
             "schema_version": 1,
             "resolution": "unresolved",
@@ -545,23 +654,26 @@ class RepriseService:
         version = self.store.resolve_binding(identity)
         if not version:
             answer["reasons"].append("No exact registered Plex playback identity")
-            return answer
+            return answer, None
         bindings = [b for b in self._bindings(version.id) if b[0] == identity]
         if len(bindings) != 1:
             answer.update(resolution="ambiguous", reasons=["Playback identity is ambiguous"])
-            return answer
+            return answer, None
         answer.update(resolution="resolved", media_version_id=version.id)
-        if not self._valid_binding(version, *bindings[0]):
+        problem = self._binding_problem(version, *bindings[0])
+        if problem:
             answer.update(freshness="stale", reasons=["Plex mapping or local media has changed or is unavailable"])
-            return answer
+            return answer, problem
         result = self.store.get_result(version.id)
         if result is None:
             answer["freshness"] = "current"
-            return answer
+            return answer, None
+        why = _result_stale_reason(result) if result.freshness == "stale" else None
         if not self._references_current(result):
             result = replace(
                 result, freshness="stale", reasons=(*result.reasons, "Reference media is stale or unavailable")
             )
+            why = why or "comparison_changed"
         answer.update(
             analysis_status=result.analysis_status,
             freshness=result.freshness,
@@ -574,7 +686,7 @@ class RepriseService:
         )
         if result.analysis_status == "complete" and not answer["eligible_skip_ranges"]:
             answer["reasons"].append("unapproved_or_unverified")
-        return answer
+        return answer, why
 
     def eligible_ranges(self, result, identity):
         version = self.store.resolve_binding(identity)
@@ -623,7 +735,7 @@ class RepriseService:
             if version is None:
                 continue
             bindings = self._bindings(version_id)
-            current = self.lookup(bindings[0][0]) if bindings else None
+            current, why = self._lookup(bindings[0][0]) if bindings else (None, None)
             stored = self.store.get_result(version_id) if current and current["analysis_status"] != "missing" else None
             items.append(
                 {
@@ -636,6 +748,7 @@ class RepriseService:
                     "duration_ms": version.duration_ms,
                     "analysis_status": current["analysis_status"] if current else "missing",
                     "freshness": current["freshness"] if current else "unavailable",
+                    "stale": _stale(why) if why else None,
                     "ranges": _range_counts(stored.ranges if stored else ()),
                     "reasons": list(stored.reasons) if stored else [],
                     "identities": [asdict(b[0]) for b in bindings],
@@ -652,8 +765,9 @@ class RepriseService:
         bindings = self._bindings(media_version_id)
         if not bindings:
             raise KeyError(media_version_id)
-        result = self.lookup(bindings[0][0])
+        result, why = self._lookup(bindings[0][0])
         result["identities"] = [asdict(b[0]) for b in bindings]
+        result["stale"] = _stale(why) if why else None
         stored = self.store.get_result(media_version_id)
         if stored:
             result["ranges"] = [asdict(r) for r in stored.ranges]
@@ -1054,26 +1168,33 @@ class RepriseService:
                 "skipped": scanned["skipped"],
                 "removed": 0,
             }
+
+            def reconcile():
+                if self._refresh_signature(server_id, library_id) != scanned["config_signature"]:
+                    raise ValueError("Library configuration changed during refresh")
+                # A scan that could not read some episodes still shows which other entries Plex dropped (a file a
+                # Sonarr upgrade replaced, say): those go, and the unreadable episodes keep theirs.
+                if request.get("candidate_paths") is None:
+                    summary["removed"] = self.store.reconcile_library(
+                        server_id, library_id, scanned["seen"], keep_rating_keys=scanned["unreadable"]
+                    )
+                else:
+                    summary["removed"] = self.store.drop_unlisted_media(server_id, library_id, scanned["listed"])
+                self.job_manager.merge_job_config(job_id, {"refresh_result": summary})
+
             if scanned["skipped"]:
 
                 def finish_partial():
-                    self.job_manager.merge_job_config(job_id, {"refresh_result": summary})
+                    reconcile()
                     self.job_manager.complete_job(
-                        job_id, error="Library refresh incomplete; existing entries were retained"
+                        job_id, error="Library refresh incomplete; episodes that could not be read kept their entries"
                     )
 
                 if not self.job_manager.commit_if_active(job_id, finish_partial):
                     raise Cancelled("Library refresh cancelled")
                 return
 
-            def finish():
-                if self._refresh_signature(server_id, library_id) != scanned["config_signature"]:
-                    raise ValueError("Library configuration changed during refresh")
-                if request.get("candidate_paths") is None:
-                    summary["removed"] = self.store.reconcile_library(server_id, library_id, scanned["seen"])
-                self.job_manager.merge_job_config(job_id, {"refresh_result": summary})
-
-            if not self.job_manager.commit_if_active(job_id, finish, complete=not for_analysis):
+            if not self.job_manager.commit_if_active(job_id, reconcile, complete=not for_analysis):
                 raise Cancelled("Library refresh cancelled")
             return sorted(registered_ids)
         except Cancelled:

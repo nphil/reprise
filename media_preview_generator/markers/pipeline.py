@@ -2392,7 +2392,7 @@ def _consent_problem(ctx: PipelineContext, cfg: ServerConfig, path: str) -> str 
     if live is None:
         return "This server was removed"
     if not live.enabled:
-        return "This server is turned off on the Servers page"
+        return "This server is turned off in Settings, under Connections"
     if not load_server(live.markers, live.type.value).enabled:
         return "Intro & Credits is off for this server"
     if live.exclude_paths and is_path_excluded(path, live.exclude_paths):

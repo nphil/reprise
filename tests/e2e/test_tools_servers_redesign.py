@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from playwright.sync_api import Page, expect
 
@@ -59,9 +61,40 @@ class TestServersCards:
         authed_page.goto(f"{app_url}/servers")
 
         dot = authed_page.locator("#server-status-a")
-        expect(dot).to_have_attribute("aria-label", "Connection failed", timeout=3000)
+        expect(dot).to_have_attribute("aria-label", re.compile(r"Reprise could not connect to “Alpha”"), timeout=3000)
         expect(dot).to_have_class("srv-dot bad")
-        expect(authed_page.locator("#server-error-a")).to_contain_text("Connection failed")
+        # The card says it in plain words; the technical message sits behind "Details".
+        expect(authed_page.locator("#server-error-a .srv-problem-msg")).to_contain_text("Reprise could not connect")
+        expect(authed_page.locator("#server-error-a .srv-problem-raw")).to_contain_text("Connection failed")
+
+    def test_unreachable_card_explains_the_cause_in_plain_words(self, authed_page: Page, app_url: str) -> None:
+        raw = (
+            "Could not connect to Jellyfin at http://nas:8096: HTTPConnectionPool(host='nas', port=8096): Max retries "
+            "exceeded with url: /System/Info (Caused by NewConnectionError(\"HTTPConnection(host='nas', port=8096): "
+            'Failed to establish a new connection: [Errno 111] Connection refused"))'
+        )
+        mock_servers_list(authed_page, servers=[_server("a", "Alpha")])
+        authed_page.route(
+            "**/api/servers/*/test-connection", lambda route: _fulfill_json(route, {"ok": False, "message": raw})
+        )
+        authed_page.goto(f"{app_url}/servers")
+
+        block = authed_page.locator("#server-error-a")
+        expect(block.locator(".srv-problem-msg")).to_contain_text("can’t reach “Alpha”", timeout=5000)
+        expect(block.locator(".srv-problem-msg")).not_to_contain_text("HTTPConnectionPool")
+        # The technical text is one click away, not in the card.
+        expect(block.locator(".srv-problem-raw")).to_be_hidden()
+        block.locator("summary").click()
+        expect(block.locator(".srv-problem-raw")).to_contain_text("Errno 111")
+
+    def test_previews_chip_is_off_when_preview_thumbnails_are_off(self, authed_page: Page, app_url: str) -> None:
+        mock_servers_list(authed_page, servers=[{**_server("a", "Alpha"), "output": {"preview_thumbnails": False}}])
+        mock_server_connection_probe(authed_page, ok=True)
+        authed_page.goto(f"{app_url}/servers")
+
+        chip = authed_page.locator(".srv-r-sends .srv-fchip.pv")
+        expect(chip).to_have_class(re.compile(r"\boff\b"), timeout=5000)
+        expect(chip).to_contain_text("Previews off")
 
     def test_library_count_warns_when_some_libraries_disabled(self, authed_page: Page, app_url: str) -> None:
         mock_servers_list(authed_page, servers=[_server("a", "Alpha", libraries=5, enabled_libraries=3)])

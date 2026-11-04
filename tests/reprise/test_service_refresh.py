@@ -1,6 +1,7 @@
 """Refreshes exercise the real queue, scanner, ffprobe, and SQLite over local HTTP."""
 
 import json
+import os
 import subprocess
 import threading
 import time
@@ -147,17 +148,24 @@ def test_refresh_queue_pause_cancel_partial_and_reconcile(tmp_path, monkeypatch)
         "machine", "999", "1999", "2999", "/library/parts/999/file", media.stat().st_size, 1000, "3999"
     )
     version = media_version(str(media), 1000, "{}")
-    store.register_media(
-        version,
-        old,
-        server_id="server",
-        metadata={
-            "library_id": "1",
-            "server_url": url,
-            "remote_part_path": str(media),
-            "mapping_fingerprint": _mapping_fingerprint(config, library),
-        },
+    metadata = {
+        "library_id": "1",
+        "server_url": url,
+        "remote_part_path": str(media),
+        "mapping_fingerprint": _mapping_fingerprint(config, library),
+    }
+    store.register_media(version, old, server_id="server", metadata=metadata)
+    # Episode 102 as an earlier refresh saw it, and episode 101's media from before Sonarr replaced it.
+    held = PlaybackIdentity(
+        "machine", "102", "1102", "2102", "/library/parts/102/file", media.stat().st_size, 1000, "3102"
     )
+    store.register_media(version, held, server_id="server", metadata=metadata)
+    upgraded_file = tmp_path / "upgraded-old.mp4"
+    upgraded_file.write_bytes(media.read_bytes() + b"1080p")
+    upgraded = PlaybackIdentity(
+        "machine", "101", "1901", "2901", "/library/parts/101/old", upgraded_file.stat().st_size, 1000, "3901"
+    )
+    store.register_media(media_version(str(upgraded_file), 1000, "{}"), upgraded, server_id="server", metadata=metadata)
     reset_settings_manager()
     settings = get_settings_manager(str(tmp_path))
     settings.set(
@@ -210,6 +218,7 @@ def test_refresh_queue_pause_cancel_partial_and_reconcile(tmp_path, monkeypatch)
         assert cancelled["status"] == "cancelled"
         release.set()
         assert store.resolve_binding(old) is not None
+        assert store.resolve_binding(held) is not None
         state.update(block=False, missing=True)
         # Wait for the cancelled runner to release its per-library scan lock.
         partial_id = submit()
@@ -217,7 +226,12 @@ def test_refresh_queue_pause_cancel_partial_and_reconcile(tmp_path, monkeypatch)
             lambda: (r if (r := get(partial_id))["status"] in ("completed", "failed", "cancelled") else None)
         )
         assert partial["status"] == "failed" and partial["refresh"]["skipped"] == 1
-        assert store.resolve_binding(old) is not None
+        # Plex no longer lists episode 999 or 101's old media: they go although episode 102 could not be read.
+        assert store.resolve_binding(old) is None
+        assert store.resolve_binding(upgraded) is None
+        assert partial["refresh"]["removed"] == 2
+        # Nothing can be said of episode 102's own media, so its row stays.
+        assert store.resolve_binding(held) is not None
         state.update(keys=["101"], missing=False)
         complete_id = submit()
         complete = wait_until(
@@ -227,7 +241,21 @@ def test_refresh_queue_pause_cancel_partial_and_reconcile(tmp_path, monkeypatch)
         assert complete["refresh"]["registered"] == 1
         assert complete["refresh"]["removed"] >= 1
         assert store.resolve_binding(old) is None
+        assert store.resolve_binding(held) is None
         assert str(tmp_path) not in json.dumps(complete)
+        # A Sonarr upgrade swapped episode 101's media again: Plex lists the new one only. A scan of just the new
+        # file drops the old row too, so nothing waits for a later full refresh to find it.
+        old_file = tmp_path / "old-1080p.mp4"
+        old_file.write_bytes(media.read_bytes() + b"old")
+        replaced = PlaybackIdentity(
+            "machine", "101", "1801", "2801", "/library/parts/101/old", old_file.stat().st_size, 1000, "3801"
+        )
+        store.register_media(media_version(str(old_file), 1000, "{}"), replaced, server_id="server", metadata=metadata)
+        scanned = service._scan_library("server", "1", candidate_paths=[os.path.realpath(media)])
+        assert scanned["listed"] == {"101": {("1101", "2101")}}
+        assert store.drop_unlisted_media("server", "1", scanned["listed"]) == 1
+        assert store.resolve_binding(replaced) is None
+        assert all(store.resolve_binding(identity) is not None for identity in scanned["seen"])
     finally:
         release.set()
         plex.shutdown()

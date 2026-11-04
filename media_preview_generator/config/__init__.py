@@ -40,6 +40,7 @@ from .validation import (  # noqa: F401
     _validate_thread_config,
     get_setting,
     gpu_worker_total,
+    plex_config_folder_needed,
     thread_totals_from_ui_settings,
     usable_gpu_config,
     validate_processing_thread_totals,
@@ -634,7 +635,15 @@ def load_config(*, log_validation_errors: bool = True) -> Config:
         # Validate Plex when a Plex server exists, when the legacy globals are set,
         # or when there's no media_servers config at all (fresh install — Setup
         # Wizard is Plex-first so this is the safe default).
-        _validate_plex_config(plex_url, plex_token, plex_config_folder, missing_params, validation_errors)
+        _validate_plex_config(
+            plex_url,
+            plex_token,
+            plex_config_folder,
+            missing_params,
+            validation_errors,
+            # A setup that only reviews (no server writes thumbnails, markers or loudness into Plex) needs no Plex folder.
+            check_config_folder=not has_plex_server or plex_config_folder_needed(raw_media_servers),
+        )
     _validate_processing_config(
         plex_bif_frame_interval,
         thumbnail_quality,

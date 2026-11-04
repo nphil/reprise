@@ -103,7 +103,7 @@ function renderNotifications(notifications) {
             '<i class="bi ' + iconClass + ' me-2 mt-1 flex-shrink-0"></i>' +
             '<div class="flex-grow-1">' +
             '<strong class="d-block notification-title">' + escapeHtml(notif.title || 'Notification') + '</strong>' +
-            '<a href="#" class="small notification-toggle-details">Show details</a>' +
+            '<button type="button" class="btn btn-link p-0 small notification-toggle-details" aria-expanded="false">Show details</button>' +
             '</div>';
 
         var details = document.createElement('div');
@@ -163,10 +163,10 @@ function renderNotifications(notifications) {
         // Wire "Show details" toggle.
         var toggle = entry.querySelector('.notification-toggle-details');
         if (toggle) {
-            toggle.addEventListener('click', function (ev) {
-                ev.preventDefault();
+            toggle.addEventListener('click', function () {
                 var hidden = details.classList.toggle('d-none');
                 toggle.textContent = hidden ? 'Show details' : 'Hide details';
+                toggle.setAttribute('aria-expanded', hidden ? 'false' : 'true');
             });
         }
     });

@@ -88,7 +88,7 @@ class TestStartNewJob:
     def test_previews_job_posts_servers_libraries_priority_and_filters(self, overlay_page) -> None:
         page, writes = overlay_page
         _open_start(page)
-        expect(page.locator("#jobStartLabel")).to_have_text("Start previews job")
+        expect(page.locator("#jobStartLabel")).to_have_text("Start previews")
         expect(page.locator("#jobScopeBadge")).to_contain_text("every enabled library on all servers")
         page.locator("#jobLibraryAll").uncheck()
         page.locator('.job-library-checkbox[data-server-id="plex-1"][value="1"]').check()
@@ -140,8 +140,8 @@ class TestStartNewJob:
     @pytest.mark.parametrize(
         ("radio", "label", "url", "priority"),
         [
-            ("jobKindMarkers", "Start intro & credits job", "markers/jobs", 3),
-            ("jobKindLoudness", "Start loudness job", "loudness/jobs", 3),
+            ("jobKindMarkers", "Start intro & credits", "markers/jobs", 3),
+            ("jobKindLoudness", "Start loudness", "loudness/jobs", 3),
         ],
     )
     def test_own_runner_jobs_post_server_library_pairs_at_low_priority(
@@ -218,7 +218,7 @@ class TestStartNewJob:
         expect(page.locator("#jobSortByGroup")).to_be_visible()
         expect(page.locator("#jobScanFiltersGroup")).to_be_visible()
         expect(page.locator("#jobPriority")).to_have_value("3")
-        expect(page.locator("#jobStartLabel")).to_have_text("Start loudness job")
+        expect(page.locator("#jobStartLabel")).to_have_text("Start loudness")
         page.locator("#jobKindMarkers").check()
         page.locator("#jobKindLoudness").uncheck()
         expect(page.locator("#jobSortByGroup")).to_be_hidden()
@@ -241,19 +241,19 @@ class TestManualTrigger:
         [
             (
                 "manualKindPreviews",
-                "Start previews job",
+                "Start previews",
                 "jobs/manual",
                 {"file_paths": ["/data/tv/Show"], "priority": 1, "force_regenerate": True},
             ),
             (
                 "manualKindMarkers",
-                "Start intro & credits job",
+                "Start intro & credits",
                 "markers/jobs",
                 {"file_paths": ["/data/tv/Show"], "priority": 1, "force": True},
             ),
             (
                 "manualKindLoudness",
-                "Start loudness job",
+                "Start loudness",
                 "loudness/jobs",
                 {"file_paths": ["/data/tv/Show"], "priority": 1},
             ),

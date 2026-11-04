@@ -17,6 +17,7 @@ from ._mocks import (
     mock_setup_status,
     mock_system_status,
 )
+from .conftest import expand_settings_folds
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -31,6 +32,7 @@ def _settings_page(authed_page: Page, app_url: str, *, interval: int) -> Page:
     mock_system_status(authed_page)
     mock_settings_backups(authed_page)
     authed_page.goto(f"{app_url}/settings")
+    expand_settings_folds(authed_page)
     authed_page.wait_for_load_state("domcontentloaded")
     # Settings load is async (loadSettings()); wait for it to populate.
     expect(authed_page.locator("#thumbnailInterval")).to_have_value(str(interval))

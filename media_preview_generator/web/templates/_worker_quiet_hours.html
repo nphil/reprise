@@ -6,9 +6,9 @@
                     <span class="sec-name">Global pause schedule
                         <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Pause all processing at set times. Scheduled runs during a global pause are skipped." data-explain-title="Global pause schedule" data-explain-template="infoPauseRulesTpl"><i class="bi bi-info-circle"></i></button>
                     </span>
-                    <span class="sec-desc">Pause all processing, including current files (Quiet Hours).</span>
+                    <span class="sec-desc">Stops all processing during the times you choose, even files already in progress.</span>
                 </div>
-                <span class="badge bg-secondary ms-auto" id="quietHoursStateBadge" title="Whether the queue is currently paused by quiet hours">off</span>
+                <span class="badge bg-secondary ms-auto" id="quietHoursStateBadge" title="Whether processing is paused by this schedule right now">off</span>
             </div>
             <div class="card-body">
                 <template id="infoPauseRulesTpl">
@@ -16,8 +16,8 @@
                 </template>
                 <div class="setting-row">
                     <div class="sr-label">
-                        <label for="quietHoursEnabled" class="sr-title">Enable quiet hours</label>
-                        <div class="sr-hint" id="quietHoursNextHint">Applied when on.</div>
+                        <label for="quietHoursEnabled" class="sr-title">Pause on a schedule</label>
+                        <div class="sr-hint" id="quietHoursNextHint">Turn on to use the pause windows below.</div>
                     </div>
                     <div class="sr-control">
                         <div class="form-check form-switch">

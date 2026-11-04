@@ -120,7 +120,7 @@ html.rp-rail-collapsed .rp-rail-version,html.rp-rail-collapsed .rp-safety span{d
 html.rp-rail-collapsed .rp-rail-head{flex-direction:column;justify-content:center;padding:12px 0;gap:4px}
 html.rp-rail-collapsed .rp-rail-nav a,html.rp-rail-collapsed .rp-rail-btn,html.rp-rail-collapsed .rp-safety{justify-content:center;padding-inline:0}
 html.rp-rail-collapsed .rp-rail-btn .badge{position:absolute;top:4px;right:10px;margin:0}
-.rp-subnav{position:sticky;top:0;z-index:20;height:var(--rp-subnav-h);background:var(--lu-canvas);border-bottom:1px solid var(--lu-edge-soft)}
+.rp-subnav{container:rp-subnav/inline-size;position:sticky;top:0;z-index:20;height:var(--rp-subnav-h);background:var(--lu-canvas);border-bottom:1px solid var(--lu-edge-soft)}
 .rp-subnav-scroll{display:flex;align-items:center;gap:4px;height:100%;max-width:var(--page-max);margin:0 auto;padding-inline:var(--page-gutter);
   overflow-x:auto;scrollbar-width:none}
 .rp-subnav-scroll::-webkit-scrollbar{display:none}
@@ -130,6 +130,12 @@ html.rp-rail-collapsed .rp-rail-btn .badge{position:absolute;top:4px;right:10px;
 .rp-subnav a:hover{background:var(--lu-hover-wash);color:var(--lu-ink)}
 .rp-subnav a[aria-current]{background:var(--lu-selected-wash);color:var(--lu-ink)}
 .rp-subnav a[aria-current] i{color:var(--lu-accent-text)}
+/* Eight tabs need about 1000px with icons. Narrower than that (a tablet beside the open sidebar, a phone) the icons go and the
+   padding shrinks so all or most show; whatever is still cut off scrolls, with a fade on the cut edge (set by reprise-shell.js). */
+@container rp-subnav (max-width:999.98px){.rp-subnav a{padding:0 10px}.rp-subnav a i{display:none}}
+.rp-subnav-scroll[data-fade=end]{-webkit-mask-image:linear-gradient(to right,#000 calc(100% - 32px),transparent);mask-image:linear-gradient(to right,#000 calc(100% - 32px),transparent)}
+.rp-subnav-scroll[data-fade=start]{-webkit-mask-image:linear-gradient(to left,#000 calc(100% - 32px),transparent);mask-image:linear-gradient(to left,#000 calc(100% - 32px),transparent)}
+.rp-subnav-scroll[data-fade=both]{-webkit-mask-image:linear-gradient(to right,transparent,#000 32px,#000 calc(100% - 32px),transparent);mask-image:linear-gradient(to right,transparent,#000 32px,#000 calc(100% - 32px),transparent)}
 
 @media (max-width:899.98px){
   .rp-stage{margin-left:0}
@@ -221,7 +227,6 @@ body.rp-app :is(.page-header:not(.settings-header) .page-subtitle,.insp-lead){co
 body.rp-app .page-header:not(.settings-header){margin-bottom:20px}
 body.rp-app .settings-header .page-title{color:var(--lu-ink)}
 body.rp-app .settings-header .page-subtitle{color:var(--lu-ink-2)}
-@media (max-width:899.98px){.rp-subnav-scroll{-webkit-mask-image:linear-gradient(to right,#000 calc(100% - 32px),transparent);mask-image:linear-gradient(to right,#000 calc(100% - 32px),transparent)}}
 
 /* ── 6. Status without side stripes ────────────────────────────────────────────────────────────────────────── */
 /* Worker-group members, node rows and the upgrade callout marked status with a thick coloured left edge. The same
@@ -232,3 +237,9 @@ body.rp-app .nd-row[data-tone=ok]{border-color:color-mix(in srgb,var(--ok) 45%,v
 body.rp-app .nd-row[data-tone=warn]{border-color:color-mix(in srgb,var(--warn) 50%,var(--lu-edge-soft))}
 body.rp-app .nd-row[data-tone=bad]{border-color:color-mix(in srgb,var(--bad) 50%,var(--lu-edge-soft))}
 body.rp-app .upgrade-caveat{border:1px solid color-mix(in srgb,var(--warn) 45%,var(--lu-edge-soft));background:color-mix(in srgb,var(--warn) 8%,transparent)}
+
+/* ── 7. Small controls ───────────────────────────────────────────────────────────────────────────────────── */
+/* The (i) help buttons are 16px glyphs. A finger already gets a 44px hit area from style.css; give a mouse 24px too (hit area only,
+   the glyph keeps its size). */
+@media (pointer:fine){body.rp-app .info-icon{position:relative}
+  body.rp-app .info-icon::before{content:'';position:absolute;top:50%;left:50%;width:24px;height:24px;transform:translate(-50%,-50%)}}

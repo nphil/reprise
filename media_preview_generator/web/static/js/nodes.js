@@ -281,7 +281,7 @@
                 <div class="nd-chips">${hardwareChips(app)}${busy ? `<span class="nd-faint nd-busy">${esc(busy)}</span>` : ''}${used.length ? `<span class="nd-faint">used by ${esc(used.join(', '))}</span>` : ''}</div>
                 <div class="nd-status">${pill('ok', '✓ Running')}${version ? `<span class="nd-faint nd-version">${esc(version)}</span>` : ''}</div>
                 <div class="nd-acts">
-                    <a class="btn btn-sm btn-outline-secondary nd-workers" href="/settings#section-workers" aria-label="Workers settings for this app">Workers</a>
+                    <a class="btn btn-sm btn-outline-secondary nd-workers" href="/settings#section-workers" aria-label="Worker settings for this app">Worker settings</a>
                 </div>
             </article>`;
     }
@@ -464,7 +464,7 @@
     function noLibrariesHtml(setup) {
         const servers = setup && Number(setup.servers);
         if (servers) {
-            return `Your media servers have no libraries loaded yet. <a href="/servers">Refresh libraries on Media Servers</a> first.`;
+            return `Your media servers have no libraries loaded yet. <a href="/servers">Refresh libraries in Connections</a> first.`;
         }
         return 'No media server yet. <a href="/servers">Add a media server</a> first.';
     }
@@ -645,7 +645,7 @@
             const items = Array.from(byLibrary, ([name, error]) => `<li><b>${esc(name)}</b> <span class="nd-faint">${esc(error)}</span></li>`).join('');
             return `<details class="nd-note nd-skipped"><summary><i class="bi bi-info-circle" aria-hidden="true"></i>`
                 + `${count} ${count === 1 ? 'library' : 'libraries'} skipped: this app can't open ${count === 1 ? 'it' : 'them'}.</summary>`
-                + `<ul>${items}</ul><a href="/servers">Fix on Media Servers</a></details>`;
+                + `<ul>${items}</ul><a href="/servers">Fix in Connections</a></details>`;
         }
 
         function unmappedNote(unmapped) {

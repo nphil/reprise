@@ -15,7 +15,7 @@ from ._mocks import (
     mock_system_status,
     mock_worker_groups,
 )
-from .conftest import E2E_PASSWORD, E2E_USERNAME, accept_app_confirm
+from .conftest import E2E_PASSWORD, E2E_USERNAME, accept_app_confirm, expand_settings_folds
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -32,6 +32,7 @@ def settings_page(authed_page: Page, app_url: str) -> Page:
     mock_settings_backups(authed_page)
     capture_settings_save(authed_page)
     authed_page.goto(f"{app_url}/settings")
+    expand_settings_folds(authed_page)
     authed_page.wait_for_load_state("domcontentloaded")
     return authed_page
 
@@ -113,6 +114,7 @@ class TestSettingsAccount:
         mock_settings_backups(authed_page)
         capture_settings_save(authed_page)
         authed_page.goto(f"{app_url}/settings")
+        expand_settings_folds(authed_page)
         authed_page.wait_for_load_state("domcontentloaded")
         return authed_page
 
@@ -255,6 +257,7 @@ class TestSettingsBackupsPanel:
         capture_settings_save(authed_page)
         captured = capture_settings_backups_restore(authed_page)
         authed_page.goto(f"{app_url}/settings")
+        expand_settings_folds(authed_page)
         authed_page.wait_for_load_state("domcontentloaded")
 
         panel = authed_page.locator("#backupRestorePanel")
@@ -304,7 +307,7 @@ class TestSettingsPolish:
         if enabled.is_checked():
             enabled.evaluate("el => { el.checked = false; el.dispatchEvent(new Event('change', { bubbles: true })); }")
         expect(settings_page.locator("#pauseWeekCard")).to_be_hidden()
-        expect(settings_page.locator("#quietHoursNextHint")).to_have_text("Applied when on.")
+        expect(settings_page.locator("#quietHoursNextHint")).to_have_text("Turn on to use the pause windows below.")
 
     def test_pause_chart_shows_when_quiet_hours_are_on(self, settings_page: Page) -> None:
         enabled = settings_page.locator("#quietHoursEnabled")
@@ -340,3 +343,37 @@ class TestSettingsPolish:
     def test_backup_restore_panel_is_neutral_when_page_loads(self, settings_page: Page) -> None:
         expect(settings_page.locator("#section-backups .danger-zone")).to_have_count(0)
         expect(settings_page.locator("#section-backups .restore-zone")).to_be_visible()
+
+
+@pytest.mark.e2e
+class TestExpertGroupsAreFolded:
+    """Processing options keeps its expert groups behind a disclosure, so the page is short and easy to scan."""
+
+    def _open_unexpanded(self, authed_page: Page, app_url: str, suffix: str = "") -> Page:
+        mock_settings_get(authed_page)
+        mock_worker_groups(authed_page)
+        mock_setup_status(authed_page, complete=True, plex_authenticated=True)
+        mock_system_status(authed_page)
+        mock_settings_backups(authed_page)
+        authed_page.goto(f"{app_url}/settings{suffix}")
+        authed_page.wait_for_load_state("domcontentloaded")
+        return authed_page
+
+    def test_the_groups_start_closed_with_a_plain_summary(self, authed_page: Page, app_url: str) -> None:
+        page = self._open_unexpanded(authed_page, app_url)
+        folds = page.locator("#section-processing details.fold")
+        assert folds.count() == 6
+        for fold in folds.all():
+            expect(fold).not_to_have_attribute("open", "")
+            expect(fold.locator("summary .fold-sub")).to_be_visible()
+        expect(page.locator("#thumbnailInterval")).to_be_hidden()
+
+    def test_opening_a_group_shows_its_controls(self, authed_page: Page, app_url: str) -> None:
+        page = self._open_unexpanded(authed_page, app_url)
+        page.locator("#foldThumbnails > summary").click()
+        expect(page.locator("#thumbnailInterval")).to_be_visible()
+
+    def test_the_gpu_link_from_other_pages_opens_its_group(self, authed_page: Page, app_url: str) -> None:
+        page = self._open_unexpanded(authed_page, app_url, "#gpu-configuration")
+        expect(page.locator("#gpu-configuration")).to_have_attribute("open", "")
+        expect(page.locator("#gpuConfigList")).to_be_visible()

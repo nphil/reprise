@@ -436,7 +436,7 @@ def test_server_turned_off_is_never_probed(factory):
     assert server.method_calls == []
     assert payload["capability"] == {
         "state": "disabled",
-        "message": "This server is turned off on the Servers page",
+        "message": "This server is turned off in Settings, under Connections",
         "details": {},
         "warning": "",
     }

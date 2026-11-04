@@ -45,15 +45,28 @@ def media_version(path: str, duration_ms: int, stream_signature: str, *, digest:
     )
 
 
-def is_current(version: MediaVersion) -> bool:
+def currency(version: MediaVersion) -> str | None:
+    """None while the file at the recorded path is the file that was read; otherwise why not.
+
+    ``"missing"``: nothing is at that path any more (renamed, replaced or deleted, as a Sonarr or Radarr upgrade does).
+    ``"unreachable"``: the path can't be read right now (storage not mounted, an I/O error, permissions).
+    ``"moved"``: the path now resolves somewhere else. ``"changed"``: the size or modification time differs.
+    """
     try:
         st = os.stat(version.canonical_path)
-        return os.path.realpath(version.canonical_path) == version.canonical_path and (
-            st.st_size,
-            st.st_mtime_ns,
-        ) == (version.size_bytes, version.mtime_ns)
+    except (FileNotFoundError, NotADirectoryError):
+        return "missing"
     except OSError:
-        return False
+        return "unreachable"
+    if os.path.realpath(version.canonical_path) != version.canonical_path:
+        return "moved"
+    if (st.st_size, st.st_mtime_ns) != (version.size_bytes, version.mtime_ns):
+        return "changed"
+    return None
+
+
+def is_current(version: MediaVersion) -> bool:
+    return currency(version) is None
 
 
 def same_file(left: MediaVersion, right: MediaVersion) -> bool:

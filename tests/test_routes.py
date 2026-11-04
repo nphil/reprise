@@ -4258,8 +4258,8 @@ class TestPageRoutesAdditional:
         body = resp.get_data(as_text=True)
         assert 'id="pane-triggers"' in body
         assert 'id="pane-schedules"' in body
-        assert 'id="sidebar-group-triggers"' in body
-        assert 'id="sidebar-group-schedules"' in body
+        assert 'data-automation-tab="triggers"' in body
+        assert 'data-automation-tab="schedules"' in body
 
     def test_webhooks_route_redirects_to_automation(self, authed_client):
         resp = authed_client.get("/webhooks", follow_redirects=False)
@@ -6387,6 +6387,46 @@ class TestValidatePlexConfigFolder:
         assert 'Missing "Media" subfolder' in body["error"], body["error"]
         assert "does not look like a Plex config folder" in body["error"], body["error"]
 
+    @pytest.mark.parametrize("review_only", [True, False])
+    def test_wrong_folder_is_a_note_only_when_preview_thumbnails_are_off(
+        self, client, tmp_path, monkeypatch, review_only
+    ):
+        """A folder that is not Plex's never shows a red error while thumbnails are off: nothing is written there."""
+        not_plex = tmp_path / "random"
+        not_plex.mkdir()
+        from media_preview_generator.web.routes import api_settings
+
+        monkeypatch.setattr(api_settings, "PLEX_DATA_ROOT", str(tmp_path))
+        payload = {"path": str(not_plex)}
+        if review_only:
+            payload["preview_thumbnails"] = False
+        body = client.post("/api/settings/validate-plex-config-folder", headers=_api_headers(), json=payload).get_json()
+        assert body["valid_plex_structure"] is False
+        if review_only:
+            assert body["error"] is None
+            assert "Not used while preview thumbnails are off" in body["note"]
+            assert 'Missing "Media" subfolder' in body["note"]
+        else:
+            assert 'Missing "Media" subfolder' in body["error"]
+            assert not body.get("note")
+
+    @pytest.mark.parametrize("review_only", [True, False])
+    def test_missing_folder_is_a_note_only_when_preview_thumbnails_are_off(
+        self, client, tmp_path, monkeypatch, review_only
+    ):
+        from media_preview_generator.web.routes import api_settings
+
+        monkeypatch.setattr(api_settings, "PLEX_DATA_ROOT", str(tmp_path))
+        payload = {"path": str(tmp_path / "gone")}
+        if review_only:
+            payload["preview_thumbnails"] = False
+        body = client.post("/api/settings/validate-plex-config-folder", headers=_api_headers(), json=payload).get_json()
+        if review_only:
+            assert body["error"] is None
+            assert "Folder not found" in body["note"]
+        else:
+            assert body["error"] == "Folder not found"
+
     def test_outside_root_existing_folder_suggests_docker_bind(self, client, tmp_path, monkeypatch):
         """When the typed path is a real folder but outside PLEX_DATA_ROOT,
         the error should explain the Docker mount instead of the previous
@@ -6525,6 +6565,24 @@ class TestValidateJellyfinConfigFolder:
             assert "Read-only is fine" in body["note"]
         else:
             assert "not writable" in body["error"].lower()
+            assert body["note"] is None
+
+    @pytest.mark.parametrize("review_only", [True, False])
+    def test_wrong_folder_is_a_note_when_preview_thumbnails_are_off(self, client, tmp_path, review_only):
+        not_jf = tmp_path / "media-folder"
+        not_jf.mkdir()
+        payload = {"path": str(not_jf)}
+        if review_only:
+            payload["preview_thumbnails"] = False
+        body = client.post(
+            "/api/settings/validate-jellyfin-config-folder", headers=_api_headers(), json=payload
+        ).get_json()
+        assert body["valid_jellyfin_structure"] is False
+        if review_only:
+            assert body["error"] is None
+            assert "Not used while preview thumbnails are off" in body["note"]
+        else:
+            assert "doesn't look like Jellyfin's config dir" in body["error"]
             assert body["note"] is None
 
 

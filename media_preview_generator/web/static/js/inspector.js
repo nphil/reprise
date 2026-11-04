@@ -927,7 +927,7 @@
         } else if (!state.file.in_library || state.file.exists === null) {
             parts.push(messageCard('Not in any library',
                 'No server has a library that holds this path, so the Inspector has nothing to compare and nothing here '
-                + 'is sent anywhere. Check the path, or the libraries on the Servers page.', 'muted'));
+                + 'is sent anywhere. Check the path, or the libraries on the Connections page.', 'muted'));
         } else {
             if (state.confirmLock && lockableTypes().length) parts.push(lockConfirmRow());
             if (state.confirmUnlock && lockedTypes().length) parts.push(unlockConfirmRow());

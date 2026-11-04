@@ -36,7 +36,8 @@
 .srv-hint { flex: 1; min-width: 0; padding-left: 4px; color: var(--faint); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .srv-card .form-switch { padding-left: 0; display: flex; align-items: center; min-height: 0; }
-.srv-card .form-switch .form-check-input { margin: 0; float: none; }
+.srv-card .form-switch .form-check-input { margin: 0; float: none; width: 44px; height: 24px; flex: none; cursor: pointer; }
+.webhook-secret-how > summary { min-height: 24px; padding: 3px 0; cursor: pointer; }
 
 .srv-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; display: inline-block; }
 .srv-dot.ok { background: var(--ok); }
@@ -44,9 +45,16 @@
 
 .servers-page .pill { display: inline-flex; align-items: center; gap: 6px; height: 24px; max-width: 100%; padding: 0 10px; border: 0; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--inset); color: var(--muted); white-space: nowrap; }
 .servers-page .pill > span { overflow: hidden; text-overflow: ellipsis; }
-/* The connection error carries the host the user needs, so it wraps instead of truncating. */
-.servers-page .pill.bad[id^="server-error-"] { height: auto; min-height: 24px; padding-top: 3px; padding-bottom: 3px; border-radius: 12px; white-space: normal; overflow-wrap: anywhere; align-items: flex-start; }
-.servers-page .pill.bad[id^="server-error-"] > span { overflow: visible; text-overflow: clip; }
+/* A connection problem: a plain sentence for the person, the raw error behind "Details". The block sits under the
+ * card's columns (roomy rows) or between the status and the libraries (compact cards), so a long error can never
+ * stretch a narrow column. */
+.srv-problem { display: flex; align-items: flex-start; gap: 10px; min-width: 0; margin: 10px 16px 0; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--bad) 40%, transparent); border-radius: var(--radius-xs); background: var(--bad-soft); font-size: 13px; line-height: 1.45; }
+.srv-problem > i { flex: none; margin-top: 2px; color: var(--bad); }
+.srv-problem-body { min-width: 0; flex: 1; }
+.srv-problem-msg { margin: 0; color: var(--bs-body-color); overflow-wrap: anywhere; }
+.srv-problem-more > summary { display: inline-block; min-height: 24px; padding: 3px 0; cursor: pointer; color: var(--muted); font-size: 12px; }
+.srv-problem-more > summary:hover { color: var(--bs-body-color); }
+.srv-problem-raw { display: block; max-height: 7.5em; margin-top: 4px; overflow: auto; color: var(--muted); font: 11.5px/1.45 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .servers-page .pill.ok { background: var(--ok-soft); color: var(--ok); }
 .servers-page .pill.bad { background: var(--bad-soft); color: var(--bad); }
 .servers-page .pill.warn { background: var(--warn-soft); color: var(--warn); }
@@ -85,10 +93,10 @@
 .srv-r-meta { display: grid; gap: 6px; min-width: 0; }
 [data-layout="row"] .srv-name { font-size: 20px; font-weight: 700; line-height: 1.2; }
 [data-layout="row"] .srv-host { height: auto; margin: 0; padding: 0; }
-.srv-r-status { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 13px; color: var(--muted); }
+.srv-r-status { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; min-width: 0; font-size: 13px; color: var(--muted); }
 .srv-r-status > span { white-space: nowrap; }
 .srv-r-status .bad { color: var(--bad); }
-.srv-faint { color: var(--faint); font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+.srv-faint { color: var(--faint); font-size: 12px; }
 .srv-k { font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
 .srv-r-libhead { display: flex; align-items: baseline; gap: 8px; }
 [data-layout="row"] .srv-lib-num { font-size: 28px; line-height: 1; }
@@ -98,7 +106,7 @@
 .srv-segbar.bad i:not(.x) { background: var(--warn); }
 .srv-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .srv-chip { display: inline-flex; align-items: center; max-width: 100%; height: 22px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--inset); color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.srv-chip.x { text-decoration: line-through; opacity: .6; }
+.srv-chip.x { text-decoration: line-through; border-style: dashed; }
 .srv-chip.more { border-style: dashed; }
 .srv-r-health { align-items: flex-start; }
 .srv-r-health .srv-issue { height: auto; min-height: 28px; margin: 0; padding: 0; }
@@ -107,7 +115,9 @@
 .srv-health-note.ok { color: var(--ok); font-weight: 600; font-size: 13px; }
 .srv-r-acts { align-items: flex-end; justify-content: space-between; }
 .srv-r-btns { display: flex; gap: 4px; }
+.srv-tlabel { order: -1; margin: 0 10px 0 0; color: var(--muted); font-size: 12.5px; }
 [data-layout="row"] .srv-r-sends { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--line); flex-direction: row; align-items: center; justify-content: flex-start; flex-wrap: wrap; gap: 8px 10px; padding: 12px 22px; background: var(--inset); border-radius: 0 0 var(--radius-card) var(--radius-card); }
+.srv-card[data-layout="row"] > .srv-problem { grid-column: 1 / -1; flex-direction: row; justify-content: flex-start; align-items: flex-start; gap: 10px; margin: 0; padding: 14px 22px; border: 0; border-top: 1px solid color-mix(in srgb, var(--bad) 40%, transparent); border-radius: 0; }
 .srv-r-sends .srv-k { margin-right: 4px; }
 .srv-fchip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 99px; border: 1px solid var(--line); background: var(--bs-body-bg); color: var(--muted); font-size: 12.5px; font-weight: 600; }
 .srv-fchip i { font-size: 13px; }
@@ -115,8 +125,9 @@
 .srv-fchip.mk i { color: var(--t-intro); }
 .srv-fchip.ld i { color: var(--t-loud); }
 .srv-fchip.ch i { color: var(--faint); }
-.srv-fchip.off { opacity: .6; font-weight: 500; }
-.srv-fchip-st { font-weight: 500; color: var(--faint); }
+.srv-fchip.off { border-style: dashed; font-weight: 500; }
+.srv-fchip-st { font-weight: 600; color: var(--ok); }
+.srv-fchip.off .srv-fchip-st { color: var(--muted); font-weight: 500; }
 
 /* Add-server tile (grid) and row. */
 .srv-addtile { display: grid; place-items: center; align-content: center; gap: 10px; min-height: 220px; padding: 20px; text-align: center; border: 1px dashed var(--line-strong); border-radius: var(--radius-card); background: transparent; color: var(--muted); transition: border-color .16s ease-out, color .16s ease-out, background-color .16s ease-out; }
@@ -133,7 +144,9 @@
     .srv-card[data-layout="row"] { grid-template-columns: 1fr 1fr; }
     [data-layout="row"] > .srv-r-libs { border-left: 1px solid var(--line); }
     [data-layout="row"] > .srv-r-health, [data-layout="row"] > .srv-r-acts { border-top: 1px solid var(--line); }
-    [data-layout="row"] > .srv-r-health { border-left: 0; }
+    [data-layout="row"] > .srv-r-health { border-left: 0; flex-direction: row; align-items: center; justify-content: flex-start; flex-wrap: wrap; gap: 4px 14px; padding-top: 14px; padding-bottom: 14px; }
+    [data-layout="row"] > .srv-r-acts { padding-top: 14px; padding-bottom: 14px; }
+    [data-layout="row"] .srv-r-acts { flex-direction: row; align-items: center; justify-content: flex-end; gap: 14px; }
 }
 @media (max-width: 700px) {
     .srv-card[data-layout="row"] { grid-template-columns: 1fr; }
@@ -146,4 +159,6 @@
     .srv-r-status { flex-wrap: wrap; }
     .srv-addrow .srv-vs { display: none; }
     .srv-addtile { min-height: 120px; }
+    .srv-card .form-switch .form-check-input { width: 52px; height: 30px; }
+    .srv-problem-more > summary, .webhook-secret-how > summary { display: inline-flex; align-items: center; min-height: 40px; padding: 0 12px 0 0; }
 }

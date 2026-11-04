@@ -724,17 +724,7 @@ async function loadWorkerConfigCounts(forceRefresh = false) {
 // from "couldn't load libraries" and show the right message.
 let librariesLoadError = null;
 
-// Map a backend status string from /api/system/media-servers into a
-// (label, badge-class) pair so the dashboard renders consistently.
-const _MEDIA_SERVER_STATUS_BADGES = {
-    connected:     { label: 'Connected',     cls: 'bg-success' },
-    unreachable:   { label: "Can't reach",   cls: 'bg-warning text-dark' },
-    unauthorised:  { label: 'Auth failed',   cls: 'bg-warning text-dark' },
-    misconfigured: { label: 'Misconfigured', cls: 'bg-danger' },
-    disabled:      { label: 'Disabled',      cls: 'bg-secondary' },
-};
-
-// A server row shows its state as a coloured dot only; the label or error text rides in title + aria-label.
+// The dot colour for each state a server row can be in; the words are in _MEDIA_SERVER_STATE_TEXT below.
 const _MEDIA_SERVER_DOT_CLASS = {
     connected:     'ok',
     unreachable:   'bad',
@@ -820,71 +810,114 @@ function updateSystemConnections(servers, failed = false) {
 
 window.matchMedia('(max-width: 767.98px)').addEventListener('change', updateSystemDisclosure);
 
-// Refresh the dashboard "Media Servers" rows from /api/system/media-servers.
-// Renders one row per configured server with vendor icon + status badge.
-// Empty state nudges the user to /servers.
+// One plain sentence per state, shown under each server on the System card. The server's own error text stays in
+// the tooltip for anyone who wants it.
+const _MEDIA_SERVER_STATE_TEXT = {
+    connected:     'Connected',
+    unreachable:   "Can't reach it. Check that it is switched on and the address is right.",
+    unauthorised:  'It refused the sign-in. Check the access key under Connections.',
+    misconfigured: 'Its settings look incomplete. Open Connections to fix them.',
+    disabled:      'Switched off under Connections',
+    checking:      'Checking now…',
+    slow:          'Not answering yet. It may be switched off or slow.',
+};
+
+function _mediaServerRowHtml(s, state) {
+    const typeLabel = (s.type || '').toUpperCase();
+    const stateText = _MEDIA_SERVER_STATE_TEXT[state] || s.error || state || 'Unknown';
+    const url = s.url ? `<div class="dash-server-host text-truncate" title="${escapeHtml(s.url)}">${escapeHtml(s.url)}</div>` : '';
+    // Prefer the vendor SVG logo; fall back to the Bootstrap icon for an unknown server type.
+    const logo = _vendorLogo(s.type, 18) ||
+        `<i class="bi ${_MEDIA_SERVER_TYPE_ICONS[s.type] || 'bi-hdd-network'}" aria-hidden="true"></i>`;
+    const marker = state === 'checking'
+        ? `<span class="spinner-border spinner-border-sm text-secondary" role="img" aria-label="${escapeHtml(stateText)}"></span>`
+        : `<span class="dot ${_MEDIA_SERVER_DOT_CLASS[state] ?? 'warn'}" role="img" aria-label="${escapeHtml(stateText)}" title="${escapeHtml(s.error || stateText)}"></span>`;
+    return `
+        <div class="dash-server">
+            <span class="dash-server-logo">${logo}</span>
+            <div class="dash-server-text">
+                <div class="dash-server-name text-truncate">${escapeHtml(s.name || typeLabel || 'Server')}</div>
+                ${url}
+                <div class="dash-server-state">${escapeHtml(stateText)}</div>
+            </div>
+            ${marker}
+        </div>`;
+}
+
+function _renderMediaServerRows(container, servers, stateOf) {
+    container.innerHTML = `<div class="dash-servers">${servers.map(s => _mediaServerRowHtml(s, stateOf(s))).join('')}</div>`;
+}
+
+function _mediaServersMessage(container, html) {
+    container.innerHTML = `<div class="small text-body-secondary">${html}</div>`;
+}
+
+// Refresh the System card's media-server rows from /api/system/media-servers. The server probes every enabled
+// server, and one that is switched off can keep that call waiting for many seconds, so after a short moment the
+// configured servers are listed as "Checking now…" and the card gives up waiting at 20 s with a plain
+// "Not answering yet" for each server, then tries again shortly. Empty state nudges the user to /servers.
+const _MEDIA_SERVERS_SLOW_MS = 800;
+const _MEDIA_SERVERS_GIVE_UP_MS = 20000;
+const _MEDIA_SERVERS_RETRY_MS = 15000;
+let _mediaServersBusy = false;
+
 async function updateMediaServersStatus() {
     const container = document.getElementById('mediaServersStatus');
     const emptyCard = document.getElementById('noServersEmptyState');
-    if (!container) return;
-
-    let payload;
+    if (!container || _mediaServersBusy) return;
+    _mediaServersBusy = true;
+    let finished = false;
+    let configured = [];
+    const slowTimer = setTimeout(async () => {
+        try {
+            const listed = await apiGet('/api/servers');
+            configured = (listed && listed.servers) || [];
+        } catch (e) {
+            return;
+        }
+        if (finished || !configured.length) return;
+        _renderMediaServerRows(container, configured, () => 'checking');
+        const summary = document.getElementById('systemConnectionSummary');
+        if (summary) summary.textContent = `Checking ${configured.length === 1 ? '1 server' : configured.length + ' servers'}…`;
+    }, _MEDIA_SERVERS_SLOW_MS);
+    let giveUpTimer;
     try {
-        payload = await apiGet('/api/system/media-servers');
-    } catch (e) {
-        console.warn('Failed to load media-server status:', e);
-        container.innerHTML =
-            '<div class="text-danger small">' +
-            '<i class="bi bi-exclamation-triangle me-2"></i>' +
-            'Failed to load media-server status' +
-            '</div>';
-        updateSystemConnections([], true);
-        return;
+        let payload;
+        try {
+            payload = await Promise.race([
+                apiGet('/api/system/media-servers'),
+                new Promise((_, reject) => { giveUpTimer = setTimeout(() => reject(new Error('timeout')), _MEDIA_SERVERS_GIVE_UP_MS); }),
+            ]);
+        } catch (e) {
+            finished = true;
+            console.warn('Failed to load media-server status:', e);
+            if (e && e.message === 'timeout' && configured.length) {
+                _renderMediaServerRows(container, configured, () => 'slow');
+                updateSystemConnections(configured.map(s => ({...s, status: 'unreachable'})));
+            } else {
+                _mediaServersMessage(container, '<i class="bi bi-exclamation-circle me-2" aria-hidden="true"></i>Could not check the media servers just now. Trying again shortly.');
+                updateSystemConnections([], true);
+            }
+            if (!(e && /Authentication/.test(e.message))) setTimeout(updateMediaServersStatus, _MEDIA_SERVERS_RETRY_MS);
+            return;
+        }
+        finished = true;
+        const servers = (payload && payload.servers) || [];
+        updateSystemConnections(servers);
+        if (servers.length === 0) {
+            // Show the dashboard empty-state card and a small inline note.
+            if (emptyCard) emptyCard.classList.remove('d-none');
+            _mediaServersMessage(container, '<i class="bi bi-hdd-network me-2" aria-hidden="true"></i>No media servers configured. <a href="/servers">Add one</a>.');
+            return;
+        }
+        // Hide the empty-state once at least one server is configured.
+        if (emptyCard) emptyCard.classList.add('d-none');
+        _renderMediaServerRows(container, servers, s => (_MEDIA_SERVER_STATE_TEXT[s.status] ? s.status : 'unreachable'));
+    } finally {
+        clearTimeout(slowTimer);
+        clearTimeout(giveUpTimer);
+        _mediaServersBusy = false;
     }
-
-    const servers = (payload && payload.servers) || [];
-    updateSystemConnections(servers);
-    if (servers.length === 0) {
-        // Show the dashboard empty-state card (Phase H1) and a small inline note.
-        if (emptyCard) emptyCard.classList.remove('d-none');
-        container.innerHTML =
-            '<div class="small text-muted">' +
-            '<i class="bi bi-hdd-network me-2"></i>' +
-            'No media servers configured. ' +
-            '<a href="/servers">Add one</a>.' +
-            '</div>';
-        return;
-    }
-    // Hide the empty-state once at least one server is configured.
-    if (emptyCard) emptyCard.classList.add('d-none');
-
-    const rows = servers.map(s => {
-        const badge = _MEDIA_SERVER_STATUS_BADGES[s.status]
-            || { label: s.status || 'Unknown', cls: 'bg-secondary' };
-        const typeLabel = (s.type || '').toUpperCase();
-        const dotClass = _MEDIA_SERVER_DOT_CLASS[s.status] ?? 'warn';
-        const stateText = s.error || badge.label;
-        // URL is reference info, not the primary anchor — mono and faint under the name.
-        const url = s.url ? `<div class="dash-server-host text-truncate" title="${escapeHtml(s.url)}">${escapeHtml(s.url)}</div>` : '';
-        // Prefer the vendor SVG logo; fall back to the Bootstrap icon when
-        // the server type is unknown (defensive — should never happen for
-        // configured servers).
-        const logo = _vendorLogo(s.type, 18) ||
-            `<i class="bi ${_MEDIA_SERVER_TYPE_ICONS[s.type] || 'bi-hdd-network'}" aria-hidden="true"></i>`;
-        const failed = dotClass === 'bad';
-        return `
-            <div class="dash-server${failed ? ' is-failed' : ''}">
-                <span class="dash-server-logo">${logo}</span>
-                <div class="dash-server-text">
-                    <div class="dash-server-name text-truncate">${escapeHtml(s.name || typeLabel || 'Server')}</div>
-                    ${url}
-                </div>
-                <span class="dot ${dotClass}" role="img" aria-label="${escapeHtml(stateText)}" title="${escapeHtml(stateText)}"></span>
-            </div>
-        `;
-    }).join('');
-
-    container.innerHTML = `<div class="dash-servers">${rows}</div>`;
 }
 
 async function loadLibraries() {
@@ -1149,16 +1182,11 @@ async function loadProcessingState() {
 async function loadPendingWebhooks() {
     const chip = document.getElementById('pendingWebhooksChip');
     const chipText = document.getElementById('pendingWebhooksChipText');
-    const quickPill = document.getElementById('quickWebhookPending');
     if (!chip || !chipText) return;
 
     try {
         const data = await apiGet('/api/webhooks/pending');
         const pending = data.pending || [];
-        if (quickPill) {
-            quickPill.textContent = pending.length;
-            quickPill.hidden = pending.length === 0;
-        }
         if (pending.length === 0) {
             chip.classList.add('d-none');
             chip.classList.remove('d-inline-flex');
@@ -1176,7 +1204,6 @@ async function loadPendingWebhooks() {
             : `${n} webhooks waiting — click to jump to the next one in the queue`;
     } catch (error) {
         // Network blip: hide rather than show a stale count.
-        if (quickPill) quickPill.hidden = true;
         chip.classList.add('d-none');
         chip.classList.remove('d-inline-flex');
     }
@@ -1826,6 +1853,48 @@ function _jobTypeTileHtml(job) {
     const server = job.server_name ? ` · ${job.server_name}` : '';
     return `<span class="tico ${failed ? 'bad' : tone}" title="${escapeHtml(kind + server)}" aria-hidden="true"><i class="bi ${icon}"></i></span>`;
 }
+
+// Plain words for a finished job that did not simply succeed: what happened and what to do next. The raw error
+// text is returned too so each screen can keep it behind a "Technical details" control. Null = nothing to explain.
+function _jobExplain(job) {
+    if (!job) return null;
+    const raw = String(job.error || '').trim();
+    const failedFiles = Number(job.progress?.outcome?.failed) || 0;
+    const files = (n) => `${n.toLocaleString()} ${n === 1 ? 'file' : 'files'}`;
+    if (job.status === 'failed') {
+        if (/restart|interrupt/i.test(raw)) {
+            return {tone: 'bad', title: 'Stopped when Reprise restarted', hint: 'Nothing was damaged. Use Re-run to start it again.', raw};
+        }
+        if (/could not reach|couldn't reach|connect|refused|timed out|timeout|unreachable|unauthori[sz]ed|\b40[13]\b/i.test(raw)) {
+            return {tone: 'bad', title: "Couldn't reach the media server", hint: 'Check the server is switched on and shows as connected under Connections, then use Re-run.', raw};
+        }
+        if (failedFiles > 0) {
+            return {tone: 'bad', title: `${files(failedFiles)} could not be processed`, hint: 'Open the logs and files to see which ones and why, then use Re-run to try again.', raw};
+        }
+        return {tone: 'bad', title: 'The job stopped because of a problem', hint: 'Open the technical details to see what went wrong, then use Re-run.', raw};
+    }
+    if (job.status === 'cancelled') {
+        return {tone: 'warn', title: 'Stopped before it finished', hint: 'Nothing is wrong. Use Re-run if you still want it done.', raw};
+    }
+    if (job.status === 'completed' && failedFiles > 0) {
+        return {tone: 'warn', title: `Finished, but ${files(failedFiles)} failed`, hint: 'Open the logs and files to see which ones and why.', raw};
+    }
+    if (job.status === 'completed' && raw) {
+        return {tone: 'warn', title: 'Finished with a warning', hint: 'The technical details have the message.', raw};
+    }
+    return null;
+}
+window._jobExplain = _jobExplain;
+
+// The explanation as a block: what happened, what to do, and the raw text folded away.
+function _jobExplainBlockHtml(job) {
+    const why = _jobExplain(job);
+    if (!why) return '';
+    const tech = why.raw
+        ? `<details class="job-tech"><summary>Technical details</summary><p class="queue-full-path mb-0">${escapeHtml(why.raw)}</p></details>` : '';
+    return `<section class="job-detail-error job-explain ${why.tone}"><h3 class="job-detail-heading"><i class="bi ${why.tone === 'bad' ? 'bi-x-circle' : 'bi-info-circle'} me-1" aria-hidden="true"></i>What happened</h3><p class="job-explain-title mb-1">${escapeHtml(why.title)}</p><p class="job-explain-hint mb-0">${escapeHtml(why.hint)}</p>${tech}</section>`;
+}
+window._jobExplainBlockHtml = _jobExplainBlockHtml;
 
 // 'own' = paused on its own (it has handed its job slot back), 'all' = held by Pause all (keeps its slot), '' = neither.
 // Pause all doesn't set an Intro & Credits job's own flag, so the global flag is read here; a job paused before a
@@ -2695,7 +2764,7 @@ function updateJobQueue(force) {
                     <div class="queue-job-main">${filesToggleBtn}${_jobTypeTileHtml(job)}<div class="queue-job-copy"><div class="queue-title-line">${nameHtml}</div>
                     <div class="queue-metadata">${_queueMetadataHtml(job, rowTitle)}</div></div></div>
                 </td>
-                <td class="queue-status" data-label="Status">${statusBadge}${retryLabel}</td>
+                <td class="queue-status" data-label="Status">${statusBadge}${retryLabel}${_jobExplain(job) ? `<div class="queue-status-note">${escapeHtml(_jobExplain(job).title)}</div>` : ''}</td>
                 <td class="queue-priority" data-label="Priority">${priorityCell}</td>
                 <td class="queue-progress-cell" data-label="Progress">${progressCell}${phase}</td>
                 <td class="queue-created text-body-secondary" data-label="Created"><time datetime="${escapeHtml(job.created_at)}" title="${escapeHtml(formatDate(job.created_at))}">${created}</time></td>
@@ -2709,7 +2778,7 @@ function updateJobQueue(force) {
         const nextEligible = wait?.next_eligible ? `<p class="small mb-0">Next eligible: ${escapeHtml(formatDate(wait.next_eligible))}</p>` : '';
         const activity = currentItem || started || wait?.reason
             ? `<section class="job-current-activity"><h3 class="job-detail-heading">${['running', 'pending'].includes(job.status) ? 'Current activity' : 'Last activity'}</h3>${currentItem || wait?.reason ? `<p class="mb-1 queue-full-path">${escapeHtml(wait?.reason || currentItem)}</p>` : ''}${nextEligible}${started ? `<div class="small text-body-secondary">${started}</div>` : ''}${detailActions}</section>` : `<section class="job-current-activity">${detailActions}</section>`;
-        const error = job.error ? `<section class="job-detail-error"><h3 class="job-detail-heading text-danger-emphasis"><i class="bi bi-exclamation-triangle me-1"></i>Job error</h3><p class="mb-0 queue-full-path">${escapeHtml(job.error)}</p></section>` : '';
+        const error = _jobExplainBlockHtml(job) || (job.error ? `<section class="job-detail-error"><h3 class="job-detail-heading"><i class="bi bi-exclamation-triangle me-1" aria-hidden="true"></i>Job error</h3><p class="mb-0 queue-full-path">${escapeHtml(job.error)}</p></section>` : '');
         html += `<tr id="job-detail-${escapeHtml(job.id)}" class="${isFilesExpanded ? '' : 'd-none'} job-files-detail" aria-hidden="${isFilesExpanded ? 'false' : 'true'}">
             <td colspan="8" class="job-expanded-cell"><div class="job-expanded-content">
                 <div class="queue-detail-grid">
@@ -2776,7 +2845,7 @@ function renderJobPagination() {
 
     let pagesHtml = '';
     pagesHtml += `<li class="page-item ${jobPage <= 1 ? 'disabled' : ''}">
-        <a class="page-link" href="#" onclick="goToJobPage(${jobPage - 1}); return false;" aria-label="Previous">&lsaquo;</a></li>`;
+        <button type="button" class="page-link" onclick="goToJobPage(${jobPage - 1})" aria-label="Previous page"${jobPage <= 1 ? ' disabled' : ''}>&lsaquo;</button></li>`;
 
     const maxVisible = 5;
     let rangeStart = Math.max(1, jobPage - Math.floor(maxVisible / 2));
@@ -2786,7 +2855,7 @@ function renderJobPagination() {
     }
 
     if (rangeStart > 1) {
-        pagesHtml += `<li class="page-item"><a class="page-link" href="#" onclick="goToJobPage(1); return false;">1</a></li>`;
+        pagesHtml += `<li class="page-item"><button type="button" class="page-link" onclick="goToJobPage(1)" aria-label="Page 1">1</button></li>`;
         if (rangeStart > 2) {
             pagesHtml += `<li class="page-item disabled"><span class="page-link">&hellip;</span></li>`;
         }
@@ -2794,18 +2863,18 @@ function renderJobPagination() {
 
     for (let p = rangeStart; p <= rangeEnd; p++) {
         pagesHtml += `<li class="page-item ${p === jobPage ? 'active' : ''}">
-            <a class="page-link" href="#" onclick="goToJobPage(${p}); return false;">${p}</a></li>`;
+            <button type="button" class="page-link" onclick="goToJobPage(${p})" aria-label="Page ${p}"${p === jobPage ? ' aria-current="page"' : ''}>${p}</button></li>`;
     }
 
     if (rangeEnd < jobTotalPages) {
         if (rangeEnd < jobTotalPages - 1) {
             pagesHtml += `<li class="page-item disabled"><span class="page-link">&hellip;</span></li>`;
         }
-        pagesHtml += `<li class="page-item"><a class="page-link" href="#" onclick="goToJobPage(${jobTotalPages}); return false;">${jobTotalPages}</a></li>`;
+        pagesHtml += `<li class="page-item"><button type="button" class="page-link" onclick="goToJobPage(${jobTotalPages})" aria-label="Page ${jobTotalPages}">${jobTotalPages}</button></li>`;
     }
 
     pagesHtml += `<li class="page-item ${jobPage >= jobTotalPages ? 'disabled' : ''}">
-        <a class="page-link" href="#" onclick="goToJobPage(${jobPage + 1}); return false;" aria-label="Next">&rsaquo;</a></li>`;
+        <button type="button" class="page-link" onclick="goToJobPage(${jobPage + 1})" aria-label="Next page"${jobPage >= jobTotalPages ? ' disabled' : ''}>&rsaquo;</button></li>`;
 
     controls.innerHTML = pagesHtml;
 }
@@ -3520,6 +3589,26 @@ function showNotification(title, body, type = 'info') {
 }
 
 // Action Functions
+// Opens a Bootstrap dialog from code and, once it closes, puts keyboard focus back on the control that opened it.
+// The job table is redrawn every few seconds, so a control inside a job row is found again by its row and name; if
+// it cannot be found the Quick actions button gets the focus.
+function _openModalReturningFocus(modalEl) {
+    const opener = document.activeElement;
+    const rowId = opener && opener.closest ? (opener.closest('tr[id]') || {}).id || '' : '';
+    const name = opener && opener.getAttribute ? (opener.getAttribute('aria-label') || (opener.textContent || '').trim()) : '';
+    modalEl.addEventListener('hidden.bs.modal', () => {
+        let target = opener && opener.isConnected && opener !== document.body ? opener : null;
+        if (!target && rowId && name) {
+            const row = document.getElementById(rowId);
+            target = row ? Array.from(row.querySelectorAll('button, a')).find(el => (el.getAttribute('aria-label') || el.textContent || '').trim() === name) : null;
+        }
+        if (!target) target = document.querySelector('.dashboard-quick-card .dash-btn-primary');
+        if (target && typeof target.focus === 'function') target.focus();
+    }, {once: true});
+    bootstrap.Modal.getOrCreateInstance(modalEl).show();
+}
+window._openModalReturningFocus = _openModalReturningFocus;
+
 function showNewJobModal() {
     document.getElementById('jobLibraryAll').checked = true;
     MediaScanFilters.reset('job');
@@ -3544,10 +3633,10 @@ function showNewJobModal() {
     // because Plex assigns library ids per-server starting at "1".
     _renderJobLibraryList(libraries);
     _updateJobScopeBadge();
+    refreshPreviewsOffState();
     document.getElementById('jobLibrariesError')?.setAttribute('hidden', '');
 
-    const modal = new bootstrap.Modal(document.getElementById('newJobModal'));
-    modal.show();
+    _openModalReturningFocus(document.getElementById('newJobModal'));
 }
 
 // Start new job (prefix 'job') and the schedule dialog (prefix 'schedule') share the helpers below. Every element id
@@ -3707,11 +3796,33 @@ function _updateJobScopeBadge(prefix = 'job') {
 // The dialog's type-driven chrome: header tile and card colour (data-kind), the Start button's label, the footer
 // summary, the Regenerate warning and which priority carries the "default" tag.
 const _JOB_DIALOG_TYPES = {
-    previews: { icon: 'bi-film', name: 'Previews', start: 'Start previews job', defaultPriority: '2' },
-    intro_credits: { icon: 'bi-skip-forward', name: 'Intro & Credits', start: 'Start intro & credits job', defaultPriority: '3' },
-    loudness: { icon: 'bi-soundwave', name: 'Plex loudness', start: 'Start loudness job', defaultPriority: '3' },
+    previews: { icon: 'bi-film', name: 'Previews', start: 'Start previews', defaultPriority: '2' },
+    intro_credits: { icon: 'bi-skip-forward', name: 'Intro & Credits', start: 'Start intro & credits', defaultPriority: '3' },
+    loudness: { icon: 'bi-soundwave', name: 'Plex loudness', start: 'Start loudness', defaultPriority: '3' },
 };
 const _JOB_PRIORITY_NAMES = { 1: 'High', 2: 'Normal', 3: 'Low' };
+
+// With every enabled connection's preview thumbnails switched off (review only) a previews job writes nothing; the
+// dialogs say so in one sentence. The state comes from the connections list each time a dialog opens.
+let _allPreviewsOff = false;
+const _PREVIEWS_OFF_TEXT = "Preview thumbnails are switched off on every connection, so a previews job only checks your files and writes nothing. To make them, turn them on in a connection's Processing settings.";
+function _syncPreviewsOffNote(noteId, previewsSelected) {
+    const note = document.getElementById(noteId);
+    if (!note) return;
+    note.textContent = _PREVIEWS_OFF_TEXT;
+    note.hidden = !(previewsSelected && _allPreviewsOff);
+}
+async function refreshPreviewsOffState() {
+    try {
+        const data = await apiGet('/api/servers');
+        const enabled = (data.servers || []).filter(server => server.enabled !== false);
+        _allPreviewsOff = enabled.length > 0 && enabled.every(server => (server.output || {}).preview_thumbnails === false);
+    } catch (error) {
+        _allPreviewsOff = false;
+    }
+    if (document.getElementById('newJobModal')) _syncJobDialog('job');
+    if (typeof _manualSyncPreviewsOff === 'function') _manualSyncPreviewsOff();
+}
 
 function _syncJobDialog(prefix = 'job') {
     const modal = document.getElementById(_JOB_DIALOG_IDS[prefix].modal);
@@ -3730,6 +3841,7 @@ function _syncJobDialog(prefix = 'job') {
     if (startLabel && prefix === 'job') {
         startLabel.textContent = types.length > 1 ? `Start ${types.length} jobs` : types[0].start;
     }
+    if (prefix === 'job') _syncPreviewsOffNote('jobPreviewsOffNote', kinds.includes('previews'));
 
     const regenerate = document.getElementById('jobRegenerateAll')?.checked;
     const modeHint = document.getElementById('jobProcessingModeHint');
@@ -4061,7 +4173,7 @@ function _buildPreviewsJob() {
 }
 
 async function cancelJob(jobId) {
-    if (!await appConfirm('Cancel this job? Any in-flight FFmpeg work will be killed.', { title: 'Cancel job', confirmText: 'Cancel job', cancelText: 'Keep running' })) return;
+    if (!await appConfirm('Stop this job? Files being processed right now are abandoned; anything already finished is kept.', { title: 'Stop job', confirmText: 'Stop job', cancelText: 'Keep running' })) return;
 
     try {
         await apiPost(`/api/jobs/${jobId}/cancel`);
@@ -4099,7 +4211,7 @@ async function resumeJob(jobId) {
 }
 
 async function deleteJob(jobId) {
-    if (!await appConfirm('Delete this job from the history? Logs and per-file results will also be removed.', { title: 'Delete job', confirmText: 'Delete' })) return;
+    if (!await appConfirm('Remove this job from the list? Its logs and file results are deleted too.', { title: 'Delete job', confirmText: 'Delete' })) return;
 
     try {
         await apiDelete(`/api/jobs/${jobId}`);
@@ -4140,7 +4252,9 @@ async function clearJobsByStatus() {
     }
 
     const labels = statuses.join(', ');
-    if (!await appConfirm(`Clear all ${labels} jobs from the history?`, { title: 'Clear jobs', confirmText: 'Clear' })) return;
+    const count = statuses.reduce((sum, status) => sum + (parseInt((document.querySelector(`[data-clear-count="${status}"]`)?.textContent || '').replace(/,/g, ''), 10) || 0), 0);
+    const what = count ? `${count.toLocaleString()} finished ${count === 1 ? 'job' : 'jobs'} (${labels})` : `All ${labels} jobs`;
+    if (!await appConfirm(`Remove ${what} from the list? Their logs and file results are deleted too. Jobs that are running or waiting are not touched.`, { title: 'Clear jobs', confirmText: 'Clear' })) return;
 
     try {
         const result = await apiPost('/api/jobs/clear', { statuses });

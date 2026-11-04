@@ -8,8 +8,8 @@ main.page-shell:has(.log-page) { padding-block: 0 !important; }
     display: flex;
     flex-direction: column;
     gap: 14px;
-    height: calc(100vh - 56px); /* below navbar */
-    min-height: 560px;
+    height: var(--log-page-h, calc(100vh - 56px)); /* script sets --log-page-h to whatever is left under the page header */
+    min-height: 420px;
     padding: 24px 0 16px;
     overflow: hidden;
 }
@@ -24,7 +24,9 @@ main.page-shell:has(.log-page) { padding-block: 0 !important; }
 .log-seg button { height: 28px; padding: 0 12px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font-size: 13px; font-weight: 600; white-space: nowrap; transition: background-color .16s ease-out, color .16s ease-out; }
 .log-seg button:hover:not(:disabled) { color: var(--bs-body-color); }
 .log-seg button.active { background: var(--panel-2); color: var(--bs-body-color); box-shadow: 0 1px 2px rgba(0, 0, 0, .25); }
-.log-seg button:disabled { opacity: .4; }
+.log-seg button:disabled { color: var(--faint); cursor: not-allowed; }
+.log-level-group { display: inline-flex; align-items: center; gap: 8px; }
+.log-seg-label { color: var(--muted); font-size: 13px; font-weight: 600; }
 
 .log-search { position: relative; flex: 1; min-width: 180px; max-width: 340px; }
 .log-search-icon { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--faint); pointer-events: none; }
@@ -90,7 +92,7 @@ main.page-shell:has(.log-page) { padding-block: 0 !important; }
     display: grid;
     grid-template-columns: 23ch 6ch minmax(6rem, 18ch) minmax(0, 1fr);
     gap: 0 12px;
-    padding: 1px 16px;
+    padding: 3px 16px;
     cursor: pointer;
 }
 #logContainer .log-line:hover { background: rgba(255, 255, 255, .04); }
@@ -101,6 +103,10 @@ main.page-shell:has(.log-page) { padding-block: 0 !important; }
 .log-line .log-lvl { min-width: 0; margin: 0; font-size: 12px; font-weight: 600; text-transform: lowercase; color: var(--log-faint); }
 .log-line .log-lvl::first-letter { text-transform: uppercase; }
 .log-line .log-msg { color: var(--log-text); overflow-wrap: anywhere; white-space: pre-wrap; }
+/* A very long or many-line message shows its first lines until the row is clicked. */
+.log-line.log-long:not(.expanded) .log-msg { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 6; overflow: hidden; }
+.log-line.log-long:not(.expanded)::after { content: "Click to show the whole message"; grid-column: 1 / -1; flex: 1 1 100%; color: var(--log-info); font: 600 11px var(--bs-font-sans-serif); }
+.log-raw-view .log-line::after { display: none; }
 /* Only the level word is coloured; warnings and errors also get a tinted row and a stripe, info and debug stay plain. */
 #logContainer .log-level-info .log-lvl { color: var(--log-info); }
 #logContainer .log-level-warning { background: rgba(229, 160, 13, .14); box-shadow: inset 3px 0 0 var(--log-warn); }
@@ -127,7 +133,7 @@ main.page-shell:has(.log-page) { padding-block: 0 !important; }
 #logContainer .log-state[hidden] { display: none; }
 #logContainer .log-state b { color: var(--log-text); font-size: 15px; }
 #logContainer .log-state p { margin: 0 0 8px; max-width: 44ch; }
-#logContainer .log-state .log-fbtn { color: #d9d9e6; border-color: rgba(255, 255, 255, .14); }
+#logContainer .log-state .log-fbtn { color: var(--log-text); border-color: rgba(255, 255, 255, .14); }
 .log-tile { width: 36px; height: 36px; display: grid; place-items: center; margin-bottom: 6px; border-radius: 10px; background: rgba(255, 255, 255, .05); font-size: 18px; }
 
 #liveIndicator .live-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: livePulse 1.5s ease-in-out infinite; }
@@ -139,21 +145,33 @@ main.page-shell:has(.log-page) { padding-block: 0 !important; }
 /* Floating "new logs" pill shown when user scrolls up and live messages arrive. JS sets its display. */
 .log-follow { display: none; align-items: center; gap: 6px; position: absolute; bottom: 1rem; left: 50%; transform: translateX(-50%); z-index: 5; height: 32px; padding: 0 14px; border: 0; border-radius: 99px; background: var(--accent); color: var(--accent-ink); font-size: 13px; font-weight: 600; box-shadow: 0 6px 18px rgba(0, 0, 0, .4); }
 .log-nav-btns { position: absolute; right: 1rem; bottom: 3.5rem; z-index: 5; display: flex; flex-direction: column; gap: 6px; }
-.log-nav-btn { width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: var(--radius-ctl); background: #1e1e33; color: #9a9ab0; }
-.log-nav-btn:hover { color: #fff; }
+.log-nav-btn { width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: var(--radius-ctl); background: var(--panel-2); color: var(--muted); }
+.log-nav-btn:hover { color: var(--bs-body-color); }
 
 @media (max-width: 767.98px) {
-    .log-page { height: calc(100dvh - 56px); padding: 16px 0 12px; }
+    .log-page { padding: 16px 0 12px; }
+    /* Title on the left, the three icon buttons on its right, so the heading takes two short lines instead of four. */
+    .log-heading { flex-direction: row; flex-wrap: nowrap; align-items: flex-start; }
+    .log-heading .page-actions { flex: none; margin-left: auto; }
     .log-heading .page-subtitle { font-size: .875rem; }
-    .log-seg { width: 100%; }
-    .log-seg button { flex: 1; }
+    .log-level-group { width: 100%; }
+    .log-seg { flex: 1; }
+    .log-seg button { flex: 1; padding: 0 6px; }
     .log-search { max-width: none; flex: 1 1 0; }
+    .log-search input { height: 40px; padding-right: 76px; }
+    .log-search-inline button { height: 32px; min-width: 32px; }
+    .log-fbtn { height: 40px; }
     .log-fbtn-label { display: none; }
-    .log-status { width: 100%; justify-content: space-between; margin-left: 0; }
+    .log-status { width: 100%; justify-content: space-between; margin-left: 0; gap: 8px; }
+    #serverLevelBadge { display: none; }
+    .log-seg-label { display: none; }
     .log-toolbar .form-select { min-height: 40px; }
-    #logContainer .log-line { grid-template-columns: auto auto minmax(0, 1fr); gap: 0 8px; padding: 4px 12px; border-bottom: 1px solid rgba(255, 255, 255, .04); }
-    .log-line .log-mod { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-    .log-line .log-msg { grid-column: 1 / -1; }
+    /* Time, level and source flow along the first line and wrap when they do not fit, so no source name is cut off. */
+    #logContainer .log-line { display: flex; flex-wrap: wrap; gap: 0 8px; padding: 4px 12px; border-bottom: 1px solid rgba(255, 255, 255, .04); }
+    .log-line .log-mod { min-width: 0; }
+    .log-line .log-msg { flex: 1 1 100%; }
+    .log-line .log-detail { flex: 1 1 100%; }
+    .log-line .log-raw { flex: 1 1 100%; }
 }
 /* A near-black slab on the light page is the harshest jump in the app; use a softened slate terminal instead. */
 html[data-bs-theme="light"] #logContainer { --log-bg: #1e293b; --log-text: #cbd5e1; --log-faint: #94a3b8; --log-muted: #cbd5e1; }

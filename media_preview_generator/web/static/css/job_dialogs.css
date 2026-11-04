@@ -1,10 +1,33 @@
 /* Start job and Process a file or folder share one geometry; the look (cards, sections, chips) is in overlays.css. */
 #newJobModal .modal-dialog, #manualTriggerModal .modal-dialog { max-width: 560px; }
-#newJobModal .btn-primary, #manualTriggerModal .btn-primary {
-    --bs-btn-disabled-bg: #e5a00d; --bs-btn-disabled-border-color: #e5a00d; --bs-btn-disabled-color: #161616;
+
+/* Start button before anything is picked: a clearly grey, readable button rather than a faded purple one. */
+body.rp-app #newJobModal .btn-primary:disabled, body.rp-app #manualTriggerModal .btn-primary:disabled {
+    background-color: var(--panel-2); border-color: var(--line-strong); color: var(--muted); opacity: 1;
 }
+
+/* One plain sentence about previews being off (review only); shown only then. */
+#newJobModal .ov-note, #manualTriggerModal .ov-note { margin: 0 0 12px; padding: 8px 12px; border-radius: var(--radius-ctl); background: var(--inset); border: 1px solid var(--line-strong); color: var(--bs-body-color); font-size: 13px; line-height: 1.45; }
+#newJobModal .ov-note[hidden], #manualTriggerModal .ov-note[hidden] { display: none; }
+
+/* The Browse button sits beside the search box instead of on top of it, so a long placeholder is never covered. */
+#manualTriggerModal .ov-searchbox { display: flex; align-items: stretch; gap: 8px; }
+#manualTriggerModal .ov-searchbox .form-control { flex: 1 1 auto; min-width: 0; padding-right: 12px; }
+#manualTriggerModal .ov-searchbox .btn { position: static; flex: none; height: auto; min-height: 38px; padding: 0 12px; white-space: nowrap; }
+
+/* Library list: while "All Libraries" is ticked the rows are greyed by their disabled boxes but stay fully readable, and the small controls are 24px tall. */
+#newJobModal .ov-libbox .ov-liblist { opacity: 1 !important; }
+#newJobModal .form-check-input:disabled ~ .form-check-label, #newJobModal .form-check-input[disabled] ~ .form-check-label { opacity: 1; color: var(--muted); }
+#newJobModal .ov-lib-tag { color: var(--muted); }
+#newJobModal .ov-link, #newJobModal .info-modal-link, #manualTriggerModal .ov-link { display: inline-flex; align-items: center; min-height: 24px; }
+#manualTriggerModal .ov-adv > summary { min-height: 24px; }
+#newJobModal .form-check, #manualTriggerModal .form-check { display: flex; align-items: center; gap: 10px; min-height: 28px; padding-left: 0; }
+#newJobModal .form-check .form-check-input, #manualTriggerModal .form-check .form-check-input { float: none; flex: none; margin: 0; width: 24px; height: 24px; }
+
 @media (max-width: 575.98px) {
     #newJobModal .form-control, #newJobModal .form-select, #manualTriggerModal .form-control, #manualTriggerModal .form-select,
     #newJobModal .modal-footer .btn, #manualTriggerModal .modal-footer .btn { min-height: 44px; }
+    #newJobModal .ov-link, #newJobModal .info-modal-link, #manualTriggerModal .ov-link, #manualTriggerModal .ov-adv > summary,
+    #manualTriggerModal .ov-searchbox .btn { min-height: 44px; }
     #manualTriggerModal .ov-ri .manual-row-add { white-space: normal; }
 }

@@ -62,6 +62,84 @@
         el.textContent = '';
     }
 
+    // Servers as last listed, by id: name/URL/vendor feed the plain-language problem text on cards and dialogs.
+    let _listedServers = {};
+
+    // Name, address and vendor of a server for the plain-language problem text (the dialog's copy wins while it is open).
+    function connectionContext(serverId) {
+        const open = (typeof _editState !== 'undefined' && _editState && _editState.server && _editState.server.id === serverId) ? _editState.server : null;
+        const s = open || _listedServers[serverId] || {};
+        return { name: s.name, url: s.url, vendor: VENDOR_NAMES[String(s.type || '').toLowerCase()] };
+    }
+
+    // ---------- plain-language connection problems ------------------------------
+    // The server answers a failed check with whatever Python/requests said ("HTTPConnectionPool(host=...,
+    // port=...): Max retries exceeded ... [Errno 111]"). People need the cause and the next step, so this maps the
+    // common causes to one or two plain sentences. The raw text is kept for a "Details" disclosure.
+    function friendlyConnectionProblem(raw, ctx) {
+        const text = String(raw == null ? '' : raw).trim();
+        const c = ctx || {};
+        const who = c.name ? `“${c.name}”` : 'the server';
+        let host = '';
+        try { host = new URL(c.url).host; } catch (_) { host = ''; }
+        const where = c.url ? ` at ${c.url}` : '';
+        const vendor = c.vendor || 'the server';
+        let message;
+        if (/timed? ?out|timeout/i.test(text)) {
+            message = `Reprise waited for ${who}${where} but nothing answered in time. It may be switched off, asleep, or on a different network; check it is running and the address and port are right.`;
+        } else if (/connection refused|actively refused|Errno 111|WinError 10061/i.test(text)) {
+            message = `Reprise can’t reach ${who}. Nothing answered${where}; check that it is running and that the address and port are right.`;
+        } else if (/name or service not known|nodename nor servname|getaddrinfo|name resolution|Errno -?[23]\b|no address associated/i.test(text)) {
+            message = `Reprise can’t find ${host ? `“${host}”` : 'that address'} on your network. Check the server address for typos, or use its IP address instead of a name.`;
+        } else if (/no route to host|network is unreachable|Errno 113|Errno 101/i.test(text)) {
+            message = `Reprise can’t find a way to ${host ? `“${host}”` : who}. The server may be on a different network, or something is blocking the connection.`;
+        } else if (/ssl|certificate/i.test(text)) {
+            message = `${who} uses a security certificate Reprise does not trust. If you set it up yourself, turn off “Verify SSL certificate” in this server’s Connection settings.`;
+        } else if (/\b401\b|rejected the (authentication|access)|unauthori[sz]ed/i.test(text)) {
+            message = `${who} did not accept Reprise’s saved sign-in. Sign in again from this server’s Connection settings.`;
+        } else if (/\b403\b|access denied|forbidden/i.test(text)) {
+            message = `${who} answered, but it says this sign-in is not allowed. Use an account or API key with administrator rights.`;
+        } else if (/\b404\b|did not return|not found/i.test(text)) {
+            message = `Something answered${where}, but it does not look like ${vendor}. Check the address and port.`;
+        } else if (!text || text === 'Connection failed') {
+            message = `Reprise could not connect to ${who}${where}. Check that it is running and the address is right.`;
+        } else if (text.length > 120 || /Error|Exception|Traceback|Pool\(|\bHTTP\b/.test(text)) {
+            message = `Reprise could not connect to ${who}${where}. Check that it is running and the address is right.`;
+        } else {
+            message = text;
+        }
+        return { message, raw: text };
+    }
+
+    // A toast or inline message for a failed call: technical connection errors become the plain sentence, anything
+    // already readable passes through.
+    function plainServerError(raw, serverId) {
+        const text = String(raw == null ? '' : raw);
+        if (/Max retries|Pool\(|Errno|NewConnectionError|Traceback|timed? ?out|connection refused|could not connect/i.test(text)) {
+            return friendlyConnectionProblem(text, connectionContext(serverId)).message;
+        }
+        return text;
+    }
+
+    // The problem block under a card (and its Details disclosure). A null problem hides it.
+    function setProblemBlock(el, problem) {
+        if (!el) return;
+        const msg = el.querySelector('.srv-problem-msg');
+        const more = el.querySelector('.srv-problem-more');
+        const rawEl = el.querySelector('.srv-problem-raw');
+        if (!problem) {
+            el.classList.add('d-none');
+            if (msg) msg.textContent = '';
+            if (rawEl) rawEl.textContent = '';
+            return;
+        }
+        el.classList.remove('d-none');
+        if (msg) msg.textContent = problem.message;
+        const showRaw = !!problem.raw && problem.raw !== problem.message;
+        if (more) more.classList.toggle('d-none', !showRaw);
+        if (rawEl) rawEl.textContent = showRaw ? problem.raw : '';
+    }
+
     // ---------- list rendering -------------------------------------------------
     async function loadServers() {
         const list = $('#serverList');
@@ -73,6 +151,7 @@
             return;
         }
         const servers = (r.data && r.data.servers) || [];
+        _listedServers = Object.fromEntries(servers.map((s) => [s.id, s]));
         if (servers.length === 0) {
             list.className = 'srv-grid';
             renderServerSummary([]);
@@ -83,7 +162,7 @@
                         <strong>No servers yet</strong>
                         <span>Connect Plex, Emby or Jellyfin to start generating previews.</span>
                         <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addServerModal">
-                            <i class="bi bi-plus-lg me-1"></i>Add Server
+                            <i class="bi bi-plus-lg me-1"></i>Add server
                         </button>
                     </div>
                 </div>`;
@@ -118,7 +197,7 @@
                 const r = await api('POST', `/api/servers/${encodeURIComponent(id)}/refresh-libraries`);
                 if (r.ok) loadServers();
                 else {
-                    showToast('Refresh failed', `${(r.data && r.data.error) || r.status}`, 'danger');
+                    showToast('Couldn’t refresh libraries', plainServerError((r.data && r.data.error) || r.status, id), 'danger');
                     target.disabled = false;
                     target.innerHTML = '<i class="bi bi-arrow-clockwise"></i>';
                 }
@@ -220,13 +299,17 @@
         }
     }
 
-    // The status element is a dot; its title/aria-label carry the words. A failure message also lands in the
-    // reserved issue row so it is readable without hovering.
+    // The status element is a dot; its title/aria-label carry the words. A failure also fills the problem block
+    // under the card with a plain sentence (the raw text sits behind "Details").
     function updateServerStatusPill(serverId, { ok, message }) {
         const dot = document.getElementById(`server-status-${serverId}`);
         if (!dot) return;
+        const known = _listedServers[serverId] || {};
+        const problem = ok === false
+            ? friendlyConnectionProblem(message, { name: known.name, url: known.url, vendor: VENDOR_NAMES[(known.type || '').toLowerCase()] })
+            : null;
         let tone = 'bad';
-        let label = message || 'Connection failed';
+        let label = problem ? problem.message : 'Could not connect';
         if (ok === null) {
             tone = '';
             label = message || 'Disabled';
@@ -239,18 +322,20 @@
         dot.setAttribute('aria-label', label);
         const statusText = document.getElementById(`server-status-text-${serverId}`);
         if (statusText) {
-            statusText.textContent = ok === false ? 'Unreachable' : ok === null ? 'Disabled' : 'Connected';
+            statusText.textContent = ok === false ? 'Can’t reach it' : ok === null ? 'Disabled' : 'Connected';
             statusText.classList.toggle('bad', ok === false);
         }
         const card = dot.closest('.srv-card');
         if (card) card.dataset.conn = ok === false ? 'bad' : ok === null ? 'off' : 'ok';
         refreshServerSummary();
 
-        const error = document.getElementById(`server-error-${serverId}`);
-        if (error) {
-            error.classList.toggle('d-none', ok !== false);
-            error.title = label;
-            error.querySelector('span').textContent = ok === false ? label : '';
+        setProblemBlock(document.getElementById(`server-error-${serverId}`), problem);
+        if (ok === false) {
+            const note = document.getElementById(`server-health-note-${serverId}`);
+            if (note) {
+                note.textContent = 'Not checked: Reprise can’t reach this server';
+                note.className = 'srv-health-note';
+            }
         }
         const hint = document.getElementById(`server-checked-${serverId}`);
         if (hint) {
@@ -342,7 +427,8 @@
         if (info === null || info.unknown) {
             glyph.className = 'server-readiness-glyph d-none';
             glyph.removeAttribute('data-state');
-            setNote(info === null ? 'Not checked while disabled' : '', '');
+            const unreachable = !!note && !!note.closest('.srv-card') && note.closest('.srv-card').dataset.conn === 'bad';
+            setNote(info === null ? 'Not checked while disabled' : unreachable ? 'Not checked: Reprise can’t reach this server' : '', '');
             refreshServerSummary();
             return;
         }
@@ -398,14 +484,14 @@
                           data-id="${id}"
                           role="button"
                           tabindex="0"></span>
-                    <span class="pill bad d-none" id="server-error-${id}"><i class="bi bi-x-circle-fill"></i><span></span></span>
                 </div>
                 <div class="srv-lib">
                     <span class="srv-lib-num${enabledLibs < libCount ? ' warn' : ''}">${enabledLibs}</span>
                     <span class="srv-lib-sub">of ${libCount} ${libCount === 1 ? 'library' : 'libraries'} enabled</span>
                 </div>
+                ${problemBlockHtml(id)}
                 <div class="srv-foot">
-                    <span class="srv-hint" id="server-checked-${id}"></span>
+                    <span class="srv-hint" id="server-checked-${id}">Checking…</span>
                     <button type="button" class="ibtn edit-server-btn" data-id="${id}"
                             aria-label="Edit ${name}" title="Edit">
                         <i class="bi bi-pencil"></i>
@@ -434,18 +520,36 @@
             : '<i class="bi bi-hdd-network"></i>';
     }
 
-    // What this server receives, from the settings the list already carries (no counts: those are not in the data).
+    // What Reprise adds to this server, from the settings the list already carries (no counts: those are not in
+    // the data). Previews are off when the per-server "write preview thumbnails" switch is off (review only).
     function sendsChipsHtml(server) {
         const vendor = (server.type || '').toLowerCase();
         const enabledLibs = (server.libraries || []).filter((l) => l.enabled).length;
-        const chip = (cls, icon, label, on) => `<span class="srv-fchip ${cls}${on ? '' : ' off'}"><i class="bi ${icon}"></i>${label} <span class="srv-fchip-st">${on ? 'on' : 'off'}</span></span>`;
-        let html = chip('pv', 'bi-images', 'Previews', enabledLibs > 0)
-            + chip('mk', 'bi-skip-forward-fill', 'Intro &amp; Credits', !!(server.markers && server.markers.enabled));
+        const writesPreviews = (server.output || {}).preview_thumbnails !== false;
+        const chip = (cls, icon, label, on, tip) => `<span class="srv-fchip ${cls}${on ? '' : ' off'}" title="${escapeHtml(tip)}"><i class="bi ${icon}" aria-hidden="true"></i>${label} <span class="srv-fchip-st">${on ? 'on' : 'off'}</span></span>`;
+        const previewTip = !writesPreviews
+            ? 'Review only: Reprise does not write timeline preview pictures into this server. Turn this on in Processing.'
+            : enabledLibs > 0
+                ? 'Timeline previews: the small pictures shown while you drag along a video’s progress bar.'
+                : 'Timeline previews are allowed, but no library is enabled for this server yet.';
+        let html = chip('pv', 'bi-images', 'Previews', writesPreviews && enabledLibs > 0, previewTip)
+            + chip('mk', 'bi-skip-forward-fill', 'Intro &amp; Credits', !!(server.markers && server.markers.enabled), 'Skip Intro and Skip Credits buttons while watching.');
         if (vendor === 'plex') {
-            html += chip('ld', 'bi-volume-up', 'Loudness', !!(server.loudness && server.loudness.enabled))
-                + chip('ch', 'bi-card-image', 'Chapter thumbnails', !!(server.output && server.output.chapter_thumbnails));
+            html += chip('ld', 'bi-volume-up', 'Loudness', !!(server.loudness && server.loudness.enabled), 'Loudness measurements, so quiet and loud videos can play at a similar volume.')
+                + chip('ch', 'bi-card-image', 'Chapter thumbnails', !!(server.output && server.output.chapter_thumbnails), 'Pictures for each chapter in Plex’s chapter list.');
         }
-        return `<span class="srv-k">Sends</span>${html}`;
+        return `<span class="srv-k">Adds to this server</span>${html}`;
+    }
+
+    // Plain-language "can't connect" block (filled by updateServerStatusPill). The technical text sits behind Details.
+    function problemBlockHtml(id) {
+        return `<div class="srv-problem d-none" id="server-error-${id}" role="status">
+                    <i class="bi bi-exclamation-circle" aria-hidden="true"></i>
+                    <div class="srv-problem-body">
+                        <p class="srv-problem-msg"></p>
+                        <details class="srv-problem-more"><summary>Details</summary><code class="srv-problem-raw"></code></details>
+                    </div>
+                </div>`;
     }
 
     function libraryChipsHtml(libraries) {
@@ -498,16 +602,15 @@
                               data-id="${id}"
                               role="button"
                               tabindex="0"></span>
-                        <span class="pill bad d-none" id="server-error-${id}"><i class="bi bi-x-circle-fill"></i><span></span></span>
                     </div>
-                    <span class="srv-health-note" id="server-health-note-${id}"></span>
+                    <span class="srv-health-note" id="server-health-note-${id}">Checking…</span>
                 </div>
                 <div class="srv-r-acts">
                     <div class="form-check form-switch mb-0" title="Quick enable/disable — when off, this server is ignored by all jobs and webhooks">
                         <input class="form-check-input server-enabled-toggle" type="checkbox"
                                id="server-enabled-${id}" data-id="${id}"
                                ${server.enabled ? 'checked' : ''}>
-                        <label class="form-check-label visually-hidden" for="server-enabled-${id}">${server.enabled ? 'Enabled' : 'Disabled'}</label>
+                        <label class="form-check-label srv-tlabel" for="server-enabled-${id}">${server.enabled ? 'Enabled' : 'Disabled'}</label>
                     </div>
                     <div class="srv-r-btns">
                         <button type="button" class="ibtn edit-server-btn" data-id="${id}"
@@ -524,6 +627,7 @@
                         </button>
                     </div>
                 </div>
+                ${problemBlockHtml(id)}
                 <div class="srv-r-sends">${sendsChipsHtml(server)}</div>
             </article>
         `;
@@ -547,7 +651,7 @@
         return `
             <button type="button" class="srv-addrow" data-bs-toggle="modal" data-bs-target="#addServerModal">
                 <span class="srv-plus"><i class="bi bi-plus-lg"></i></span>
-                <span class="srv-addrow-text"><strong>Add another server</strong>Plex, Emby or Jellyfin. Frames are extracted once and reused across servers.</span>
+                <span class="srv-addrow-text"><strong>Add another server</strong>Plex, Emby or Jellyfin. Reprise can read from several at once.</span>
                 <span class="srv-vs">${addServerVendorLogos()}</span>
             </button>`;
     }
@@ -636,7 +740,7 @@
             : '<i class="bi bi-plus-lg"></i>';
         const vendorName = VENDOR_NAMES[vendor] || '';
         const title = document.getElementById('serverModalTitle');
-        if (title) title.textContent = vendorName ? `Add ${vendorName} server` : 'Add Server';
+        if (title) title.textContent = vendorName ? `Add ${vendorName} server` : 'Add server';
         const sub = document.getElementById('serverModalSubtitle');
         if (sub) {
             sub.textContent = index === 0
@@ -686,7 +790,7 @@
             showStep('step-type');
         }
         const titleEl = document.getElementById('serverModalTitle');
-        if (titleEl) titleEl.textContent = 'Add Server';
+        if (titleEl) titleEl.textContent = 'Add server';
         $('#serverUrl').value = '';
         $('#serverName').value = '';
         $('#authUsername').value = '';
@@ -718,6 +822,12 @@
                 event.preventDefault();
                 const heading = document.querySelector(link.getAttribute('href'));
                 if (heading) { heading.focus({ preventScroll: true }); heading.scrollIntoView({ block: 'start' }); }
+            });
+        });
+        document.querySelectorAll('[data-goto-section]').forEach((link) => {
+            link.addEventListener('click', (event) => {
+                event.preventDefault();
+                activateSection(`edit-tab-${link.dataset.gotoSection}`);
             });
         });
         document.querySelectorAll('.processing-section-link').forEach((link) => {
@@ -1156,22 +1266,26 @@
                     <div class="sm-hint">Saving enables the server and opens its Setup Health check.</div></div></div>
             <dl class="sm-res-dl">
                 <dt>Display name</dt><dd>${escapeHtml(payload.name)}</dd>
-                <dt>Server URL</dt><dd><code>${escapeHtml(payload.url)}</code></dd>
+                <dt>Server address</dt><dd><code>${escapeHtml(payload.url)}</code></dd>
                 <dt>Sign-in</dt><dd>${escapeHtml(signIn)}</dd>
-                ${folder ? `<dt>Config folder</dt><dd><code>${escapeHtml(folder)}</code></dd>` : ''}
+                ${folder ? `<dt>Plex config folder</dt><dd><code>${escapeHtml(folder)}</code></dd>` : ''}
             </dl>`;
     }
 
     function connectResultFailureHtml(payload, message) {
         const port = PORT_HINTS[payload.type] || '';
+        const problem = friendlyConnectionProblem(message, { name: payload.name, url: payload.url, vendor: VENDOR_NAMES[payload.type] });
+        const details = problem.raw && problem.raw !== problem.message
+            ? `<details class="sm-ex mt-1"><summary>Details</summary><div class="sm-ex-box"><code>${escapeHtml(problem.raw)}</code></div></details>`
+            : '';
         return `
             <div class="sm-res-banner bad" id="connectResultMsg"><i class="bi bi-x-octagon-fill"></i>
-                <div class="sm-res-msg"><b>Could not connect</b><div class="sm-hint">${escapeHtml(message)}</div></div></div>
+                <div class="sm-res-msg"><b>Could not connect</b><div class="sm-hint">${escapeHtml(problem.message)}</div>${details}</div></div>
             <div class="sm-card"><div class="sm-card-b sm-res-tips">
                 <b>Check these first</b>
-                <span class="sm-hint">Is the URL reachable from inside this container? <code>localhost</code> is the container itself.</span>
-                <span class="sm-hint">Is the port right (${escapeHtml(port)} by default)?</span>
-                <span class="sm-hint">Self-signed HTTPS? Turn off certificate verification after saving.</span>
+                <span class="sm-hint">Use the server’s network address, like 192.168.1.50, instead of “localhost”. Reprise runs in its own container, so “localhost” means Reprise itself.</span>
+                <span class="sm-hint">Is the port right${port ? ` (${escapeHtml(port)} unless you changed it)` : ''}?</span>
+                <span class="sm-hint">Does the server use HTTPS with a certificate you made yourself? You can turn off the certificate check after saving.</span>
             </div></div>`;
     }
 
@@ -1199,12 +1313,14 @@
                 : '/api/servers/auth/emby/password';
             const r = await api('POST', endpoint, { url: wizard.url, username: u, password: p });
             if (!r.ok || !r.data || !r.data.ok) {
-                // Common cause: wrong URL (or URL unreachable from this
-                // container — e.g. user typed `http://localhost:8096` but
-                // Jellyfin is on a docker bridge). The backend message is
-                // usually specific enough; pass it through verbatim.
-                const msg = (r.data && r.data.message)
-                    || `Authentication failed (HTTP ${r.status}). Check the username, password, and that the URL is reachable from this container.`;
+                // Usual cause: a wrong address, or one Reprise cannot reach from its container (`localhost` is the
+                // container itself). Technical connection errors get the plain-language version; the server's own
+                // sign-in messages are specific enough to pass through.
+                let msg = (r.data && r.data.message)
+                    || `Sign-in failed (HTTP ${r.status}). Check the username and password, and that Reprise can reach the address.`;
+                if (/Max retries|Pool\(|Errno|NewConnectionError|Traceback/.test(msg)) {
+                    msg = friendlyConnectionProblem(msg, { name: wizard.name, url: wizard.url, vendor: VENDOR_NAMES[wizard.type] }).message;
+                }
                 showFormError(msg);
                 return null;
             }
@@ -1262,6 +1378,7 @@
     // other configured server (one click instead of N).
 
     let _editState = null;  // { server, allServers }
+    let _editOpener = null;  // { el, id }: what had focus when the edit dialog opened
     // D24 — Quick Connect poll handle for the Edit-modal flow. Distinct
     // from the wizard's `wizard.quickConnectPoll` so opening Edit while
     // the Add wizard is mid-flight doesn't stomp the wizard's poll.
@@ -1596,6 +1713,21 @@
         if (trigger && window.bootstrap) window.bootstrap.Tab.getOrCreateInstance(trigger).show();
     }
 
+    // With "Write preview thumbnails" off (review only) nothing is saved to the server: Processing says so, and
+    // the Libraries tab explains why the Previews switches have no effect.
+    function syncPreviewsOffUi() {
+        const sw = document.getElementById('editPreviewThumbnails');
+        if (!sw) return;
+        const off = !sw.checked;
+        const out = document.getElementById('processingPreviewOutput');
+        if (out) {
+            out.textContent = off ? 'Nowhere: review only, nothing is saved to the server' : (out.dataset.on || '');
+            out.title = off ? 'Preview thumbnails are off for this server, so Reprise saves nothing to it.' : (out.dataset.onTitle || '');
+        }
+        const note = document.getElementById('editLibrariesPreviewsOffNote');
+        if (note) note.classList.toggle('d-none', !off);
+    }
+
     function setEditStatusPill(tone, text) {
         const pill = document.getElementById('editServerStatusPill');
         if (!pill) return;
@@ -1766,21 +1898,23 @@
         if (featureNav) featureNav.classList.toggle('d-none', !isPlex);
         const previewOutput = $('#processingPreviewOutput');
         const previewDescriptions = {
-            plex: ['Plex config folder (set in Connection)', 'Plex BIF preview bundles are written to the Plex config folder in Connection.'],
-            emby: ['Beside each video (the media mount must be writable)', 'Emby BIF previews are written beside each video. The media mount must be writable.'],
-            jellyfin: ['Beside each video, or Jellyfin\'s config folder', 'Jellyfin trickplay tiles are written beside each video, or to the config folder selected in Connection. Setup Health checks the plugin and storage requirements.'],
+            plex: ['Plex’s data folder (“Plex config folder” in Connection)', 'Reprise saves the preview pictures inside Plex’s own data folder, the “Plex config folder” you set in Connection.'],
+            emby: ['Next to each video (that folder must allow saving)', 'Reprise saves the preview pictures next to each video file, so the media folder must allow saving.'],
+            jellyfin: ['Next to each video, or in Jellyfin’s data folder', 'Reprise saves the preview pictures next to each video, or in the Jellyfin data folder you choose in Connection. Setup Health checks the requirements.'],
         };
         const previewText = previewDescriptions[(server.type || '').toLowerCase()]
             || ['Follows this server’s configuration', 'Preview output follows this server’s configuration.'];
-        previewOutput.textContent = previewText[0];
-        previewOutput.title = previewText[1];
+        previewOutput.dataset.on = previewText[0];
+        previewOutput.dataset.onTitle = previewText[1];
         // Per-server switch: off = review only, nothing is written into the server (absent means on).
         $('#editPreviewThumbnails').checked = (server.output || {}).preview_thumbnails !== false;
+        syncPreviewsOffUi();
         if (!$('#editPreviewThumbnails').dataset.revalidateBound) {
             $('#editPreviewThumbnails').addEventListener('change', () => {
+                syncPreviewsOffUi();
                 ['editPlexConfigFolder', 'editJellyfinConfigFolder'].forEach((id) => {
                     const el = document.getElementById(id);
-                    if (el && el.value.trim() && el.offsetParent !== null) _validateLocalPathInput(el);
+                    if (el && el.value.trim() && !el.closest('.d-none')) _validateLocalPathInput(el);
                 });
             });
             $('#editPreviewThumbnails').dataset.revalidateBound = '1';
@@ -1869,10 +2003,6 @@
         if (isPlex) {
             const out = server.output || {};
             $('#editPlexChapterThumbnails').checked = out.chapter_thumbnails === true;
-            $('#editPlexChapterHealthLink').onclick = (event) => {
-                event.preventDefault();
-                activateSection('edit-tab-health');
-            };
             const cfgInput = $('#editPlexConfigFolder');
             cfgInput.value = out.plex_config_folder || '';
             cfgInput.classList.remove('is-valid', 'is-invalid');
@@ -1910,6 +2040,9 @@
         showEditResult('', '');
 
         const modalEl = document.getElementById('editServerModal');
+        // Remember the opener so closing the dialog can hand focus back to it.
+        const active = document.activeElement;
+        _editOpener = { el: active && active !== document.body ? active : null, id: serverId };
         const modal = window.bootstrap.Modal.getOrCreateInstance(modalEl);
         modal.show();
         updateEditBadges();
@@ -1978,9 +2111,9 @@
             ? row.webhook_prefixes.join('; ')
             : (row.webhook_prefixes || '');
         tr.innerHTML = `
-            <td data-l="Path on Media Server">${cellLabel('Path on Media Server', 'The path your media server reports (what\'s stored in its database / shown in its admin UI).')}<input type="text" class="form-control form-control-sm pm-remote" value="${escapeHtml(remoteVal)}" placeholder="/data_16tb/movies"></td>
-            <td data-l="Local path on this app">
-                ${cellLabel('Local path on this app', 'The path the same file appears at INSIDE this app\'s container — i.e. the volume mount target.')}
+            <td data-l="Path on the media server">${cellLabel('Path on the media server', 'The folder path your media server uses for these videos (the one shown in the server\'s own settings).')}<input type="text" class="form-control form-control-sm pm-remote" value="${escapeHtml(remoteVal)}" placeholder="/data_16tb/movies"></td>
+            <td data-l="Same folder inside Reprise">
+                ${cellLabel('Same folder inside Reprise', 'The path where Reprise sees these same videos: where the folder is shared into Reprise\'s container.')}
                 <div class="input-group input-group-sm has-validation sm-vf">
                     <input type="text" class="form-control form-control-sm pm-local" value="${escapeHtml(localVal)}" placeholder="/mnt/plex/movies">
                     <button type="button" class="btn btn-outline-secondary pm-browse" title="Browse folders" aria-label="Browse folders">
@@ -1990,8 +2123,8 @@
                     <div class="valid-feedback small">Path exists</div>
                 </div>
             </td>
-            <td data-l="Path on Apps (Sonarr, Radarr, Webhooks)">${cellLabel('Path on Apps (Sonarr, Radarr, Webhooks)', 'For Sonarr/Radarr/Tdarr webhooks that send a different path than your server reports.', { title: 'Webhook path mapping', template: 'infoWebhookPathTpl' })}<input type="text" class="form-control form-control-sm pm-webhook" value="${escapeHtml(webhookAliases)}" placeholder="/data" title="Optional. Webhook source prefix that resolves to this disk. Add another row for additional sources."></td>
-            <td class="sm-cell-x"><button type="button" class="btn btn-sm btn-outline-danger pm-remove" aria-label="Remove mapping" title="Remove mapping"><i class="bi bi-x-lg"></i></button></td>
+            <td data-l="Path used by Sonarr / Radarr (optional)">${cellLabel('Path used by Sonarr / Radarr (optional)', 'For Sonarr, Radarr or Tdarr webhooks that send a different path than your media server reports.', { title: 'Webhook path mapping', template: 'infoWebhookPathTpl' })}<input type="text" class="form-control form-control-sm pm-webhook" value="${escapeHtml(webhookAliases)}" placeholder="/data" title="Optional. The path Sonarr, Radarr or Tdarr use for these videos. Add another row for more than one."></td>
+            <td class="sm-cell-x"><button type="button" class="btn btn-sm btn-outline-danger pm-remove" aria-label="Remove this row" title="Remove this row"><i class="bi bi-x-lg"></i></button></td>
         `;
         tr.querySelector('.pm-remove').addEventListener('click', () => { tr.remove(); setEditDirty(true); updateEditBadges(); });
         const localInput = tr.querySelector('.pm-local');
@@ -2315,6 +2448,7 @@
         btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Testing…';
         result.className = 'sm-tres';
         result.textContent = '';
+        result.removeAttribute('title');
         try {
             const r = await api('POST', `/api/servers/${encodeURIComponent(id)}/test-connection`);
             const data = r.data || {};
@@ -2323,9 +2457,11 @@
                 result.innerHTML = `<i class="bi bi-check-circle-fill"></i>Connected${data.version ? ` &mdash; ${escapeHtml(data.version)}` : ''}`;
                 setEditStatusPill('ok', 'Connected');
             } else {
+                const problem = friendlyConnectionProblem(data.message, connectionContext(id));
                 result.className = 'sm-tres warn';
-                result.innerHTML = `<i class="bi bi-exclamation-triangle-fill"></i>${escapeHtml(data.message || 'Connection failed')}`;
-                setEditStatusPill('bad', 'Unreachable');
+                result.innerHTML = `<i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i>${escapeHtml(problem.message)}`;
+                if (problem.raw && problem.raw !== problem.message) result.title = problem.raw;
+                setEditStatusPill('bad', 'Can’t reach it');
                 // A refused credential is the one case the credentials card is for: open it.
                 if (/\b401\b|unauthori[sz]ed|forbidden|invalid (token|api key|credential)|credentials?\b/i.test(String(data.message || ''))) {
                     setCredFormsOpen(true);
@@ -2401,12 +2537,15 @@
         if (fixResult) { fixResult.className = 'sm-hint'; fixResult.textContent = ''; }
         badge.className = 'pill';
         badge.textContent = 'checking…';
+        // A server that is off or on another network makes Reprise wait for it to answer; say so instead of
+        // showing an empty panel.
+        body.innerHTML = '<div class="sm-hint rd-progress" role="status"><span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>Checking that Reprise can reach this server and that everything is set up. If the server does not answer, this can take up to about 30 seconds.</div>';
 
         const r = await api('GET', `/api/servers/${encodeURIComponent(serverId)}/previews-readiness`);
         if (!r.ok || !r.data) {
             badge.className = 'pill warn';
             badge.textContent = 'unavailable';
-            body.innerHTML = '<div class="sm-hint">Could not reach the server. Check connection and try again.</div>';
+            body.innerHTML = '<div class="sm-hint">The checks could not run. Press Re-check to try again.</div>';
             setNavBadge('editHealthTabMarker', '');
             _readinessDataByServer.delete(serverId);
             return;
@@ -2518,7 +2657,10 @@
         const badgeState = _deriveBadgeState(data);
         badge.className = `pill ${badgeState.cls}`;
         badge.textContent = badgeState.text;
-        setEditStatusPill('ok', 'Connected');
+        // The header pill follows the real connection check, not the fact that the checks themselves ran.
+        const reachCheck = ((sections.find((s) => s.id === 'connection') || {}).checks || []).find((c) => c.id === 'reachable');
+        if (reachCheck && reachCheck.ok === false) setEditStatusPill('bad', 'Can’t reach it');
+        else setEditStatusPill('ok', 'Connected');
 
         // Bucket the checks once so each bucket can render its own
         // collapsible group with the right icon/colour/expanded state.
@@ -2808,9 +2950,13 @@
         // out to an external docs page. Pre-fix every row carried a
         // GitHub URL that 404'd on private forks / unpushed branches.
         const tooltip = check.tooltip || '';
-        const reason = check.reason || '';
+        // A failed reachability check carries the raw Python error; show the plain sentence and keep the raw text
+        // in the (i) explanation.
+        const problem = (check.id === 'reachable' && !ok) ? friendlyConnectionProblem(check.reason, connectionContext(serverId)) : null;
+        const reason = problem ? problem.message : (check.reason || '');
         // The description is one line in the row; its full text also sits in the ⓘ so nothing is lost to the clamp.
-        const explanationHtml = (reason ? `<p>${escapeHtml(reason)}</p>` : '') + (check.explanation || '');
+        const rawHtml = problem && problem.raw && problem.raw !== problem.message ? `<p><strong>Technical message:</strong> <code>${escapeHtml(problem.raw)}</code></p>` : '';
+        const explanationHtml = (reason ? `<p>${escapeHtml(reason)}</p>` : '') + rawHtml + (check.explanation || '');
         const infoIcon = (tooltip || explanationHtml)
             ? `<button type="button" class="info-icon" `
                 + `data-bs-toggle="tooltip" data-bs-placement="top" `
@@ -3639,7 +3785,7 @@
         try {
             const r = await api('POST', `/api/servers/${encodeURIComponent(id)}/refresh-libraries`);
             if (!r.ok) {
-                showToast('Refresh failed', `${(r.data && r.data.error) || r.status}`, 'danger');
+                showToast('Couldn’t refresh libraries', plainServerError((r.data && r.data.error) || r.status, id), 'danger');
                 return;
             }
             // Re-fetch the server payload so the Libraries tab repaints with
@@ -3706,6 +3852,15 @@
             _editDirty = false;
             _editDiscardOk = false;
             if (_editReauthQcPoll) { clearInterval(_editReauthQcPoll); _editReauthQcPoll = null; }
+            // Put the keyboard back where the person was: the button they opened this from (the card may have been
+            // redrawn by a save, so look it up again), or the Add button if that server is gone.
+            const opener = _editOpener;
+            _editOpener = null;
+            if (!opener) return;
+            let target = opener.el && opener.el.isConnected ? opener.el : null;
+            if (!target && opener.id) target = document.querySelector(`.edit-server-btn[data-id="${CSS.escape(opener.id)}"]`);
+            if (!target) target = document.querySelector('.srv-addrow, .srv-addtile, [data-bs-target="#addServerModal"]');
+            if (target && typeof target.focus === 'function') target.focus();
         });
         const keepBtn = document.getElementById('editServerKeepEditing');
         if (keepBtn) keepBtn.addEventListener('click', () => document.getElementById('editServerDiscardBar').classList.add('d-none'));
@@ -3739,6 +3894,8 @@
                     _editDiscardOk = true;
                     setEditDirty(false);
                     window.bootstrap.Modal.getOrCreateInstance(modalEl).hide();
+                } else {
+                    deleteBtn.focus();
                 }
             });
         }

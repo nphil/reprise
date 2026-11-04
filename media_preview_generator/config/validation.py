@@ -37,12 +37,37 @@ MAX_CPU_THREADS = 64
 MAX_GPU_THREADS = 64
 
 
+def plex_config_folder_needed(media_servers: list[Any]) -> bool:
+    """Whether any enabled Plex server still writes into Plex's own folder.
+
+    Preview thumbnails, chapter thumbnails, Intro & Credits markers and loudness all do. A review-only setup (every one
+    of them off) only reads from Plex, so a missing or unusual Plex config folder is not a problem there.
+
+    Args:
+        media_servers: The ``media_servers`` entries from settings.json.
+
+    Returns:
+        True when an enabled Plex entry writes into the folder, False when none does (or there is no enabled Plex entry).
+    """
+    for entry in media_servers:
+        if not isinstance(entry, dict) or (entry.get("type") or "").lower() != "plex" or not entry.get("enabled", True):
+            continue
+        output = entry.get("output") or {}
+        if output.get("preview_thumbnails") is not False or output.get("chapter_thumbnails"):
+            return True
+        if (entry.get("markers") or {}).get("enabled") or (entry.get("loudness") or {}).get("enabled"):
+            return True
+    return False
+
+
 def _validate_plex_config(
     plex_url: str,
     plex_token: str,
     plex_config_folder: str,
     missing_params: list,
     validation_errors: list,
+    *,
+    check_config_folder: bool = True,
 ) -> None:
     """Validate Plex server configuration parameters.
 
@@ -52,6 +77,8 @@ def _validate_plex_config(
         plex_config_folder: Path to Plex config folder
         missing_params: List to append missing parameter errors
         validation_errors: List to append validation errors
+        check_config_folder: False when no enabled Plex server writes into Plex's own folder (a review-only setup),
+            so a missing or unusual folder is not an error
 
     """
     # Check basic required parameters first
@@ -71,6 +98,8 @@ def _validate_plex_config(
                 "PLEX_TOKEN is required (configure via web UI or set PLEX_TOKEN environment variable)"
             )
 
+    if not check_config_folder:
+        return
     # Check PLEX_CONFIG_FOLDER
     if not plex_config_folder or plex_config_folder == "/path_to/plex/Library/Application Support/Plex Media Server":
         if is_docker_environment():

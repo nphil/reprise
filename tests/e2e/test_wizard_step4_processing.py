@@ -52,6 +52,8 @@ def _drive_to_step4(page: Page, app_url: str) -> dict:
     page.locator("#wizardPlexConfigFolder").fill("/plex")
     page.locator("#step3Next").click()
     expect(page.locator('div.setup-step[data-step="4"]')).to_have_class("setup-step active")
+    # Worker groups and the thumbnail settings sit under the step's Advanced disclosure, closed until someone opens it.
+    page.evaluate("document.getElementById('setupStep4Advanced').open = true")
     return groups
 
 

@@ -128,7 +128,7 @@ _USER_FACING_NOTES: dict[int, str] = {
         "Jellyfin and Emby. Existing Plex Direct webhooks keep working as-is — "
         "routing matches on Plex's own machine identifier, not on the renamed id. "
         "If you'd like the URL on plex.tv to use the new cleaner form, open "
-        "Servers → Plex → Webhook & Scanner and click Re-register. Optional, not required."
+        "Settings → Connections → your Plex server → Webhook & Scanner and click Re-register. Optional, not required."
     ),
     14: (
         "Your Recently Added schedules now follow the new Incoming job priority "

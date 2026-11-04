@@ -10,12 +10,13 @@ from __future__ import annotations
 import copy
 import json
 import re
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from playwright.sync_api import Page, Route, expect
 
 from ._mocks import _fulfill_json
+from .conftest import accept_app_confirm
 
 DURATION = 1_320_000
 
@@ -237,15 +238,26 @@ class RepriseApi:
                     ],
                 )
 
+    def list_media(self, query: dict) -> dict:
+        """The list as the real service answers it: a show is a substring, a season is exact, a search looks in the title and the show."""
+        show, season, search = ((query.get(key) or [""])[0].lower() for key in ("show", "season", "search"))
+        items = [
+            item
+            for item in self.items
+            if show in item["show_title"].lower()
+            and (not season or str(item["season"]) == season)
+            and search in f"{item['title']} {item['show_title']}".lower()
+        ]
+        shows, seasons = sorted({i["show_title"] for i in self.items}), sorted({i["season"] for i in self.items})
+        return {"items": copy.deepcopy(items), "next_cursor": None, "shows": shows, "seasons": seasons}
+
     def _handle(self, route: Route) -> None:
         request = route.request
         path, method = urlparse(request.url).path, request.method
         body = json.loads(request.post_data) if request.post_data else {}
         match = re.fullmatch(r"/api/reprise/media/([^/]+)/(result|stream|review)", path)
         if path == "/api/reprise/media":
-            return _fulfill_json(
-                route, {"items": copy.deepcopy(self.items), "next_cursor": None, "shows": ["Community"], "seasons": [1]}
-            )
+            return _fulfill_json(route, self.list_media(parse_qs(urlparse(request.url).query)))
         if match and match[2] == "result":
             return _fulfill_json(route, copy.deepcopy(self.results[match[1]]))
         if match and match[2] == "stream":
@@ -668,7 +680,177 @@ class TestShellStatus:
         switch = authed_page.locator("#rpWritesEnabled")
         expect(switch).to_be_enabled()
         expect(authed_page.locator("#rpWriteState")).to_contain_text("Sending to Plex is off")
-        authed_page.once("dialog", lambda dialog: dialog.accept())
         switch.check()
+        accept_app_confirm(authed_page)
         expect(authed_page.locator("#rpSafety")).to_have_attribute("data-state", "on")
         assert api.settings_patches == [{"writes_enabled": True}]
+
+
+def _more_episodes(api: RepriseApi, count: int, show: str = "Community", first: int = 7) -> None:
+    """Add listed episodes (no results: they are only listed), by default more of the same season."""
+    for n in range(first, first + count):
+        api.items.append({**_item(n, f"{show} episode {n}"), "show_title": show})
+
+
+@pytest.mark.e2e
+class TestListLayout:
+    def test_rows_stay_readable_beside_activity_and_the_selection_bar_in_a_short_window(
+        self, authed_page: Page, api: RepriseApi, app_url: str
+    ) -> None:
+        # A tablet window is about 700 px tall. A running job, finished jobs and ticked rows used to squash the list to
+        # nothing and push Activity and "Analyze" out of the pane.
+        authed_page.set_viewport_size({"width": 1280, "height": 720})
+        _more_episodes(api, 34)
+        api.start_analysis(["v4"])
+        for n in range(4):
+            api.jobs.append(
+                {**api.jobs[0], "id": f"old-{n}", "status": "completed", "created_at": f"2026-11-02T0{n}:00:00+00:00"}
+            )
+        _open(authed_page, app_url)
+        for n in range(3):
+            authed_page.locator(".rp-episode input[type=checkbox]").nth(n).check()
+        authed_page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        measured = authed_page.evaluate(
+            """() => {
+                const pane = document.querySelector('.rp-library').getBoundingClientRect();
+                const spill = [...document.querySelector('.rp-library').children]
+                    .filter(c => c.offsetParent && c.getBoundingClientRect().bottom > pane.bottom + 1).map(c => c.id || c.className);
+                return { list: document.querySelector('#rpScroll').clientHeight, spill, bar: document.querySelector('#rpSelectBar').getBoundingClientRect().bottom, view: innerHeight };
+            }"""
+        )
+        assert measured["spill"] == []
+        assert measured["list"] >= 150  # at least two and a half rows
+        assert measured["bar"] <= measured["view"]  # "Analyze" is reachable without leaving the pane
+
+    def test_ticking_a_row_does_not_move_the_rows_below_it(
+        self, authed_page: Page, api: RepriseApi, app_url: str
+    ) -> None:
+        _open(authed_page, app_url)
+        rows = authed_page.locator(".rp-episode")
+        before = rows.nth(1).bounding_box()["y"]
+        authed_page.locator(".rp-episode input[type=checkbox]").first.check()
+        expect(authed_page.locator("#rpSelectBar")).to_be_visible()
+        assert rows.nth(1).bounding_box()["y"] == before
+
+    def test_messages_stay_in_view_when_the_page_is_scrolled(
+        self, authed_page: Page, api: RepriseApi, app_url: str
+    ) -> None:
+        authed_page.set_viewport_size({"width": 1280, "height": 720})
+        _more_episodes(api, 34)
+        _open(authed_page, app_url)
+        authed_page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        authed_page.locator("#rpRefresh").dispatch_event("click")
+        message = authed_page.locator("#rpMessage")
+        expect(message).to_contain_text("Refreshing TV Shows")
+        assert 0 <= message.bounding_box()["y"] < 100  # stuck near the top of the window, not left above the fold
+
+
+@pytest.mark.e2e
+class TestListFollowsFilters:
+    def test_an_episode_the_filters_leave_out_is_closed_and_the_page_says_so(
+        self, authed_page: Page, api: RepriseApi, app_url: str
+    ) -> None:
+        _more_episodes(api, 2, show="Andor")
+        _open(authed_page, app_url)
+        authed_page.locator(".rp-episode-open").first.click()
+        expect(authed_page.locator("#rpReviewHeading")).to_have_text("Pilot")
+        authed_page.select_option("#rpShow", "Andor")
+        expect(authed_page.locator("#rpReview")).to_be_hidden()
+        expect(authed_page.locator("#rpReviewEmpty")).to_be_visible()
+        expect(authed_page.locator("#rpMessage")).to_contain_text("Closed Pilot")
+        expect(authed_page.locator(".rp-episode-open[aria-current=true]")).to_have_count(0)
+
+    def test_an_episode_that_is_still_in_the_filtered_list_stays_open(
+        self, authed_page: Page, api: RepriseApi, app_url: str
+    ) -> None:
+        _more_episodes(api, 2, show="Andor")
+        _open(authed_page, app_url)
+        authed_page.locator(".rp-episode-open").first.click()
+        authed_page.select_option("#rpShow", "Community")
+        authed_page.select_option("#rpSeason", "1")
+        expect(authed_page.locator(".rp-episode-open")).to_have_count(6)
+        expect(authed_page.locator("#rpReviewHeading")).to_have_text("Pilot")
+        expect(authed_page.locator("#rpOffList")).to_be_hidden()
+
+    def test_unsaved_changes_keep_an_episode_open_and_the_page_says_why(
+        self, authed_page: Page, api: RepriseApi, app_url: str
+    ) -> None:
+        _more_episodes(api, 2, show="Andor")
+        _open(authed_page, app_url)
+        authed_page.locator(".rp-episode-open").first.click()
+        first = authed_page.locator(".rp-range").first
+        first.locator(":scope > summary").click()
+        first.locator("label[data-value=approved]").click()
+        authed_page.select_option("#rpShow", "Andor")
+        expect(authed_page.locator("#rpReviewHeading")).to_have_text("Pilot")
+        expect(authed_page.locator("#rpOffList")).to_contain_text("unsaved changes")
+        authed_page.locator("#rpOffListClear").click()
+        expect(authed_page.locator("#rpOffList")).to_be_hidden()
+        expect(authed_page.locator("#rpShow")).to_have_value("")
+        expect(authed_page.locator(".rp-episode-open[aria-current=true]")).to_contain_text("Pilot")
+
+
+@pytest.mark.e2e
+class TestSelectingEpisodes:
+    @staticmethod
+    def _changed_files(api: RepriseApi) -> None:
+        refresh = {
+            "code": "file_missing",
+            "label": "File missing",
+            "message": "This file is no longer where Reprise last saw it.",
+            "next": "Refresh the library, then analyze it again.",
+            "action": "refresh",
+        }
+        again = {
+            "code": "needs_reanalysis",
+            "label": "Analyze again",
+            "message": "This result is out of date.",
+            "next": "Analyze it again to see the current result.",
+            "action": "analyze",
+        }
+        for n, stale in ((4, refresh), (5, again)):
+            api.items[n - 1].update(freshness="stale", stale=stale)
+            api.results[f"v{n}"].update(freshness="stale", stale=stale)
+
+    def test_select_all_ticks_every_episode_that_can_be_analyzed_now(
+        self, authed_page: Page, api: RepriseApi, app_url: str
+    ) -> None:
+        self._changed_files(api)  # v4 needs a refresh, v6 is the plain "file changed" case: both are left out
+        _open(authed_page, app_url)
+        authed_page.locator("#rpSelectAll").click()
+        expect(authed_page.locator("#rpAnalyze")).to_have_text("Analyze 4 episodes")
+        expect(authed_page.locator("#rpSelectAll")).to_have_text("Deselect all")
+        authed_page.locator("#rpAnalyze").click()
+        assert api.analyses == [{"media_version_ids": ["v1", "v2", "v3", "v5"]}]
+
+    def test_deselect_all_empties_the_selection(self, authed_page: Page, api: RepriseApi, app_url: str) -> None:
+        _open(authed_page, app_url)
+        authed_page.locator("#rpSelectAll").click()
+        authed_page.locator("#rpSelectAll").click()
+        expect(authed_page.locator("#rpSelectBar")).to_be_hidden()
+
+    def test_the_status_and_next_step_of_a_changed_file_follow_the_reason_the_service_gives(
+        self, authed_page: Page, api: RepriseApi, app_url: str
+    ) -> None:
+        self._changed_files(api)
+        _open(authed_page, app_url)
+        rows = authed_page.locator(".rp-episode-open")
+        expect(rows.nth(3).locator(".rp-chip")).to_have_text("File missing")
+        expect(rows.nth(4).locator(".rp-chip")).to_have_text("Analyze again")
+        outcome = authed_page.locator("#rpOutcome")
+        rows.nth(3).click()
+        expect(outcome).to_contain_text("This file is no longer where Reprise last saw it.")
+        expect(outcome.get_by_role("button", name="Refresh library")).to_be_visible()
+        expect(authed_page.locator("#rpAnalyzeOne")).to_be_hidden()
+        rows.nth(4).click()
+        expect(outcome).to_contain_text("Analyze it again to see the current result.")
+        expect(outcome.get_by_role("button", name="Refresh library")).to_have_count(0)
+        expect(authed_page.locator("#rpAnalyzeOne")).to_be_visible()
+
+    def test_the_empty_review_offers_the_next_episode_waiting_for_a_decision(
+        self, authed_page: Page, api: RepriseApi, app_url: str
+    ) -> None:
+        _open(authed_page, app_url)
+        expect(authed_page.locator("#rpNextBtn")).to_have_text("Review next: Pilot (2 to review)")
+        authed_page.locator("#rpNextBtn").click()
+        expect(authed_page.locator("#rpReviewHeading")).to_have_text("Pilot")

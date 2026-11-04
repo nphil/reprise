@@ -238,7 +238,7 @@ def test_a_library_this_app_cant_sample_never_blames_the_node(error):
     row = _check(envelope, "node_access_skipped")
     assert (row["ok"], row["severity"], row["informational"], row["reason"]) == (False, "info", True, "Home · Kids")
     assert row["label"] == "1 library skipped: this app can't open it"
-    assert (row["help_url"], row["help_label"]) == ("/servers", "Fix on Media Servers")
+    assert (row["help_url"], row["help_label"]) == ("/servers", "Fix in Connections")
     assert not {"fix_tab", "fix_action", "suggestion"} & set(row)
     assert _section(envelope, "node_media_access")["severity"] == "recommended"
     assert envelope["overall_ok"] is True

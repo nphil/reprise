@@ -17,7 +17,7 @@ from ._mocks import (
     mock_setup_status,
     mock_system_status,
 )
-from .conftest import expect_modal_shown, watch_modal_shown
+from .conftest import expand_settings_folds, expect_modal_shown, watch_modal_shown
 from .test_intro_credits_server_tab import _mock_server_page, _plex_server, _status
 from .test_wizard_step3_paths import _drive_to_step3
 
@@ -38,6 +38,7 @@ def settings_page(authed_page: Page, app_url: str) -> Page:
     mock_system_status(authed_page)
     capture_settings_save(authed_page)
     authed_page.goto(f"{app_url}/settings")
+    expand_settings_folds(authed_page)
     expect(authed_page.locator("#gpuConfigList .gpu-tuning-threads")).to_have_count(2)
     return authed_page
 

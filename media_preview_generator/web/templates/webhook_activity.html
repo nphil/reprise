@@ -12,8 +12,8 @@
         <div>
             <h1 class="page-title">Webhook activity</h1>
             <p class="page-subtitle mb-0">
-                Inbound webhook events. Set sources in
-                <a href="{{ url_for('main.automation_page') }}#section-webhooks-overview">Automation → Triggers</a>.
+                Messages other apps sent to Reprise, and what Reprise did with each. Set them up in
+                <a href="{{ url_for('main.automation_page') }}#section-webhooks-sonarr-radarr">Automation → Triggers</a>.
             </p>
         </div>
         <div class="page-actions">
@@ -57,10 +57,10 @@
         </div>
         <div id="historyLoading" class="wh-skel" role="status" aria-label="Loading webhook activity"><i></i><i></i><i></i><i></i><i></i></div>
         <div id="historyEmpty" class="wh-state d-none">
-            <span class="wh-tile"><i class="bi bi-webhook"></i></span>
+            <span class="wh-tile"><i class="bi bi-broadcast"></i></span>
             <b>No webhook events received yet</b>
-            <p>Set up a trigger source under Automation → Triggers to start receiving events.</p>
-            <a class="btn btn-sm wh-btn" href="{{ url_for('main.automation_page') }}#section-webhooks-overview">Open Automation → Triggers <i class="bi bi-arrow-right ms-1"></i></a>
+            <p>A webhook is a message another app sends when a file is ready. Once Sonarr, Radarr, Tdarr or a script sends one, it appears here with what Reprise did about it.</p>
+            <a class="btn btn-sm wh-btn" href="{{ url_for('main.automation_page') }}#section-webhooks-sonarr-radarr">Set one up in Automation <i class="bi bi-arrow-right ms-1"></i></a>
         </div>
         <div class="table-responsive">
             <table class="table table-sm history-table d-none" id="historyTable">
@@ -91,6 +91,20 @@
             </div>
         </div>
     </div>
+
+    <details class="wh-legend">
+        <summary>What do the outcomes mean?</summary>
+        <dl>
+            <dt>Triggered</dt><dd>A job was started for the file.</dd>
+            <dt>Queued</dt><dd>Waiting out the short delay before it starts.</dd>
+            <dt>Duplicate</dt><dd>Already handled a moment ago, so it was skipped.</dd>
+            <dt>Ignored</dt><dd>Reprise received it but started nothing. For example, the file is not in a library Reprise watches.</dd>
+            <dt>No file path</dt><dd>The message did not say which file it was about.</dd>
+            <dt>Test</dt><dd>A connection check. Nothing was started.</dd>
+            <dt>Disabled</dt><dd>Webhooks were switched off when it arrived.</dd>
+            <dt>Error</dt><dd>Something went wrong while handling it.</dd>
+        </dl>
+    </details>
 </div>
 {% endblock %}
 
@@ -169,6 +183,18 @@ const HISTORY_STATUS_PILLS = {
     ignored_no_paths: ['bad', 'exclamation-triangle-fill'],
     error: ['bad', 'exclamation-triangle-fill'],
     test: ['run', 'beaker']
+};
+// The same plain-language meanings as the "What do the outcomes mean?" list under the table.
+const HISTORY_STATUS_HELP = {
+    triggered: 'A job was started for this file.',
+    queued: 'Waiting out the short delay before it starts.',
+    deduped: 'Already handled a moment ago, so it was skipped.',
+    ignored: 'Received, but nothing was started. For example, the file is not in a library Reprise watches.',
+    ignored_no_path: 'The message did not say which file it was about.',
+    ignored_no_paths: 'The message did not say which files it was about.',
+    test: 'A connection check. Nothing was started.',
+    disabled: 'Webhooks were switched off when this arrived.',
+    error: 'Something went wrong while handling it.'
 };
 const HISTORY_ALWAYS_TABS = ['triggered', 'queued', 'ignored', 'error'];
 
@@ -316,7 +342,7 @@ function renderHistoryPage() {
             '<td class="wh-src">' + sourceBadge + '</td>' +
             '<td class="wh-srv">' + serverCell + '</td>' +
             '<td class="wh-title-cell">' + titleCell + '</td>' +
-            '<td class="wh-status"><span class="pill status-badge ' + statusTone + ' ' + escapeHtml(statusClass) + '"><i class="bi bi-' + statusIcon + '"></i>' + escapeHtml(statusLabel) + '</span></td>';
+            '<td class="wh-status"><span class="pill status-badge ' + statusTone + ' ' + escapeHtml(statusClass) + '" title="' + escapeHtml(HISTORY_STATUS_HELP[statusClass] || '') + '"><i class="bi bi-' + statusIcon + '"></i>' + escapeHtml(statusLabel) + '</span></td>';
         tbody.appendChild(tr);
 
         if (hasFiles) {

@@ -10,6 +10,7 @@ import pytest
 from playwright.sync_api import Page, expect
 
 from ._mocks import mock_settings_backups, mock_settings_get, mock_setup_status, mock_system_status
+from .conftest import expand_settings_folds
 
 MORE = "Click for more."
 
@@ -40,6 +41,7 @@ def _open(page: Page, app_url: str, path: str) -> list[dict]:
     page.goto(f"{app_url}{path}")
     page.wait_for_load_state("domcontentloaded")
     if path == "/settings":
+        expand_settings_folds(page)
         # Device tuning renders once /api/system/status answers. Group allocation is a separate editor.
         expect(page.locator("#gpuConfigList .gpu-tuning-threads").first).to_be_visible(timeout=5000)
     return page.evaluate(_AUDIT_JS)
@@ -96,7 +98,7 @@ class TestInfoIconRule:
         )
         icon.click()
         expect(authed_page.locator("#globalInfoModal")).to_be_visible(timeout=5000)
-        expect(authed_page.locator("#globalInfoTitle")).to_have_text("Loudness analysis nice level")
+        expect(authed_page.locator("#globalInfoTitle")).to_have_text("Loudness analysis CPU priority")
         expect(authed_page.locator("#globalInfoBody")).to_contain_text("about 10%")
 
     def test_a_hover_only_icon_opens_nothing(self, authed_page: Page, app_url: str) -> None:
@@ -110,6 +112,6 @@ class TestInfoIconRule:
     def test_gpu_tuning_explains_where_worker_allocation_lives(self, authed_page: Page, app_url: str) -> None:
         _open(authed_page, app_url, "/settings")
         panel = authed_page.locator("#gpuConfigList")
-        expect(panel.get_by_label("FFmpeg threads per worker").first).to_be_visible()
+        expect(panel.get_by_label("CPU threads per worker").first).to_be_visible()
         expect(panel).to_contain_text("CPU threads each GPU worker may use. 0 = no limit.")
         expect(panel.locator(".gpu-workers, .gpu-enable-toggle")).to_have_count(0)

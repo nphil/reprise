@@ -7,69 +7,32 @@
 {% endblock %}
 
 {% block content %}
-<div class="row automation-page">
-    <!-- Sidebar -->
-    <div class="col-lg-3 col-xl-2 d-none d-lg-block">
-        <nav id="automation-sidebar" class="automation-sidebar sticky-top">
-            <div class="nav flex-column nav-pills">
-                <!-- Triggers group -->
-                <button type="button" class="sidebar-group active text-start border-0 bg-transparent" id="sidebar-group-triggers"
-                     onclick="showAutomationTab('triggers')">
-                    <i class="bi bi-broadcast me-2"></i>Triggers
-                </button>
-                <div id="sidebar-triggers-links">
-                    <a class="nav-link" href="#section-webhooks-overview"><i class="bi bi-info-circle me-2"></i>Overview</a>
-                    <a class="nav-link" href="#section-webhooks-sonarr-radarr"><i class="bi bi-download me-2"></i>*arr apps</a>
-                    <a class="nav-link" href="#section-webhooks-custom"><i class="bi bi-plug me-2"></i>Custom (Tdarr / scripts)</a>
-                    <a class="nav-link" href="#section-webhooks-settings"><i class="bi bi-sliders me-2"></i>Settings</a>
-                    <a class="nav-link" href="#section-webhooks-activity"><i class="bi bi-clock-history me-2"></i>Webhook Activity</a>
-                </div>
+<div class="automation-page">
+    <header class="page-header">
+        <div>
+            <h1 class="page-title"><i class="bi bi-broadcast me-2"></i>Automation</h1>
+            <p class="page-subtitle mb-0">Start previews the moment new media arrives, or on a timetable.</p>
+        </div>
+        <div class="page-actions">
+            <span class="pill ok header-pill" id="automationWebhookPill"><i class="bi bi-check-circle-fill"></i> Webhooks on</span>
+            <span class="pill header-pill" id="automationSchedulePill"><i class="bi bi-calendar-check"></i> Schedules</span>
+            <span id="saveStatusIndicator" class="autosave-indicator"></span>
+        </div>
+    </header>
 
-                <!-- Schedules group -->
-                <button type="button" class="sidebar-group text-start border-0 bg-transparent" id="sidebar-group-schedules"
-                     onclick="showAutomationTab('schedules')">
-                    <i class="bi bi-calendar-event me-2"></i>Schedules
-                </button>
-                <div id="sidebar-schedules-links" class="d-none">
-                    <a class="nav-link" href="#section-schedules-overview"><i class="bi bi-info-circle me-2"></i>Overview</a>
-                    <a class="nav-link" href="/settings#section-worker-quiet-hours"><i class="bi bi-moon-stars me-2"></i>Global pause schedule</a>
-                    <a class="nav-link" href="#section-schedules-list"><i class="bi bi-calendar-event me-2"></i>All Schedules</a>
-                </div>
-            </div>
-        </nav>
+    <div class="automation-tabs" role="tablist" aria-label="Automation sections">
+        <button type="button" role="tab" id="automationTabTriggers" class="active" aria-selected="true" aria-controls="pane-triggers" data-automation-tab="triggers"><i class="bi bi-broadcast"></i>Triggers</button>
+        <button type="button" role="tab" id="automationTabSchedules" aria-selected="false" aria-controls="pane-schedules" data-automation-tab="schedules"><i class="bi bi-calendar-event"></i>Schedules</button>
     </div>
+    <div id="automationTabAnnouncer" class="visually-hidden" aria-live="polite">Showing Triggers</div>
 
-    <!-- Main Content -->
-    <div class="col-lg-9 col-xl-8 automation-content">
-        <nav id="automationMobileNav" class="automation-mobile-nav" aria-label="Automation sections">
-            <button type="button" data-automation-mobile-target="triggers" aria-current="page">Triggers</button>
-            <button type="button" data-automation-mobile-target="schedules">Schedules</button>
-            <button type="button" data-automation-mobile-target="quiet-hours">Global pause</button>
-        </nav>
-        <div id="automationMobileFeedback" class="automation-mobile-feedback form-text" aria-live="polite">Showing Triggers</div>
-        <header class="page-header">
-            <div>
-                <h1 class="page-title" id="automationHeading">
-                    <i class="bi bi-broadcast me-2" id="automationHeadingIcon"></i>
-                    <span id="automationHeadingText">Triggers</span>
-                </h1>
-                <p class="page-subtitle mb-0" id="automationSubtitle">Instant updates when new media appears.</p>
-            </div>
-            <div class="page-actions">
-                <span class="pill ok header-pill" id="automationWebhookPill"><i class="bi bi-check-circle-fill"></i> Webhooks on</span>
-                <span class="pill header-pill" id="automationSchedulePill"><i class="bi bi-calendar-check"></i> Schedules</span>
-                <span id="saveStatusIndicator" class="autosave-indicator"></span>
-            </div>
-        </header>
-
-        <div class="tab-content" id="automationTabContent">
-            <div class="tab-pane fade show active" id="pane-triggers" role="tabpanel">
-                {% include "_automation_triggers.html" %}
-            </div>
-            <div class="tab-pane fade" id="pane-schedules" role="tabpanel">
-                {% include "_automation_schedules.html" %}
-                {% include "_job_creation_info.html" %}
-            </div>
+    <div class="tab-content" id="automationTabContent">
+        <div class="tab-pane fade show active" id="pane-triggers" role="tabpanel" aria-labelledby="automationTabTriggers">
+            {% include "_automation_triggers.html" %}
+        </div>
+        <div class="tab-pane fade" id="pane-schedules" role="tabpanel" aria-labelledby="automationTabSchedules">
+            {% include "_automation_schedules.html" %}
+            {% include "_job_creation_info.html" %}
         </div>
     </div>
 </div>
@@ -77,95 +40,43 @@
 
 {% block scripts %}
 <script>
-/* Automation page — sidebar-driven tab switching, polling, and ScrollSpy.
- * The sidebar groups ("Triggers" / "Schedules") act as tab switchers while
- * their child links scroll to sections within the active pane. */
+/* Automation page: Triggers / Schedules tab switching and polling. */
 (function () {
 
     /* --- Tab switching --------------------------------------------------- */
 
-    function setHeading(which) {
-        var icon = document.getElementById('automationHeadingIcon');
-        var text = document.getElementById('automationHeadingText');
-        var subtitle = document.getElementById('automationSubtitle');
-        if (!icon || !text) return;
-        if (which === 'schedules') {
-            icon.className = 'bi bi-calendar-event me-2';
-            text.textContent = 'Schedules';
-            if (subtitle) subtitle.textContent = 'Schedule job starts and optional stops. Configure worker availability in Settings.';
-        } else {
-            icon.className = 'bi bi-broadcast me-2';
-            text.textContent = 'Triggers';
-            if (subtitle) subtitle.textContent = 'Instant updates when new media appears.';
-        }
-    }
-
     function showAutomationTab(which) {
+        var isSchedules = which === 'schedules';
         var triggersPane = document.getElementById('pane-triggers');
         var schedulesPane = document.getElementById('pane-schedules');
-        var triggersLinks = document.getElementById('sidebar-triggers-links');
-        var schedulesLinks = document.getElementById('sidebar-schedules-links');
-        var triggersGroup = document.getElementById('sidebar-group-triggers');
-        var schedulesGroup = document.getElementById('sidebar-group-schedules');
-
-        if (which === 'schedules') {
-            triggersPane.classList.remove('show', 'active');
-            schedulesPane.classList.add('show', 'active');
-            triggersLinks.classList.add('d-none');
-            schedulesLinks.classList.remove('d-none');
-            triggersGroup.classList.remove('active');
-            schedulesGroup.classList.add('active');
-            setHeading('schedules');
-            if (window.history && history.replaceState) {
-                history.replaceState(null, '', window.location.pathname + '#schedules');
-            }
-            onTabChanged('schedules');
-        } else {
-            schedulesPane.classList.remove('show', 'active');
-            triggersPane.classList.add('show', 'active');
-            schedulesLinks.classList.add('d-none');
-            triggersLinks.classList.remove('d-none');
-            schedulesGroup.classList.remove('active');
-            triggersGroup.classList.add('active');
-            setHeading('triggers');
-            if (window.history && history.replaceState) {
-                history.replaceState(null, '', window.location.pathname + '#webhooks');
-            }
-            onTabChanged('triggers');
-        }
-        var mobileTarget = which === 'schedules' ? 'schedules' : 'triggers';
-        document.querySelectorAll('[data-automation-mobile-target]').forEach(function (item) {
-            if (item.dataset.automationMobileTarget === mobileTarget) item.setAttribute('aria-current', 'location');
-            else item.removeAttribute('aria-current');
+        triggersPane.classList.toggle('show', !isSchedules);
+        triggersPane.classList.toggle('active', !isSchedules);
+        schedulesPane.classList.toggle('show', isSchedules);
+        schedulesPane.classList.toggle('active', isSchedules);
+        document.querySelectorAll('[data-automation-tab]').forEach(function (tab) {
+            var on = tab.dataset.automationTab === (isSchedules ? 'schedules' : 'triggers');
+            tab.classList.toggle('active', on);
+            tab.setAttribute('aria-selected', on ? 'true' : 'false');
         });
-        var mobileFeedback = document.getElementById('automationMobileFeedback');
-        if (mobileFeedback) mobileFeedback.textContent = 'Showing ' + (which === 'schedules' ? 'Schedules' : 'Triggers');
+        var announcer = document.getElementById('automationTabAnnouncer');
+        if (announcer) announcer.textContent = 'Showing ' + (isSchedules ? 'Schedules' : 'Triggers');
+        if (window.history && history.replaceState) {
+            history.replaceState(null, '', window.location.pathname + (isSchedules ? '#schedules' : '#webhooks'));
+        }
+        if (isSchedules) stopHistoryPolling(); else startHistoryPolling();
         window.scrollTo({ top: 0 });
     }
     window.showAutomationTab = showAutomationTab;
 
-    document.querySelectorAll('[data-automation-mobile-target]').forEach(function (button) {
-        button.addEventListener('click', function () {
-            var target = button.dataset.automationMobileTarget;
-            if (target === 'quiet-hours') { window.location.href = '/settings#section-worker-quiet-hours'; return; }
-            var which = target === 'triggers' ? 'triggers' : 'schedules';
-            showAutomationTab(which);
-            document.querySelectorAll('[data-automation-mobile-target]').forEach(function (item) {
-                if (item === button) item.setAttribute('aria-current', 'location');
-                else item.removeAttribute('aria-current');
-            });
-            var destination = document.getElementById(target === 'triggers' ? 'section-webhooks-overview' : 'section-schedules-overview');
-            if (destination) destination.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            var feedback = document.getElementById('automationMobileFeedback');
-            if (feedback) feedback.textContent = 'Showing ' + button.textContent.trim();
-        });
+    document.querySelectorAll('[data-automation-tab]').forEach(function (tab) {
+        tab.addEventListener('click', function () { showAutomationTab(tab.dataset.automationTab); });
     });
 
     /* --- Initial tab from URL -------------------------------------------- */
 
-    // /automation#section-… (the navbar's Automation menu, links from other pages): open the section's tab and go
-    // to it. The browser can't scroll to a section in the hidden tab, and showAutomationTab() alone would scroll to
-    // the top and swap the hash for the tab's.
+    // /automation#section-… (links from other pages): open the section's tab and go to it. The browser can't
+    // scroll to a section in the hidden tab, and showAutomationTab() alone would scroll to the top and swap
+    // the hash for the tab's.
     function showSectionFromHash() {
         var hash = window.location.hash;
         if (hash.indexOf('#section-') !== 0) return false;
@@ -176,6 +87,8 @@
             showAutomationTab(which);
             history.replaceState(null, '', window.location.pathname + hash);
         }
+        var details = section.closest('details');
+        if (details) details.open = true;
         section.scrollIntoView();
         return true;
     }
@@ -197,9 +110,6 @@
         if (wantSchedules) {
             showAutomationTab('schedules');
         }
-        // Sidebar anchor scrolling uses native browser behaviour — html
-        // sets scroll-padding-top and scroll-behavior: smooth, so clicking
-        // an <a href="#section-..."> lands at the right spot automatically.
     });
 
     /* --- Cross-tab helpers ----------------------------------------------- */
@@ -239,34 +149,8 @@
         });
     }
 
-    // History polling — only while Triggers tab is active
+    // History polling: only while the Triggers tab is active
     startHistoryPolling();
-
-    /* --- ScrollSpy per-tab ----------------------------------------------- */
-
-    var _currentSpy = null;
-    function activateScrollSpy(target) {
-        if (_currentSpy) { try { _currentSpy.dispose(); } catch (e) { /* */ } }
-        _currentSpy = new bootstrap.ScrollSpy(document.body, {
-            target: target,
-            rootMargin: '0px 0px -60%',
-        });
-        if (target === '#sidebar-triggers-links') window._triggersScrollSpy = _currentSpy;
-    }
-
-    // Called on tab change
-    function onTabChanged(which) {
-        if (which === 'schedules') {
-            stopHistoryPolling();
-            activateScrollSpy('#sidebar-schedules-links');
-        } else {
-            startHistoryPolling();
-            activateScrollSpy('#sidebar-triggers-links');
-        }
-    }
-
-    // Activate for the default tab
-    activateScrollSpy('#sidebar-triggers-links');
 })();
 </script>
 {% endblock %}

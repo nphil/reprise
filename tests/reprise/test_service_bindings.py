@@ -12,7 +12,7 @@ from media_preview_generator.markers.store import MarkerStore
 from media_preview_generator.reprise import service as service_module
 from media_preview_generator.reprise.admission import admit_references
 from media_preview_generator.reprise.analysis import NO_OTHER_EPISODES, OTHER_EPISODES_NOT_READY, UNCOMPARABLE_MEDIA
-from media_preview_generator.reprise.identity import is_current, media_version
+from media_preview_generator.reprise.identity import currency, is_current, media_version
 from media_preview_generator.reprise.models import (
     AnalysisDraft,
     AnalysisRefused,
@@ -593,6 +593,94 @@ def test_a_new_device_number_or_inode_does_not_make_an_episode_stale_but_a_new_s
     assert is_current(replace(target, device=None, inode=None))
     assert not is_current(replace(target, size_bytes=target.size_bytes + 1))
     assert not is_current(replace(target, mtime_ns=target.mtime_ns + 1))
+
+
+def stale_of(service, version):
+    item = next(i for i in service.list_media()["items"] if i["id"] == version.id)
+    assert service.get_result(version.id)["stale"] == item["stale"]
+    return item["stale"]
+
+
+def damage_file(path, how):
+    if how == "append":  # edited in place
+        with open(path, "ab") as file:
+            file.write(b"changed")
+    elif how == "rename":  # what a Sonarr or Radarr upgrade does: the old name is gone
+        os.rename(path, os.path.join(os.path.dirname(path), "renamed - WEBDL-2160p.mkv"))
+    else:  # the media share is not mounted (an array still starting after a reboot)
+        shutil.rmtree(os.path.dirname(path))
+
+
+@pytest.mark.parametrize(
+    ("how", "code", "label", "action"),
+    [
+        ("rename", "file_missing", "File missing", "refresh"),
+        ("append", "file_changed", "File changed", "refresh"),
+        ("unmount", "library_unavailable", "Media folder unavailable", "refresh"),
+    ],
+)
+def test_a_row_that_is_not_current_names_the_real_cause_and_the_button_that_helps(lifecycle, how, code, label, action):
+    service, register = lifecycle
+    target, identity = register("target", "episode-1")
+    assert stale_of(service, target) is None
+    damage_file(target.canonical_path, how)
+    stale = stale_of(service, target)
+    assert (stale["code"], stale["label"], stale["action"]) == (code, label, action)
+    assert stale["message"] and stale["next"]
+    assert service.lookup(identity)["freshness"] == "stale" and "stale" not in service.lookup(identity)
+    with pytest.raises(AnalysisRefused):
+        service.enqueue_analysis([target.id], principal="owner")
+    if how == "rename":
+        assert "Sonarr" in stale["message"] and "changed" not in stale["message"]
+
+
+def test_currency_tells_missing_from_unreachable_from_moved_from_changed(lifecycle, monkeypatch):
+    service, register = lifecycle
+    target, _ = register("target", "episode-1")
+    assert currency(target) is None
+    assert currency(replace(target, size_bytes=target.size_bytes + 1)) == "changed"
+    assert currency(replace(target, canonical_path=target.canonical_path + ".gone")) == "missing"
+    assert currency(replace(target, canonical_path=target.canonical_path + "/inside-a-file")) == "missing"
+
+    def denied(*args, **kwargs):
+        raise PermissionError("denied")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(os, "stat", denied)
+        assert currency(target) == "unreachable"
+    library = os.path.dirname(target.canonical_path)
+    os.rename(library, library + "-real")
+    os.symlink(library + "-real", library)
+    assert currency(target) == "moved"
+
+
+def test_an_analysis_that_no_longer_counts_says_why_and_analyzing_again_clears_it(lifecycle):
+    service, register = lifecycle
+    target, identity = register("target", "episode-1")
+    reference, _ = register("reference", "episode-2")
+    queued_analysis(service, target)
+    assert any(e.reference_version_id for e in service.store.get_result(target.id).evidence)
+    assert stale_of(service, target) is None
+    # Reprise's comparison method was updated since: no file changed, so nothing is called "changed".
+    with service.store.transaction() as conn:
+        conn.execute("UPDATE reprise_decision_results SET policy_version=? WHERE version_id=?", ("old", target.id))
+    stale = stale_of(service, target)
+    assert (stale["code"], stale["label"], stale["action"]) == ("needs_reanalysis", "Analyze again", "analyze")
+    assert "file" not in stale["message"].lower()
+    queued_analysis(service, target)  # the offered action is allowed and clears it
+    assert stale_of(service, target) is None
+    # A refresh saw Plex describe the episode differently (other markers).
+    metadata = service.store.get_bindings(target.id)[0][2]
+    service.store.register_media(target, identity, server_id="server", metadata={**metadata, "candidates": []})
+    assert stale_of(service, target)["code"] == "plex_changed"
+    queued_analysis(service, target)
+    assert stale_of(service, target) is None
+    # An episode it was compared with was replaced.
+    damage_file(reference.canonical_path, "rename")
+    stale = stale_of(service, target)
+    assert (stale["code"], stale["action"]) == ("comparison_changed", "analyze")
+    queued_analysis(service, target)
+    assert stale_of(service, target) is None
 
 
 PLEX_MARKERS = [

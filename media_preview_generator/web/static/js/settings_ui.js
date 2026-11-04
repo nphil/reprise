@@ -9,6 +9,20 @@
         return Array.from(document.querySelectorAll('#settings-sidebar a[href^="#section-"]'));
     }
 
+    // A link such as /settings#gpu-configuration points inside a collapsed group: open it so the target is visible.
+    function revealFoldForHash() {
+        const id = decodeURIComponent(location.hash.slice(1));
+        const target = id ? document.getElementById(id) : null;
+        if (!target) return;
+        let fold = target.tagName === 'DETAILS' ? target : target.closest('details');
+        const wasClosed = fold && !fold.open;
+        while (fold) {
+            fold.open = true;
+            fold = fold.parentElement ? fold.parentElement.closest('details') : null;
+        }
+        if (wasClosed) target.scrollIntoView({ block: 'start' });
+    }
+
     function markSection(id) {
         const select = document.getElementById('settingsMobileSection');
         const feedback = document.getElementById('settingsMobileSectionFeedback');
@@ -105,7 +119,7 @@
             graph.innerHTML = window.WeekGraph.render([], window.WeekGraph.pauseSegments(), { height: 14, timeZone: timeZone() });
             if (hint) {
                 const next = window.WeekGraph.nextStart(timeZone());
-                if (!enabled.checked) hint.textContent = 'Applied when on.';
+                if (!enabled.checked) hint.textContent = 'Turn on to use the pause windows below.';
                 else if (window.WeekGraph.pausedNow(timeZone())) hint.textContent = 'Everything is paused, including current files.';
                 else hint.textContent = next ? `Next pause ${next}.` : 'Add a window to pause on a schedule.';
             }
@@ -136,6 +150,8 @@
     }
 
     document.addEventListener('DOMContentLoaded', function () {
+        revealFoldForHash();
+        window.addEventListener('hashchange', revealFoldForHash);
         setupMobileSections();
         setupScrollSpy();
         setupSecretToggles();

@@ -164,6 +164,10 @@
 /* ===== Dense worker table: any enabled group with 5+ workers; the card layout above is untouched otherwise ===== */
 .wg-more, .wg-idle-row, .wg-cols { display:none; }
 .dashboard-layout #workerGroupLiveRows.wg-dense { --wg-cols:76px minmax(0, 1fr) 138px minmax(230px, 330px) 108px 76px; display:block; }
+/* The column titles only make sense above running workers; with every worker idle they float over group rows. */
+.dashboard-layout .dashboard-workers-card:not(:has(#workerGroupLiveRows .wk:not(.idle), #workerGroupLiveRows .wk.border-warning)) .wg-cols { display:none !important; }
+/* Keep the last band inside the card's rounded corners. */
+.dashboard-layout #workerGroupLiveRows.wg-dense { overflow:hidden; border-radius:0 0 calc(var(--radius-card, 12px) - 1px) calc(var(--radius-card, 12px) - 1px); }
 .dashboard-layout #workerGroupLiveRows.wg-dense > .worker-group-section { display:block; padding:0; border:0; overflow:visible; }
 .dashboard-layout #workerGroupLiveRows.wg-dense > .worker-group-section:not([hidden]) + .worker-group-section:not([hidden]) { border-top:1px solid var(--line); }
 .dashboard-layout #workerGroupLiveRows.wg-dense .worker-group-dashboard-header { display:flex; flex-wrap:wrap; align-items:center; gap:6px 12px; padding:10px 16px; background:var(--panel-2); border-bottom:1px solid var(--line); }
@@ -275,6 +279,8 @@
 .mchip { display:inline-flex; align-items:center; gap:6px; height:28px; min-width:0; max-width:100%; padding:0 8px 0 6px; border-radius:var(--radius-ctl); background:var(--inset); font-size:13px; font-weight:600; }
 .mchip .dot { width:10px; height:10px; border-radius:3px; background:var(--c, var(--ok)); flex:none; }
 .mchip-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* Manrope's space is very narrow in capitals ("INTEL GPU" read as "INTELGPU"), so names get a little extra word gap. */
+.mchip-name, .g-name, .wg-name, .devname .nm, .ed-name { word-spacing: 0.15em; }
 .mchip-x { color:var(--muted); font-variant-numeric:tabular-nums; }
 .mchip .cap { width:22px; height:22px; font-size:12px; border-radius:6px; }
 .mchip .caps { gap:3px; }
@@ -285,8 +291,8 @@
 
 /* Dashboard: each member is a sub-row under its group header. */
 .wg-members { display:flex; flex-direction:column; gap:12px; min-width:0; }
-.wg-mem { display:flex; flex-direction:column; gap:8px; min-width:0; padding:10px 10px 10px 12px; border:1px solid var(--line); border-left:4px solid var(--c, var(--ok)); border-radius:var(--radius-ctl); }
-.wg-mem.gone { border-style:dashed; border-left-color:var(--warn); }
+.wg-mem { display:flex; flex-direction:column; gap:8px; min-width:0; padding:10px 12px; border:1px solid color-mix(in srgb, var(--c, var(--ok)) 45%, var(--line)); border-radius:var(--radius-ctl); }
+.wg-mem.gone { border-style:dashed; border-color:color-mix(in srgb, var(--warn) 60%, var(--line)); }
 .wg-mem-head:empty, .wg-group-foot:empty { display:none; }
 .wg-mem-head { display:flex; flex-direction:column; gap:6px; min-width:0; }
 .mem-h { display:grid; grid-template-columns:minmax(0, 1fr) auto auto auto; align-items:center; gap:8px; }
@@ -331,7 +337,7 @@
 
 /* Dense table: the member row becomes a band above its worker rows. */
 .dashboard-layout #workerGroupLiveRows.wg-dense .wg-members { display:block; }
-.dashboard-layout #workerGroupLiveRows.wg-dense .wg-mem { display:block; padding:0; border-width:0 0 0 4px; border-radius:0; }
+.dashboard-layout #workerGroupLiveRows.wg-dense .wg-mem { display:block; padding:0; border-width:0; border-radius:0; }
 .dashboard-layout #workerGroupLiveRows.wg-dense .wg-mem + .wg-mem { border-top:1px solid var(--line); }
 .dashboard-layout #workerGroupLiveRows.wg-dense .wg-mem-head { padding:4px 16px; background:var(--panel-2); border-bottom:1px solid var(--line); }
 .dashboard-layout #workerGroupLiveRows.wg-dense .wg-group-foot { padding:8px 16px; }
@@ -342,9 +348,9 @@
 .worker-group-editor .info-icon { display:inline-grid; place-items:center; min-width:44px; min-height:44px; margin:-12px -8px; border:0; background:transparent; border-radius:50%; }
 .err-foot { display:flex; gap:8px; align-items:flex-start; margin:0.5rem 0; padding:8px 12px; border-radius:var(--radius-ctl); background:var(--bad-soft); color:var(--bad); font-size:13px; }
 .err-foot[hidden] { display:none; }
-.mrow { margin-bottom:10px; padding:12px; background:var(--bs-card-bg, var(--panel-2)); border:1px solid var(--line); border-left:4px solid var(--c, var(--ok)); border-radius:var(--radius-ctl); }
-.mrow.has-err { border-color:var(--bad); border-left-color:var(--bad); }
-.mrow.has-warn { border-color:color-mix(in srgb, var(--warn) 60%, var(--line)); border-left-color:var(--warn); }
+.mrow { margin-bottom:10px; padding:12px; background:var(--bs-card-bg, var(--panel-2)); border:1px solid color-mix(in srgb, var(--c, var(--ok)) 45%, var(--line)); border-radius:var(--radius-ctl); }
+.mrow.has-err { border-color:var(--bad); }
+.mrow.has-warn { border-color:color-mix(in srgb, var(--warn) 60%, var(--line)); }
 .mrow-top { display:grid; grid-template-columns:minmax(0, 1fr) auto auto; align-items:end; gap:12px; }
 .mrow .lbl { display:flex; flex-wrap:wrap; align-items:center; row-gap:4px; margin-bottom:4px; font-size:12px; font-weight:600; color:var(--muted); }
 .mrow .form-select { min-height:44px; }

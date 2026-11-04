@@ -692,8 +692,8 @@ class TestThisAppRow:
         for name in ("Check now", "Edit", "Remove", "Open", "Fix", "Setup Health"):
             expect(row.get_by_text(name, exact=True)).to_have_count(0)
         assert row.get_attribute("id") is None and row.get_attribute("data-id") is None
-        link = row.get_by_role("link", name="Workers settings for this app")
-        expect(link).to_have_text("Workers")
+        link = row.get_by_role("link", name="Worker settings for this app")
+        expect(link).to_have_text("Worker settings")
         expect(link).to_have_attribute("href", "/settings#section-workers")
         # Its row isn't a node: the page asked /api/nodes for the list and nothing else.
         assert {(method, path) for method, path, _ in api.calls} == {("GET", "/nodes")}
@@ -941,9 +941,7 @@ class TestAddNode:
 
         note = page.locator("#addNodeMappings .nd-map-note")
         expect(note).to_contain_text("Your media servers have no libraries loaded yet.")
-        expect(note.get_by_role("link", name="Refresh libraries on Media Servers")).to_have_attribute(
-            "href", "/servers"
-        )
+        expect(note.get_by_role("link", name="Refresh libraries in Connections")).to_have_attribute("href", "/servers")
         expect(page.locator("#addNodeMappings")).not_to_contain_text("Add a media server")
 
     def test_plex_database_node_skips_the_media_step(self, authed_page: Page, app_url: str) -> None:
@@ -1247,9 +1245,7 @@ class TestNodeDialog:
 
         note = pane.locator(".nd-map-note")
         expect(note).to_contain_text("No libraries to test yet. Your media servers have no libraries loaded yet.")
-        expect(note.get_by_role("link", name="Refresh libraries on Media Servers")).to_have_attribute(
-            "href", "/servers"
-        )
+        expect(note.get_by_role("link", name="Refresh libraries in Connections")).to_have_attribute("href", "/servers")
 
     def test_closing_the_dialog_gives_focus_back_to_the_nodes_button_even_after_a_poll(
         self, authed_page: Page, app_url: str
@@ -1730,7 +1726,7 @@ class TestNodeDialog:
             "informational": True,
             "reason": "Home · Synth",
             "help_url": "/servers",
-            "help_label": "Fix on Media Servers",
+            "help_label": "Fix in Connections",
         }
         passing = {"id": "lib_movies", "label": "Movies visible", "ok": True, "severity": "critical"}
         api.health_answer = {"overall_ok": True, "sections": [{"id": "a", "title": "Media", "checks": [passing, note]}]}
@@ -1739,7 +1735,7 @@ class TestNodeDialog:
         _node_tab(authed_page, "health")
         body = authed_page.locator("#nodeHealthBody")
         expect(body.locator(".nd-note")).to_have_text(
-            "7 libraries skipped: this app can't open them. Fix on Media Servers"
+            "7 libraries skipped: this app can't open them. Fix in Connections"
         )
         expect(body.locator('.readiness-bucket[data-tier="recommended"]')).to_have_count(0)
         expect(authed_page.locator("#nodeHealthSummary")).to_have_text("✓ All good")

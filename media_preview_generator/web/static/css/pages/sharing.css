@@ -1,0 +1,32 @@
+/* Sharing page. Loaded after reprise.css; only what the Sharing panels need beyond the shared Library styles. */
+#repriseSharing .rp-split { flex-wrap: wrap; align-items: flex-start; }
+/* The text takes the room it needs and wraps; the button or switch beside it never shrinks and never wraps. */
+#repriseSharing .rp-split > div:first-child { flex: 1 1 20rem; min-width: 0; }
+#repriseSharing .rp-split > :not(:first-child) { flex: none; }
+#repriseSharing .rp-btn { white-space: nowrap; }
+#repriseSharing .rp-section-head h2 { margin: 0 0 4px; }
+#repriseSharing .rp-section-head p { margin: 0; color: var(--lu-ink-2); max-width: 62ch; }
+#repriseSharing .rp-switch .form-check-input { width: 3rem; height: 1.75rem; }
+#repriseSharing .rp-note { margin: 0; color: var(--lu-ink-2); }
+#repriseSharing .rp-note a { color: var(--lu-accent-text); }
+#repriseSharing #rpWriteState { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+
+#repriseSharing #rpClientForm { max-width: 34rem; margin-top: 4px; padding: 16px; border: 1px solid var(--lu-edge-soft); border-radius: var(--lu-radius-control); background: var(--lu-canvas); }
+#repriseSharing #rpClientForm .rp-toggle { display: flex; align-items: center; gap: 10px; min-height: var(--lu-target); font-weight: 600; }
+#repriseSharing #rpClientForm .rp-actions { margin-top: 12px; }
+#repriseSharing #rpClientForm .rp-toggle input { flex: none; width: 24px; height: 24px; }
+
+#repriseSharing .rp-secret output { padding: 10px 12px; border-radius: var(--lu-radius-control); background: var(--lu-canvas); user-select: all; }
+#repriseSharing .rp-secret .rp-actions { margin-top: 4px; }
+
+#repriseSharing .rp-client { flex-wrap: wrap; }
+#repriseSharing .rp-client > div { flex: 1 1 12rem; }
+#repriseSharing .rp-client .rp-note { display: inline-block; margin-top: 2px; }
+
+@media (max-width: 575.98px) {
+    #repriseSharing .rp-header { flex-direction: column; align-items: flex-start; gap: 8px; }
+    #repriseSharing .rp-split > :not(:first-child) { width: 100%; }
+    #repriseSharing .rp-split > button.rp-btn { width: 100%; }
+    #repriseSharing .rp-client .rp-btn { flex: 1 1 8rem; }
+    #repriseSharing #rpClientForm .rp-actions .rp-btn { flex: 1 1 8rem; }
+}

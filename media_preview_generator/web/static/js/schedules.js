@@ -499,8 +499,11 @@ function updateScheduleList() {
     if (schedules.length === 0) {
         tbody.innerHTML = `
             <tr>
-                <td colspan="7" class="text-center text-muted py-4">
-                    No schedules configured
+                <td colspan="7" class="sched-empty">
+                    <i class="bi bi-calendar-event sched-empty-icon" aria-hidden="true"></i>
+                    <div class="sched-empty-title">No schedules yet</div>
+                    <p>A schedule starts work for you on a timer, such as a nightly check of your whole library. New downloads are already covered by webhooks, so add one only if you want a regular catch-up.</p>
+                    <button type="button" class="btn btn-primary" onclick="showNewScheduleModal()"><i class="bi bi-plus-lg me-1" aria-hidden="true"></i>Add your first schedule</button>
                 </td>
             </tr>
         `;
