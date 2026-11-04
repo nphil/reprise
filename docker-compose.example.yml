@@ -1,6 +1,6 @@
 services:
   reprise:
-    image: ${IMAGE:-ghcr.io/nphil/reprise@sha256:ef7e7a1d6c66b56ce30c0c3bf10c5985a7dd8046d326ec6bde9c20dc85895f38}
+    image: ${IMAGE:-ghcr.io/nphil/reprise@sha256:5a96a8120c1fbf4fb7cfc808498e9307afc50c99c0d102c3ee9a529594708d7c}
     container_name: reprise
     restart: unless-stopped
     cpus: 1
