@@ -64,7 +64,7 @@ def test_queue_filters_keep_exact_library_pair_and_reset_pagination(authed_page:
     expect(queue.get_by_role("option", name="Movies · Home Plex", exact=True)).to_have_count(1)
     expect(queue.get_by_role("option", name="Movies · Studio Jellyfin", exact=True)).to_have_count(1)
     with page.expect_response(lambda req: parse_qs(urlparse(req.url).query).get("page") == ["2"]):
-        queue.get_by_role("link", name="Next", exact=True).click()
+        queue.get_by_role("button", name="Next page", exact=True).click()
     with page.expect_response(lambda req: parse_qs(urlparse(req.url).query).get("server_id") == ["jellyfin-1"]):
         queue.get_by_label("Server", exact=True).select_option("jellyfin-1")
     assert captured[-1]["page"] == ["1"]

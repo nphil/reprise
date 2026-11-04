@@ -284,7 +284,8 @@ def test_session_only_card_offers_dismiss_without_dismiss_permanently(page) -> N
     page.evaluate("cards => renderNotifications(cards)", [session_only, ordinary])
 
     def button_labels(notification_id: str) -> list[str]:
-        return page.locator(f'[data-notification-id="{notification_id}"] button').all_inner_texts()
+        selector = f'[data-notification-id="{notification_id}"] button:not(.notification-toggle-details)'
+        return page.locator(selector).all_inner_texts()
 
     assert button_labels(MEDIA_MOUNT_UNHEALTHY_ID) == ["Dismiss"]
     assert button_labels(DEPRECATED_IMAGE_ID) == ["Dismiss", "Dismiss permanently"]

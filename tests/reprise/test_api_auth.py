@@ -126,13 +126,13 @@ def test_library_pages_hydrate_only_requested_rows_at_catalogue_scale(tmp_path, 
                 )
     service = RepriseService(store, registry, None)
     calls = []
-    lookup = service.lookup
+    lookup = service._lookup
 
     def counted(identity):
         calls.append(identity)
         return lookup(identity)
 
-    monkeypatch.setattr(service, "lookup", counted)
+    monkeypatch.setattr(service, "_lookup", counted)
     app = Flask(__name__)
     app.secret_key = "throwaway"
     app.register_blueprint(create_reprise_blueprint(service))

@@ -157,7 +157,7 @@
                             </div>
                             <div class="sm-line">
                                 <label class="sm-lab" for="editServerVerifySsl">Verify SSL certificate
-                                    <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="For addresses starting with https://, Reprise checks that the server’s security certificate is trusted. Turn this off only if you made the certificate yourself (self-signed). It does nothing for http:// addresses."><i class="bi bi-info-circle"></i></button>
+                                    <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="For https:// addresses, Reprise checks the server’s certificate is trusted. Turn off only for a self-made (self-signed) certificate."><i class="bi bi-info-circle"></i></button>
                                 </label>
                                 <div class="form-check form-switch markers-switch mb-0"><input type="checkbox" role="switch" id="editServerVerifySsl" class="form-check-input"></div>
                             </div>
@@ -207,7 +207,7 @@
                                         <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top"
                                                 title="Save Jellyfin’s preview pictures in Jellyfin’s own data folder instead of next to each video." data-explain-title="Store trickplay off the media drive" data-explain-template="infoJellyfinOffMediaTpl"><i class="bi bi-info-circle"></i></button>
                                     </label>
-                                    <div class="sm-hint">“Trickplay” is Jellyfin’s name for seek-bar previews. Off: saved next to each video. On: saved in Jellyfin’s data folder instead. <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Off keeps previews next to the videos; on uses Jellyfin’s data folder." data-explain-title="Store trickplay off the media drive" data-explain-template="infoEditJfOffMediaHintTpl"><i class="bi bi-info-circle"></i></button>
+                                    <div class="sm-hint">Off: seek-bar previews sit next to each video. On: in Jellyfin’s data folder. <button type="button" class="info-icon" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Off keeps previews next to the videos; on uses Jellyfin’s data folder." data-explain-title="Store trickplay off the media drive" data-explain-template="infoEditJfOffMediaHintTpl"><i class="bi bi-info-circle"></i></button>
 <template id="infoEditJfOffMediaHintTpl">
     <p>Off (default): the preview pictures sit next to each video (in a <code>&lt;video name&gt;.trickplay</code> folder). On: they go in Jellyfin’s data folder (<code>&lt;data folder&gt;/data/trickplay/</code>).</p>
 </template>
