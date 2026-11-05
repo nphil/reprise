@@ -8,6 +8,11 @@
     // GPU leaves it out.
     function vulkanLine(vulkan, options) {
         if (!vulkan) return '';
+        // Left out of this build on purpose: a grey note with the reason, no fault mark and nothing to fix.
+        if (vulkan.neutral) {
+            return '<div class="vk-line"><span class="vk-neutral" aria-hidden="true">–</span> Vulkan '
+                + '<span class="vk-detail">' + escapeHtml(vulkan.title || '') + '. ' + escapeHtml(vulkan.why || '') + '</span></div>';
+        }
         if (vulkan.ok) {
             return '<div class="vk-line"><span class="vk-ok" aria-hidden="true">✓</span> Vulkan <span class="vk-detail">'
                 + escapeHtml(vulkan.why || '') + '</span></div>';

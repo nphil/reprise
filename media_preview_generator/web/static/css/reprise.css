@@ -55,6 +55,7 @@
 .rp-listbar .rp-btn{flex:0 0 auto;min-height:36px;padding:4px 10px;font-size:13.5px}
 .rp-state{padding:20px 4px;color:var(--lu-ink-2);font-size:14px}
 .rp-state .rp-btn{margin-top:12px}
+.rp-state .rp-actions{margin-top:12px}.rp-state .rp-actions .rp-btn{margin-top:0}
 .rp-error,.rp-message.error{color:var(--lu-danger)}
 .rp-message{margin:0 0 16px;padding:14px 16px;background:var(--lu-glass);border:1px solid var(--lu-edge-soft);border-radius:var(--lu-radius-control);color:var(--lu-ink)}
 .rp-message.error{border-color:var(--lu-danger)}
@@ -107,6 +108,7 @@
 .rp-job-main{flex:1;min-width:0;display:grid;gap:4px}
 .rp-job-main strong{font-weight:750}
 .rp-job-main .rp-note{overflow-wrap:anywhere}
+.rp-job-warn{margin:0;padding:0 0 0 18px;display:grid;gap:2px}
 .rp-bar{height:8px;border-radius:var(--lu-radius-pill);background:var(--lu-hover-wash);overflow:hidden}
 .rp-bar span{display:block;height:100%;border-radius:inherit;background:var(--lu-accent);transition:width .4s ease-out}
 .rp-job[data-status=failed] .rp-job-main strong{color:var(--lu-danger)}

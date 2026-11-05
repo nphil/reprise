@@ -321,6 +321,11 @@ class RepriseStore:
             for r in rows
         ]
 
+    def media_file_count(self):
+        """How many distinct files Reprise has read from the media server: one indexed count, no document parsed."""
+        with self.marker_store._reading() as c:
+            return c.execute("SELECT COUNT(DISTINCT version_id) FROM reprise_bindings WHERE active=1").fetchone()[0]
+
     def list_media(self, server_id=None, cursor=None, limit=50):
         if type(limit) is not int or not 1 <= limit <= 500:
             raise ValueError("invalid page size")

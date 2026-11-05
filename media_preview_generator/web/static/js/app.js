@@ -4945,7 +4945,10 @@ async function checkConfigHealth() {
                         data-dismiss-config-warning="${kind}"></button>
             </div>`);
     });
-    (data.media_mount_issues || []).forEach((m) => {
+    // The Setup guide's step 2 already names each folder Reprise cannot see, in plainer words and with the fix, so the same cards
+    // above it would say it twice. Every other page keeps them; the unwritable-config and advisory cards stay everywhere.
+    const onSetupGuide = document.body.dataset.rpPage === 'main.setup_guide_page';
+    (onSetupGuide ? [] : (data.media_mount_issues || [])).forEach((m) => {
         const msg = m.issue === 'empty'
             ? `Media mount "${m.path}" is mounted but EMPTY inside the container (stale bind-mount / unmounted share). Every preview job for files on this disk will fail as "missing on disk".`
             : `Media mount "${m.path}" doesn't exist inside the container — check the volume mount and the path mapping under Settings → Media Servers.`;

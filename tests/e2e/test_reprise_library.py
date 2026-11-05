@@ -631,6 +631,46 @@ class TestAnalysisProgress:
         api.finish_analysis()
         expect(outcome).to_contain_text("No repeated intro or credits found.", timeout=12_000)
 
+    def test_a_refresh_that_could_not_read_episodes_lists_each_with_its_reason_and_is_not_red(
+        self, authed_page: Page, api: RepriseApi, app_url: str
+    ) -> None:
+        api.jobs.insert(
+            0,
+            {
+                "id": "refresh-1",
+                "status": "completed",
+                "operation": "refresh",
+                "created_at": "2026-11-04T19:38:00+00:00",
+                "pause_requested": False,
+                "error": None,
+                "warning": "2 episodes could not be read and kept their earlier entries",
+                "message": None,
+                "progress": {"percent": 100.0, "current_item": ""},
+                "refresh": {
+                    "registered": 4249,
+                    "skipped": 2,
+                    "removed": 124,
+                    "skipped_items": [
+                        {
+                            "episode": "Atlanta S03E08 New Jazz",
+                            "reason": "Plex and FFprobe can't read its audio/video streams",
+                        },
+                        {"episode": "Peep Show S04E05 Holiday", "reason": "Plex needs to scan it again"},
+                    ],
+                },
+            },
+        )
+        _open(authed_page, app_url)
+        job = authed_page.locator("#rpActivity .rp-job").first
+        expect(job).to_contain_text("Refreshing the library")
+        expect(job).to_contain_text("2 episodes could not be read and kept their earlier entries")
+        warnings = job.locator(".rp-job-warn li")
+        expect(warnings).to_have_count(2)
+        expect(warnings.first).to_have_text(
+            "Atlanta S03E08 New Jazz: Plex and FFprobe can't read its audio/video streams."
+        )
+        expect(job).not_to_contain_text("Failed")
+
 
 @pytest.mark.e2e
 class TestShellStatus:

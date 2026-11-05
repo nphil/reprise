@@ -1,8 +1,8 @@
-{#- Settings > Advanced: who is signed in, changing the password, and re-opening the tour. -#}
+{#- Settings > Advanced: who is signed in, changing the password, and re-opening the setup guide and the tour. -#}
 <div class="card section-card" id="section-auth">
     <div role="heading" aria-level="2" class="card-header">
         <i class="bi bi-person-circle sec-ico" aria-hidden="true"></i>
-        <div class="sec-title"><span class="sec-name">Account</span><span class="sec-desc">Who signs in to Reprise, and a short tour of how it works.</span></div>
+        <div class="sec-title"><span class="sec-name">Account</span><span class="sec-desc">Who signs in to Reprise, the setup guide and a short tour of how it works.</span></div>
     </div>
     <div class="card-body">
         {% if auth_ui.external %}
@@ -57,7 +57,16 @@
         <p class="sr-hint mb-3">Changing it signs out every other browser. Forgot it instead? The sign-in page explains how to get back in.</p>
         {% endif %}
 
-        <h3 class="settings-subheading"><i class="bi bi-compass" aria-hidden="true"></i>Quick tour</h3>
+        <h3 class="settings-subheading"><i class="bi bi-compass" aria-hidden="true"></i>Getting started</h3>
+        <div class="setting-row">
+            <div class="sr-label">
+                <span class="sr-title">Setup guide</span>
+                <div class="sr-hint">The steps for a new install: three you need and four you can skip. Each one shows whether it is done.</div>
+            </div>
+            <div class="sr-control">
+                <a class="btn btn-outline-secondary" href="{{ url_for('main.setup_guide_page') }}"><i class="bi bi-list-check me-1" aria-hidden="true"></i>Open the setup guide</a>
+            </div>
+        </div>
         <div class="setting-row">
             <div class="sr-label">
                 <span class="sr-title">Show the tour again</span>

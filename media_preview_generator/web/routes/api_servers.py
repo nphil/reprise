@@ -318,11 +318,17 @@ def _validate_exclude_paths(rows: list) -> str:
     return ""
 
 
-def _validate_plex_output(output: dict) -> str:
+def _validate_plex_output(output: dict, saved_folder: str = "") -> str:
     """Save-time validation for Plex servers' ``output`` dict.
 
-    The plex_config_folder must exist on disk for the BIF publisher to write to
-    it; catch typos / missing mounts here instead of failing every job.
+    A typed Plex config folder must exist on disk, to catch typos and missing mounts here instead of failing every
+    job. A folder that is already saved and has not changed is not asked again: the setup wizard fills in ``/plex``
+    whether or not anything is mounted there, and refusing every later save of an unrelated field (a path mapping, the
+    name) because of it would lock the owner out of the dialog.
+
+    Args:
+        output: The ``output`` block being saved.
+        saved_folder: The folder the server already has saved ("" for a new server).
     """
     if not isinstance(output, dict):
         return "output must be an object"
@@ -333,7 +339,7 @@ def _validate_plex_output(output: dict) -> str:
         return ""  # caller may save without populating output yet
     if not folder.startswith("/"):
         return f"output.plex_config_folder must be an absolute path (got {folder!r})"
-    if not os.path.isdir(folder):
+    if folder != saved_folder and not os.path.isdir(folder):
         return (
             f"output.plex_config_folder {folder!r} does not exist on this container. "
             f"Verify the path is correct and that the volume is mounted."
@@ -541,7 +547,11 @@ def _validate_server_payload(
     ):
         return None, "output.preview_thumbnails must be a boolean"
     if type_value == "plex":
-        err = _validate_plex_output(output or {})
+        saved_output = base.get("output")
+        saved_folder = (
+            str(saved_output.get("plex_config_folder") or "").strip() if isinstance(saved_output, dict) else ""
+        )
+        err = _validate_plex_output(output or {}, saved_folder)
         if err:
             return None, err
 

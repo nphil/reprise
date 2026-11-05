@@ -277,6 +277,12 @@ def _add_history_entry(
     _save_history_to_disk()
 
 
+def webhook_sources_seen() -> set[str]:
+    """Which senders have contacted a webhook, from the saved history (``sonarr``, ``radarr``, ``plex``, ``custom``)."""
+    with _history_lock:
+        return {str(entry.get("source")) for entry in _webhook_history if isinstance(entry, dict)}
+
+
 def _summarize_payload(data: dict, max_depth: int = 2) -> dict | str:
     """Return a shallow summary of a webhook payload for diagnostic logging.
 

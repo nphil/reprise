@@ -28,7 +28,7 @@ SETTINGS_PAGES = {
     "/nodes": ("Advanced", "true"),
     "/webhook-activity": ("Automation", "true"),
 }
-ALL_PAGES = ["/reprise", *SETTINGS_PAGES]
+ALL_PAGES = ["/reprise", "/setup-guide", *SETTINGS_PAGES]
 TABS = [
     ("Connections", "/servers"),
     ("Sharing", "/reprise/sharing"),
@@ -148,6 +148,12 @@ class TestNavigation:
         assert [(link["text"], link["current"]) for link in nav.rail] == [("Library", "page"), ("Settings", None)]
         assert nav.tabs == []
 
+    def test_the_setup_guide_is_neither_destination_and_has_no_tabs(self, client):
+        # The guide is reached from the sidebar footer, not from the two destinations, so neither one is marked current.
+        nav = _nav(_page(client, "/setup-guide"))
+        assert [(link["text"], link["current"]) for link in nav.rail] == [("Library", None), ("Settings", None)]
+        assert nav.tabs == []
+
     @pytest.mark.parametrize(("path", "expected"), SETTINGS_PAGES.items())
     def test_settings_pages_show_the_same_tabs_and_mark_their_own(self, client, path, expected):
         label, current = expected
@@ -190,6 +196,19 @@ class TestSidebarFooter:
         assert 'href="https://github.com/nphil/reprise/releases/latest"' in html
         assert 'href="https://github.com/nphil/reprise/issues"' in html
 
+    def test_the_footer_links_the_setup_guide_between_help_and_the_tour(self, client):
+        html = _page(client, "/reprise")
+        link = re.search(
+            r'<a class="rp-rail-btn" id="rpSetupGuideLink" href="/setup-guide"([^>]*)>(.*?)</a>', html, re.S
+        )
+        assert link, "the sidebar footer has no Setup guide link"
+        assert "Setup guide" in link.group(2)
+        assert "aria-current" not in link.group(1), "only the guide page itself marks the link current"
+        assert html.index('id="rpHelpLink"') < html.index('id="rpSetupGuideLink"') < html.index("data-tour-open")
+
+    def test_the_guide_marks_its_own_footer_link_current(self, client):
+        assert re.search(r'id="rpSetupGuideLink"[^>]*aria-current="page"', _page(client, "/setup-guide"))
+
 
 class TestStandalonePages:
     def test_the_sign_out_confirmation_has_no_sidebar(self, client):
@@ -226,3 +245,44 @@ class TestReprisePages:
         assert re.search(
             r'<input class="form-check-input" id="rpWritesEnabled" type="checkbox" role="switch" disabled>', html
         )
+
+
+class TestSetupGuidePage:
+    def test_the_page_is_the_frame_the_script_fills_in(self, client):
+        html = _page(client, "/setup-guide")
+        for landmark in (
+            'id="repriseSetupGuide"',
+            "<h1>Setup guide</h1>",
+            'id="sgRequiredTitle">Required</h2>',
+            'id="sgOptionalTitle">Optional</h2>',
+            'id="sgRequired"',
+            'id="sgLive" role="status" aria-live="polite"',
+            'id="sgRecheck"',
+            'id="sgSkip"',
+            "css/pages/setup-guide.css",
+            "js/setup-guide.js",
+        ):
+            assert landmark in html, landmark
+        assert re.search(r'<ol class="sg-steps" id="sgOptional" role="list" start="4">', html)
+        assert "Three steps get Reprise reading your library." in html
+
+    def test_the_tour_opens_by_itself_on_the_library_only(self, client):
+        from media_preview_generator.web import auth
+
+        auth.set_onboarding_state(auth.ONBOARDING_PENDING)  # a brand-new account: the tour would open by itself
+        assert 'data-auto="true"' in _page(client, "/reprise")
+        # The guide and the pages its buttons open: the tour would sit on top of the dialog or form the button opened.
+        for path in ("/setup-guide", "/servers", "/settings", "/reprise/sharing"):
+            html = _page(client, path)
+            assert 'data-auto="false"' in html, path
+            assert 'id="repriseTour"' in html, f"{path}: still there to open by hand"
+        auth.set_onboarding_state(auth.ONBOARDING_DISMISSED)
+        assert 'data-auto="false"' in _page(client, "/reprise")
+
+    def test_settings_offers_the_guide_next_to_the_tour(self, client):
+        html = _page(client, "/settings")
+        account = html[html.index('id="section-auth"') : html.index("js/account_panel.js")]
+        assert re.search(
+            r'<a class="btn btn-outline-secondary" href="/setup-guide">.*?Open the setup guide</a>', account, re.S
+        )
+        assert account.count("data-tour-open") == 1, "the tour button stays the only tour opener in the card"

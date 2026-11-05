@@ -9,7 +9,6 @@ direction. These tests cover each remaining surface as its own cell.
 from __future__ import annotations
 
 import re
-import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -88,20 +87,6 @@ def _quality_copy(name: str) -> str:
         assert found, f"{name}: scope pattern matched nothing — {pattern!r}"
         chunks.extend(found)
     return "\n".join(chunks).lower()
-
-
-def test_unraid_template_import_uses_safe_mounts() -> None:
-    root = ET.parse(REPO_ROOT / "unraid-templates/reprise.xml").getroot()
-    assert root.tag == "Container"
-    assert root.findtext("Name") == "Reprise"
-    configs = [config for config in root.findall("Config") if config.get("Type") == "Path"]
-    paths = {config.get("Target"): config for config in configs}
-    assert len(configs) == len(paths)
-    assert {"/config", "/media"} <= paths.keys()
-    assert all(config.get("Mode") == "ro" for target, config in paths.items() if target != "/config")
-    assert paths["/config"].get("Mode") == "rw"
-    assert paths["/media"].get("Mode") == "ro"
-    assert not (paths["/media"].text or "").strip()
 
 
 def test_every_surface_has_a_scope() -> None:

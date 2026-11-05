@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Setup guide · Reprise{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ url_for('static', filename='css/reprise.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/pages/setup-guide.css') }}">{% endblock %}
+{% block content %}
+{#- The checklist is drawn by setup-guide.js from GET /api/reprise/setup-guide. What is static here is the frame: the headings, the two
+    lists and a skeleton in the shape of the rows, so nothing jumps when the answer arrives. -#}
+<div class="reprise" id="repriseSetupGuide">
+  <header class="rp-header">
+    <div>
+      <h1>Setup guide</h1>
+      <p>Three steps get Reprise reading your library. The rest are optional. You can come back any time.</p>
+    </div>
+    <div class="rp-actions">
+      <button type="button" class="rp-btn quiet" id="sgRecheck"><i class="bi bi-arrow-repeat" aria-hidden="true"></i><span>Check again</span></button>
+      <button type="button" class="rp-btn quiet" id="sgSkip" hidden>Skip for now</button>
+    </div>
+  </header>
+
+  <div class="rp-sr" id="sgLive" role="status" aria-live="polite" aria-atomic="true"></div>
+
+  <div class="sg-status">
+    <p class="sg-progress" id="sgProgress">Checking your setup…</p>
+    <p class="sg-checked" id="sgChecked" hidden></p>
+  </div>
+
+  <div class="rp-message error sg-error" id="sgError" hidden>
+    <p><i class="bi bi-exclamation-circle" aria-hidden="true"></i><span id="sgErrorText">Reprise couldn't check your setup just now.</span></p>
+    <div class="rp-actions"><button type="button" class="rp-btn" id="sgRetry">Try again</button></div>
+  </div>
+
+  <div class="sg-note" id="sgDone" hidden>
+    <i class="bi bi-check-circle-fill" aria-hidden="true"></i>
+    <p>Everything Reprise needs is done. The optional steps below are up to you.</p>
+    <a class="rp-btn primary" id="sgOpenLibrary" href="{{ url_for('main.reprise_page') }}">Open Library</a>
+  </div>
+  <p class="rp-note sg-quiet" id="sgDismissed" hidden>This guide won't open by itself now. It stays under Setup guide in the sidebar.</p>
+
+  <div id="sgGroups" aria-busy="true">
+    <section class="rp-panel sg-group" aria-labelledby="sgRequiredTitle">
+      <div class="rp-section-head">
+        <div>
+          <h2 id="sgRequiredTitle">Required</h2>
+          <p>Reprise needs these three before it can list your episodes.</p>
+        </div>
+      </div>
+      <ol class="sg-steps" id="sgRequired" role="list">
+        <li class="sg-skel" aria-hidden="true"><i class="sg-skel-mark"></i><div><i class="sg-skel-title"></i><i class="sg-skel-line"></i></div></li>
+        <li class="sg-skel" aria-hidden="true"><i class="sg-skel-mark"></i><div><i class="sg-skel-title"></i><i class="sg-skel-line"></i></div></li>
+        <li class="sg-skel" aria-hidden="true"><i class="sg-skel-mark"></i><div><i class="sg-skel-title"></i><i class="sg-skel-line"></i></div></li>
+      </ol>
+    </section>
+
+    <section class="rp-panel sg-group" aria-labelledby="sgOptionalTitle">
+      <div class="rp-section-head">
+        <div>
+          <h2 id="sgOptionalTitle">Optional</h2>
+          <p>Nothing here is needed to start. Do what helps and skip the rest.</p>
+        </div>
+      </div>
+      <ol class="sg-steps" id="sgOptional" role="list" start="4">
+        <li class="sg-skel" aria-hidden="true"><i class="sg-skel-mark"></i><div><i class="sg-skel-title"></i><i class="sg-skel-line"></i></div></li>
+        <li class="sg-skel" aria-hidden="true"><i class="sg-skel-mark"></i><div><i class="sg-skel-title"></i><i class="sg-skel-line"></i></div></li>
+        <li class="sg-skel" aria-hidden="true"><i class="sg-skel-mark"></i><div><i class="sg-skel-title"></i><i class="sg-skel-line"></i></div></li>
+        <li class="sg-skel" aria-hidden="true"><i class="sg-skel-mark"></i><div><i class="sg-skel-title"></i><i class="sg-skel-line"></i></div></li>
+      </ol>
+    </section>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='js/setup-guide.js') }}" defer></script>{% endblock %}

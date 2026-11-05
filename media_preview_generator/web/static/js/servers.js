@@ -283,6 +283,21 @@
         })();
     }
 
+    // The Setup guide's buttons link to /servers?edit=<server_id>&tab=<libraries|paths|connection|health>: once the list has loaded,
+    // open that server's Edit dialog on that tab, then drop the two parameters from the address. An id Reprise does not list is
+    // ignored quietly (no toast), so a stale link never looks like an error.
+    function openEditFromQuery() {
+        const params = new URLSearchParams(window.location.search);
+        const serverId = params.get('edit');
+        if (serverId === null) return;
+        const tab = params.get('tab') || 'general';
+        params.delete('edit');
+        params.delete('tab');
+        const rest = params.toString();
+        window.history.replaceState({}, '', window.location.pathname + (rest ? `?${rest}` : '') + window.location.hash);
+        if (serverId && Object.prototype.hasOwnProperty.call(_listedServers, serverId)) openEditModal(serverId, { openTab: tab });
+    }
+
     async function probeServerConnection(serverId) {
         try {
             const r = await api('POST', `/api/servers/${encodeURIComponent(serverId)}/test-connection`);
@@ -855,7 +870,7 @@
         const isServersPage = !!document.getElementById('serverList');
 
         if (isServersPage) {
-            loadServers();
+            loadServers().then(openEditFromQuery);
         }
 
         // Modal-only wiring. /setup inlines the connection form (no modal),
@@ -1986,10 +2001,13 @@
             // hidden (the pre-fix symptom would be a blank modal body).
             const tabMap = {
                 general: 'edit-tab-general',
+                connection: 'edit-tab-general',
                 health: 'edit-tab-health',
                 processing: 'edit-tab-processing',
                 markers: 'edit-tab-processing',
                 loudness: 'edit-tab-processing',
+                libraries: 'edit-tab-libraries',
+                paths: 'edit-tab-paths',
             };
             const paneId = tabMap[openTab] || 'edit-tab-general';
             const activeTab = document.querySelector(`#editServerModal [data-bs-target="#${paneId}"]`);

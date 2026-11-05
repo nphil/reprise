@@ -2,15 +2,18 @@
 
 from urllib.parse import urlencode
 
-from flask import redirect, render_template, request, session, url_for
+from flask import current_app, redirect, render_template, request, session, url_for
 from loguru import logger
 
 from ...config import MAX_CPU_THREADS
+from ...reprise.setup_guide import required_open
 from ..auth import (
+    SETUP_GUIDE_PENDING,
     AccountError,
     AccountExistsError,
     auth_file_unreadable,
     create_account,
+    get_setup_guide_state,
     is_auth_external,
     is_authenticated,
     is_setup_required,
@@ -27,13 +30,34 @@ def _login_page(**context):
     return render_template("login.html", account_unreadable=auth_file_unreadable(), **context)
 
 
+def _setup_guide_wanted(settings) -> bool:
+    """Whether home should open the setup guide: the owner hasn't skipped it and a required step is still open.
+
+    An install that was already working before the guide existed has no saved choice and counts as set up, so this
+    is False there without looking at anything else.
+    """
+    if get_setup_guide_state(configured=settings.is_configured()) != SETUP_GUIDE_PENDING:
+        return False
+    service = current_app.extensions.get("reprise")
+    if service is None:
+        return False
+    try:
+        return required_open(service, settings.is_setup_complete())
+    except Exception:
+        logger.exception("Could not check the setup guide's required steps")
+        return False
+
+
 @main.route("/")
 @login_required
 def index():
-    """Dashboard page. Redirects to setup wizard if setup is incomplete."""
+    """Home: the setup guide while a new install has a required step open, else the wizard or the Library."""
     from ..settings_manager import get_settings_manager
 
-    if not get_settings_manager().is_setup_complete():
+    settings = get_settings_manager()
+    if _setup_guide_wanted(settings):
+        return redirect(url_for("main.setup_guide_page"))
+    if not settings.is_setup_complete():
         return redirect(url_for("main.setup_wizard"))
     return redirect(url_for("main.reprise_page"))
 
@@ -49,6 +73,13 @@ def reprise_page():
 def reprise_sharing_page():
     """What Reprise shares with Plex and other apps: the Plex publication switch and API clients."""
     return render_template("reprise_sharing.html")
+
+
+@main.route("/setup-guide")
+@login_required
+def setup_guide_page():
+    """The setup guide: ordered steps with a live done/not-done state, read from ``GET /api/reprise/setup-guide``."""
+    return render_template("setup_guide.html")
 
 
 @main.route("/dashboard")

@@ -1,11 +1,13 @@
 {#- The first-run tour. base.html includes this on every page that has the sidebar. It opens by itself once for a new
-    account (auth_ui.onboarding_auto: not dismissed, not finished), and from any [data-tour-open] button (Settings,
-    the sidebar). Copy is plain on purpose; the diagrams reuse the Library page's own timeline and chips, with
-    example values, so what the tour shows is what the page looks like. -#}
+    account (auth_ui.onboarding_auto: not dismissed, not finished) and only on the Library, the page it explains. It
+    stays shut on the Setup guide and on the pages the guide's buttons open (Connections, Automation, Sharing), where
+    it would sit on top of the dialog or form that button just opened. It also opens from any [data-tour-open] button
+    (Settings, the sidebar). Copy is plain on purpose; the diagrams reuse the Library page's own timeline and chips,
+    with example values, so what the tour shows is what the page looks like. -#}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/reprise.css') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/onboarding.css') }}">
 <dialog id="repriseTour" class="tour" aria-label="A quick tour of Reprise"
-        data-auto="{{ 'true' if auth_ui.onboarding_auto else 'false' }}"
+        data-auto="{{ 'true' if auth_ui.onboarding_auto and request.endpoint == 'main.reprise_page' else 'false' }}"
         data-state-url="{{ url_for('api.set_onboarding') }}">
     <div class="reprise tour-frame">
         <header class="tour-head">

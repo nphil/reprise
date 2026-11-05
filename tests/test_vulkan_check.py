@@ -254,7 +254,62 @@ class TestOtherCauses:
 
     def test_to_dict_is_plain_data(self, host):
         data = _only(vc.check_gpus([INTEL], SOFTWARE)).to_dict()
-        assert set(data) == {"ok", "cause", "title", "why", "fix"}
+        assert set(data) == {"ok", "neutral", "cause", "title", "why", "fix"}
+        assert data["neutral"] is False
+
+
+class TestBuildWithoutVulkan:
+    """The image's FFmpeg leaves Vulkan out on purpose: that is a note, not a fault. A build that has it keeps its errors."""
+
+    def test_left_out_gives_a_neutral_note_for_every_vendor_and_probes_nothing(self, host):
+        checks = vc.check_gpus([INTEL, AMD, NVIDIA], NOTHING, ffmpeg_has_vulkan=False, vulkan_left_out=True)
+
+        assert [c.cause for c in checks] == [vc.NOT_IN_BUILD] * 3
+        assert all(c.neutral for c in checks)
+        assert host.ioctl_calls == []
+        data = checks[0].to_dict()
+        assert data["neutral"] is True and data["fix"] == ""
+        assert "report it" not in data["why"].lower() and "container image" not in data["why"].lower()
+        assert "Dolby Vision" in data["why"]
+
+    def test_an_ffmpeg_without_vulkan_that_is_not_known_to_be_deliberate_stays_a_fault(self, host):
+        (check,) = vc.check_gpus([NVIDIA], NOTHING, ffmpeg_has_vulkan=False, vulkan_left_out=False)
+
+        assert (check.ok, check.neutral, check.cause) == (False, False, "no_vulkan_in_ffmpeg")
+
+    def test_a_build_that_has_vulkan_keeps_the_real_cause_even_if_the_recipe_check_says_left_out(self, host):
+        diag = _diag(nvidia_capabilities_has_graphics=False)
+
+        (check,) = vc.check_gpus(
+            [NVIDIA], SOFTWARE, ffmpeg_has_vulkan=True, vulkan_left_out=True, nvidia_diag=lambda: diag
+        )
+
+        assert (check.ok, check.neutral, check.cause) == (False, False, "nvidia_no_graphics_cap")
+
+    def test_get_vulkan_checks_reads_the_build_recipe(self, host, monkeypatch):
+        monkeypatch.setattr(vc, "get_vulkan_device_info", lambda: NOTHING)
+        monkeypatch.setattr(vc, "get_vulkan_debug_buffer", lambda: "")
+        monkeypatch.setattr("media_preview_generator.gpu.ffmpeg_capabilities._is_hwaccel_available", lambda name: False)
+        for left_out, neutral in ((True, True), (False, False)):
+            monkeypatch.setattr(
+                "media_preview_generator.gpu.ffmpeg_capabilities.ffmpeg_vulkan_left_out",
+                lambda left_out=left_out: left_out,
+            )
+            vc.clear_vulkan_check_cache()
+            (check,) = real_get_vulkan_checks([NVIDIA])
+            assert check.neutral is neutral
+        vc.clear_vulkan_check_cache()
+
+    def test_a_neutral_note_is_not_a_startup_warning(self, host, monkeypatch):
+        note = vc.check_gpus([NVIDIA], NOTHING, ffmpeg_has_vulkan=False, vulkan_left_out=True)[0]
+        monkeypatch.setattr(vc, "get_vulkan_checks", lambda gpus, diag=None: [note])
+        messages = []
+        sink = logger.add(lambda m: messages.append(m.record["message"]), level="WARNING")
+        try:
+            vc.log_vulkan_warnings([NVIDIA])
+        finally:
+            logger.remove(sink)
+        assert messages == []
 
 
 class TestHardwareProbe:

@@ -42,6 +42,13 @@ ONBOARDING_DISMISSED = "dismissed"
 ONBOARDING_COMPLETED = "completed"
 ONBOARDING_STATES = (ONBOARDING_PENDING, ONBOARDING_DISMISSED, ONBOARDING_COMPLETED)
 
+# The setup guide's own memory, kept apart from the tour's: ``pending`` (open it by itself while a required step is
+# open), ``dismissed`` (they chose Skip) or ``completed`` (every required step was done).
+SETUP_GUIDE_PENDING = "pending"
+SETUP_GUIDE_DISMISSED = "dismissed"
+SETUP_GUIDE_COMPLETED = "completed"
+SETUP_GUIDE_STATES = (SETUP_GUIDE_PENDING, SETUP_GUIDE_DISMISSED, SETUP_GUIDE_COMPLETED)
+
 _account_lock = threading.RLock()
 _secret_lock = threading.RLock()
 _warned_unreadable: set[tuple[str, str]] = set()
@@ -204,7 +211,7 @@ def _now() -> str:
 
 
 def create_account(username: str, password: str) -> None:
-    """Create the one owner account (first-run setup) and start onboarding for it.
+    """Create the one owner account (first-run setup) and start onboarding and the setup guide for it.
 
     Raises:
         AccountError: The username or password isn't acceptable.
@@ -225,6 +232,7 @@ def create_account(username: str, password: str) -> None:
             "created_at": _now(),
         }
         config["onboarding"] = {"state": ONBOARDING_PENDING}
+        config["setup_guide"] = {"state": SETUP_GUIDE_PENDING}
         save_auth_config(config)
     logger.info("Owner account '{}' created", username)
 
@@ -321,6 +329,7 @@ def reset_account() -> bool:
         had = _valid_account(config) is not None
         config.pop("account", None)
         config.pop("onboarding", None)
+        config.pop("setup_guide", None)
         if config:
             save_auth_config(config)
         elif os.path.exists(AUTH_FILE):
@@ -586,6 +595,41 @@ def set_onboarding_state(state: str) -> None:
     with _account_lock:
         config = load_auth_config()
         config["onboarding"] = {"state": state, "updated_at": _now()}
+        save_auth_config(config)
+
+
+def get_setup_guide_state(*, configured: bool) -> str:
+    """What the owner chose for the setup guide: ``pending``, ``dismissed`` or ``completed``.
+
+    A new account starts ``pending`` (``create_account`` writes it). An account from before the guide existed has no
+    saved choice: when a media server is already connected it counts as set up (``completed``), so the guide never
+    opens by itself on an install that works; with none connected it is ``pending``, since setup was never finished.
+
+    Args:
+        configured: Whether a media server is connected (``SettingsManager.is_configured``).
+
+    Returns:
+        One of ``SETUP_GUIDE_STATES``.
+    """
+    saved = load_auth_config().get("setup_guide")
+    state = saved.get("state") if isinstance(saved, dict) else None
+    if state in SETUP_GUIDE_STATES:
+        return state
+    return SETUP_GUIDE_COMPLETED if configured else SETUP_GUIDE_PENDING
+
+
+def set_setup_guide_state(state: str) -> None:
+    """Remember the setup guide's state.
+
+    Raises:
+        ValueError: ``state`` isn't one of SETUP_GUIDE_STATES.
+        OSError: auth.json couldn't be written.
+    """
+    if state not in SETUP_GUIDE_STATES:
+        raise ValueError(f"Unknown setup guide state: {state!r}")
+    with _account_lock:
+        config = load_auth_config()
+        config["setup_guide"] = {"state": state, "updated_at": _now()}
         save_auth_config(config)
 
 

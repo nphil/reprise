@@ -256,24 +256,26 @@ def _form_page(opener: urllib.request.OpenerDirector, url: str) -> tuple[str, st
     return landed_on, match.group(1)
 
 
-def _dismiss_the_tour(opener: urllib.request.OpenerDirector, target_url: str) -> None:
-    """Skip the tour for the new account, as a person would with its Skip button.
+def _dismiss_first_run_offers(opener: urllib.request.OpenerDirector, target_url: str) -> None:
+    """Skip the tour and the setup guide for the new account, as a person would with their Skip buttons.
 
     A new account is offered the first-run tour as a modal <dialog> that opens by itself and makes the page behind it
-    inert, so every click an e2e test makes would wait for it. The tests that cover the tour open it themselves, from
-    any ``[data-tour-open]`` button.
+    inert, so every click an e2e test makes would wait for it; and its home page is the setup guide until a required
+    step is done. The tests that cover them open the tour from any ``[data-tour-open]`` button and the guide from
+    ``/setup-guide``.
     """
     with opener.open(f"{target_url}/", timeout=10) as resp:  # noqa: S310 (test-only localhost)
         page_token = re.search(r'<meta name="csrf-token" content="([^"]+)"', resp.read().decode())
     if not page_token:
         raise RuntimeError("The signed-in page has no csrf-token meta tag")
-    req = urllib.request.Request(
-        f"{target_url}/api/account/onboarding",
-        data=json.dumps({"state": "dismissed"}).encode(),
-        method="POST",
-        headers={"Content-Type": "application/json", "X-CSRFToken": page_token.group(1)},
-    )
-    opener.open(req, timeout=10)  # noqa: S310 (test-only localhost)
+    for path in ("/api/account/onboarding", "/api/reprise/setup-guide"):
+        req = urllib.request.Request(
+            f"{target_url}{path}",
+            data=json.dumps({"state": "dismissed"}).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json", "X-CSRFToken": page_token.group(1)},
+        )
+        opener.open(req, timeout=10)  # noqa: S310 (test-only localhost)
 
 
 def _capture_session_cookie(target_url: str) -> dict:
@@ -300,7 +302,7 @@ def _capture_session_cookie(target_url: str) -> dict:
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
     opener.open(req, timeout=10)  # noqa: S310 (test-only localhost)
-    _dismiss_the_tour(opener, target_url)
+    _dismiss_first_run_offers(opener, target_url)
     for c in cookie_jar:
         if c.name == "reprise_session":
             return {

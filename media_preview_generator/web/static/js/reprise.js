@@ -178,11 +178,16 @@
         const box = $('rpLibraryState'); clear(box); box.hidden = false;
         if (filtered) { box.append(el('span', 'No episodes match these filters.'), document.createElement('br'), button('Clear filters', clearFilters)); return; }
         box.append(el('strong', 'No episodes yet'), document.createElement('br'), el('span', 'Reprise lists episodes after it reads them from Plex.'));
-        const slot = el('div'); box.append(slot);
+        const slot = el('div');
         const offer = libs => {
-            if (libs.length) slot.append(button('Refresh library', startRefresh, 'rp-btn primary'));
-            else { slot.append(el('p', 'No Plex library is connected yet.', 'rp-note')); const a = el('a', 'Open Connections', 'rp-btn primary'); a.href = '/servers'; slot.append(a); }
+            const actions = el('div', null, 'rp-actions');
+            if (libs.length) actions.append(button('Refresh library', startRefresh, 'rp-btn primary'));
+            else { slot.append(el('p', 'No Plex library is connected yet.', 'rp-note')); const a = el('a', 'Open Connections', 'rp-btn primary'); a.href = '/servers'; actions.append(a); }
+            /* The guide lists what is still to do, so a first-time owner with an empty list is one click from the next step. */
+            const guide = el('a', 'Setup guide', 'rp-btn quiet'); guide.href = '/setup-guide'; actions.append(guide);
+            slot.append(actions);
         };
+        box.append(slot);
         loadLibraries().then(offer, () => offer([{}]));
     }
     function renderLibrary() {
@@ -585,8 +590,12 @@
     function describeJob(job) {
         const ids = jobMediaIds(job), terminal = terminalJob(job.status);
         if (job.operation === 'refresh') {
-            const done = terminal && job.refresh ? `Added or updated ${plural(job.refresh.registered, 'episode')}; ${job.refresh.skipped} skipped` + (job.refresh.removed ? `; ${job.refresh.removed} removed (no longer in Plex).` : '.') : '';
-            return { title: 'Refreshing the library', detail: done };
+            /* A refresh that could not read some episodes still did its job: say which ones and why, one line each, so nothing about it looks like a failure. */
+            const r = job.refresh, skipped = r && r.skipped || 0, items = r && Array.isArray(r.skipped_items) ? r.skipped_items : [];
+            const done = terminal && r ? `Added or updated ${plural(r.registered, 'episode')}` + (skipped ? `; ${plural(skipped, 'episode')} could not be read and kept their earlier entries` : '') + (r.removed ? `; ${r.removed} removed (no longer in Plex).` : '.') : '';
+            const notes = items.map(item => `${item.episode}: ${item.reason}.`);
+            if (skipped > items.length) notes.push(`${plural(skipped - items.length, 'more episode')} not listed.`);
+            return { title: 'Refreshing the library', detail: done, notes };
         }
         if (job.operation === 'preview') return { title: 'Preparing a playable preview', detail: '' };
         let title = 'Analyzing episodes';
@@ -602,7 +611,7 @@
         return { title, detail };
     }
     function renderJobRow(job) {
-        const terminal = terminalJob(job.status), { title, detail } = describeJob(job);
+        const terminal = terminalJob(job.status), { title, detail, notes = [] } = describeJob(job);
         const row = el('div', null, 'rp-job'), main = el('div', null, 'rp-job-main'); row.dataset.status = job.status;
         main.append(el('strong', title));
         const pct = typeof job.progress?.percent === 'number' ? Math.max(0, Math.min(100, job.progress.percent)) : null;
@@ -610,6 +619,7 @@
         const status = terminal ? (detail || (job.status === 'completed' ? 'Finished.' : job.status)) :
             [job.status === 'running' ? 'Running' : 'Waiting', job.pause_requested ? 'pause requested' : '', pct != null && job.status === 'running' ? Math.round(pct) + '%' : '', job.progress?.current_item || ''].filter(Boolean).join(' · ');
         main.append(el('span', status + (terminal && ago ? ` (${ago})` : ''), 'rp-note'));
+        if (terminal && notes.length) { const list = el('ul', null, 'rp-job-warn rp-note'); notes.forEach(note => list.append(el('li', note))); main.append(list); }
         if (!terminal && pct != null && job.status === 'running') { const bar = el('div', null, 'rp-bar'); const fill = el('span'); fill.style.width = pct + '%'; bar.append(fill); bar.setAttribute('role', 'progressbar'); bar.setAttribute('aria-valuenow', String(Math.round(pct))); bar.setAttribute('aria-label', title); main.append(bar); }
         row.append(main);
         const actions = terminal ? [] : job.pause_requested ? ['resume', 'cancel'] : job.status === 'running' ? ['pause', 'cancel'] : ['pending', 'queued'].includes(job.status) ? ['cancel'] : [];
@@ -636,16 +646,16 @@
             const data = await api('/api/reprise/jobs'), jobs = data.items;
             if (!Array.isArray(jobs)) throw new Error('The activity response was incomplete.');
             const wasActive = new Set(state.jobs.filter(j => !terminalJob(j.status)).map(j => j.id));
-            state.jobs = jobs; let finishedRefresh = false, finishedAnalysis = false;
+            state.jobs = jobs; let finishedRefresh = false, finishedAnalysis = false, finishedSkipped = 0;
             for (const job of jobs) {
                 const terminal = terminalJob(job.status), before = state.seenJobs.get(job.id);
-                if (job.operation === 'refresh') { if (!terminal) activeRefreshes.add(job.id); else if (activeRefreshes.delete(job.id)) finishedRefresh = true; }
+                if (job.operation === 'refresh') { if (!terminal) activeRefreshes.add(job.id); else if (activeRefreshes.delete(job.id)) { finishedRefresh = true; finishedSkipped += (job.refresh && job.refresh.skipped) || 0; } }
                 if (job.operation === 'analysis' && terminal && (wasActive.has(job.id) || (before && !terminalJob(before)))) finishedAnalysis = true;
                 state.seenJobs.set(job.id, job.status);
             }
             const active = jobs.some(j => !terminalJob(j.status)); if (active) { delay = 2500; if (!wasActive.size) state.activityHidden = false; }
             renderActivity(); paintStatuses(); if (state.item) renderOutcome();
-            if (finishedRefresh) { await loadLibrary(); message('Library refresh finished.'); }
+            if (finishedRefresh) { await loadLibrary(); message(finishedSkipped ? `Library refresh finished. ${plural(finishedSkipped, 'episode')} could not be read; see Activity for which.` : 'Library refresh finished.'); }
             else if (finishedAnalysis) {
                 await reloadLoaded();
                 if (state.item && !activeJobFor(state.item.id)) { if (state.dirty) message('A new analysis finished for the open episode. Save or discard your changes to see it.'); else await openItem(state.item, true); }
@@ -747,4 +757,12 @@
     api('/api/reprise/settings').then(settings => { state.settings = settings; renderSettings(); if (state.result) { renderPublication(); loadHistory(state.item.id, reviewRequest); } }).catch(() => { /* the shell chip reports it */ });
     const initialSearch = new URLSearchParams(location.search).get('search'); if (initialSearch) $('rpSearch').value = initialSearch.slice(0, 200);
     loadLibrary(); loadQueue();
+    /* The Setup guide's "Refresh the library" button links to /reprise?refresh=1: behave as if Refresh library was pressed, once, then drop the parameter. */
+    const launch = new URLSearchParams(location.search);
+    if (launch.get('refresh') === '1') {
+        launch.delete('refresh');
+        const rest = launch.toString();
+        history.replaceState(null, '', location.pathname + (rest ? '?' + rest : '') + location.hash);
+        startRefresh();
+    }
 })();

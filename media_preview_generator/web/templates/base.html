@@ -121,6 +121,10 @@
                 <a class="rp-rail-btn" id="rpHelpLink" href="https://github.com/nphil/reprise/issues" target="_blank" rel="noopener noreferrer">
                     <i class="bi bi-question-circle" aria-hidden="true"></i><span>Help &amp; feedback</span>
                 </a>
+                {# Where a new install finishes setting up; marked current on its own page (the guide is not one of the two destinations above). #}
+                <a class="rp-rail-btn" id="rpSetupGuideLink" href="{{ url_for('main.setup_guide_page') }}"{% if request.endpoint == 'main.setup_guide_page' %} aria-current="page"{% endif %}>
+                    <i class="bi bi-list-check" aria-hidden="true"></i><span>Setup guide</span>
+                </a>
                 {# The tour dialog itself lives in _onboarding.html (AuthOnboarding), which binds every [data-tour-open]. #}
                 <button type="button" class="rp-rail-btn" data-tour-open><i class="bi bi-compass" aria-hidden="true"></i><span>Take the tour</span></button>
                 {# A POST with the page's token: a plain link would let any page sign the user out. #}

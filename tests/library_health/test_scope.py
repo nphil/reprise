@@ -1,5 +1,7 @@
 """Tests for library_health.scope."""
 
+import pytest
+
 from media_preview_generator.library_health.models import CellState, Feature
 from media_preview_generator.library_health.scope import excluded, library_scopes
 from media_preview_generator.servers.base import Library, ServerConfig, ServerType
@@ -115,3 +117,22 @@ def test_chapters_cell_per_server_type_and_switches():
     for other in (ServerType.EMBY, ServerType.JELLYFIN):
         cell = chapters(other, output=on)
         assert cell.state == CellState.NOT_APPLICABLE and cell.reason == "Plex only"
+
+
+@pytest.mark.parametrize("server_type", [ServerType.PLEX, ServerType.JELLYFIN, ServerType.EMBY])
+def test_server_with_preview_thumbnails_off_shows_previews_as_off_not_to_do(server_type):
+    cfg = _cfg(server_type, [_lib(kind="show")], output={"preview_thumbnails": False})
+    cell = library_scopes(cfg)[0].features[Feature.PREVIEWS]
+    assert cell is not None and cell.state == CellState.OFF
+    assert cell.reason == "Preview thumbnails are off for this server"
+
+
+def test_chapters_follow_the_server_wide_preview_thumbnails_switch():
+    cfg = _cfg(libraries=[_lib()], output={"chapter_thumbnails": True, "preview_thumbnails": False})
+    cell = library_scopes(cfg)[0].features[Feature.CHAPTERS]
+    assert cell.state == CellState.OFF and cell.reason == "Preview thumbnails are off for this server"
+
+
+def test_preview_thumbnails_on_or_unset_still_counts_previews():
+    for output in ({}, {"preview_thumbnails": True}):
+        assert library_scopes(_cfg(libraries=[_lib()], output=output))[0].features[Feature.PREVIEWS] is None

@@ -1,0 +1,104 @@
+/* Setup guide page (sg = setup guide). Loaded after reprise.css; tokens are reprise-tokens.css and nothing here hard-codes a colour.
+   Every rule starts with the page id: the tour include pulls reprise.css in a second time later in the body, and an id keeps these
+   rules ahead of that copy. Elevation is the panel's 1px border only; the rows inside are not cards, just hairline-separated. */
+#repriseSetupGuide { max-width: 56rem; margin: 0; }
+#repriseSetupGuide .rp-header > div:first-child { min-width: 0; }
+#repriseSetupGuide .rp-header p { max-width: 62ch; text-wrap: balance; }
+#repriseSetupGuide .rp-header .rp-actions { flex: none; gap: 4px; }
+
+/* Progress read-out (text, not a ring) and the time of the last check. */
+#repriseSetupGuide .sg-status { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 16px; margin: 0 0 16px; }
+#repriseSetupGuide .sg-status p { margin: 0; }
+#repriseSetupGuide .sg-progress { color: var(--lu-ink); font-weight: 700; font-variant-numeric: tabular-nums; }
+#repriseSetupGuide .sg-checked { color: var(--lu-ink-2); font-size: 13.5px; font-variant-numeric: tabular-nums; }
+
+/* One calm note when everything required is done, one quiet line when the guide was skipped, one box when it could not be read. The note keeps
+   its icon beside the sentence and puts the button under them on a phone. */
+#repriseSetupGuide .sg-note { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 12px; margin: 0 0 16px; padding: 14px 16px; background: var(--lu-glass);
+  border: 1px solid color-mix(in srgb, var(--lu-positive) 45%, var(--lu-edge-soft)); border-radius: var(--lu-radius-control); }
+#repriseSetupGuide .sg-note > i { font-size: 22px; line-height: 1; color: var(--lu-positive); }
+#repriseSetupGuide .sg-note p { color: var(--lu-ink); font-weight: 650; }
+#repriseSetupGuide .sg-note .rp-btn { grid-column: 1 / -1; }
+@media (min-width: 576px) {
+  #repriseSetupGuide .sg-note { grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px 16px; }
+  #repriseSetupGuide .sg-note .rp-btn { grid-column: auto; }
+}
+#repriseSetupGuide .sg-quiet { margin: 0 0 16px; max-width: 62ch; }
+#repriseSetupGuide .sg-error p { display: flex; align-items: flex-start; gap: 10px; color: var(--lu-ink); }
+#repriseSetupGuide .sg-error p i { flex: none; margin-top: 3px; color: var(--lu-danger); }
+
+/* The two groups. The panel is the container, so a row decides its layout from the width it really has (the sidebar takes 232px
+   from 900px up), not from the window. */
+#repriseSetupGuide .sg-group { container-type: inline-size; }
+#repriseSetupGuide .sg-group .rp-section-head { margin-bottom: 8px; }
+#repriseSetupGuide .sg-group .rp-section-head h2 { margin: 0 0 4px; }
+#repriseSetupGuide .sg-group .rp-section-head p { max-width: 62ch; }
+#repriseSetupGuide .sg-steps { display: grid; margin: 0; padding: 0; list-style: none; }
+#repriseSetupGuide .sg-step, #repriseSetupGuide .sg-skel { display: grid; grid-template-columns: 32px minmax(0, 1fr); align-items: start; column-gap: 12px; padding: 16px 0; border-top: 1px solid var(--lu-edge-soft); }
+#repriseSetupGuide .sg-steps > :first-child { padding-top: 8px; border-top: 0; }
+#repriseSetupGuide .sg-steps > :last-child { padding-bottom: 4px; }
+
+/* The marker: a check in a filled circle when done, the number in an outline when not, a quieter number while waiting, a turning ring while working. */
+#repriseSetupGuide .sg-mark { position: relative; display: grid; place-items: center; width: 32px; height: 32px; border: 2px solid var(--lu-edge); border-radius: 50%;
+  color: var(--lu-ink); font-size: 14px; font-weight: 750; line-height: 1; font-variant-numeric: tabular-nums; }
+#repriseSetupGuide .sg-mark i { font-size: 18px; line-height: 1; }
+#repriseSetupGuide .sg-step[aria-current=step] .sg-mark { border-color: var(--lu-accent); color: var(--lu-accent-text); }
+#repriseSetupGuide .sg-step[data-state=done] .sg-mark { background: var(--lu-positive); border-color: var(--lu-positive); color: var(--lu-canvas); }
+#repriseSetupGuide .sg-step[data-state=blocked] .sg-mark { border-color: var(--lu-edge-soft); color: var(--lu-ink-3); }
+#repriseSetupGuide .sg-step[data-state=working] .sg-mark { border-color: var(--lu-edge-soft); color: var(--lu-accent-text); }
+#repriseSetupGuide .sg-step[data-state=working] .sg-mark::after { content: ""; position: absolute; inset: -2px; border: 2px solid transparent; border-top-color: var(--lu-accent); border-radius: 50%;
+  animation: sg-spin 1s linear infinite; }
+@keyframes sg-spin { to { transform: rotate(360deg); } }
+
+/* What a step says. */
+#repriseSetupGuide .sg-body { display: grid; align-content: start; gap: 8px; min-width: 0; }
+#repriseSetupGuide .sg-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; min-height: 32px; }
+#repriseSetupGuide .sg-title { overflow-wrap: anywhere; }
+#repriseSetupGuide .sg-step[data-state=blocked] .sg-title { color: var(--lu-ink-2); }
+/* 58ch of Manrope is about 75 characters a line: the measure a sentence of this length reads best at. */
+#repriseSetupGuide .sg-reason { max-width: 58ch; overflow-wrap: anywhere; text-wrap: pretty; }
+#repriseSetupGuide .sg-bar { max-width: 24rem; }
+#repriseSetupGuide .sg-details { display: grid; gap: 6px; max-width: 62ch; margin: 0; padding-left: 18px; list-style: disc; color: var(--lu-ink-2); font-size: 13.5px; line-height: 1.45; overflow-wrap: anywhere; text-wrap: pretty; }
+#repriseSetupGuide .sg-details li::marker { color: var(--lu-ink-3); }
+
+/* Things worth copying: a label, a read-only field and a Copy button. */
+#repriseSetupGuide .sg-values { display: grid; gap: 12px; max-width: 40rem; }
+#repriseSetupGuide .sg-value label { margin: 0 0 4px; }
+#repriseSetupGuide .sg-copy { display: flex; gap: 8px; }
+#repriseSetupGuide .sg-copy input { flex: 1 1 12rem; width: auto; min-width: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13.5px; }
+#repriseSetupGuide .sg-copy .rp-btn { flex: none; }
+#repriseSetupGuide .sg-copy-note { margin: 6px 0 0; font-size: 13px; }
+#repriseSetupGuide .sg-copy-note:empty { display: none; }
+
+/* The link keeps a 44px target; the negative margin gives back the slack so it sits as close to the text above as any other line. */
+#repriseSetupGuide .sg-help { display: inline-flex; align-items: center; gap: 6px; width: fit-content; min-height: var(--lu-target); margin-block: -6px; color: var(--lu-accent-text); font-weight: 650;
+  text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: .2em; }
+#repriseSetupGuide .sg-help:hover { color: var(--lu-ink); }
+#repriseSetupGuide .sg-help i { font-size: 13px; line-height: 1; }
+
+/* The button drops under the text on a narrow row and sits at the right edge of a wide one. */
+#repriseSetupGuide .sg-action { grid-column: 2; margin-top: 12px; white-space: nowrap; }
+@container (min-width: 40rem) {
+  #repriseSetupGuide .sg-step, #repriseSetupGuide .sg-skel { grid-template-columns: 32px minmax(0, 1fr) auto; column-gap: 16px; }
+  /* 44px button, 32px title line: -6px puts their centres on one line. */
+  #repriseSetupGuide .sg-action { grid-column: 3; grid-row: 1; align-self: start; margin-top: -6px; }
+}
+
+/* Loading: rows in the shape of the real ones. */
+#repriseSetupGuide .sg-skel i { display: block; border-radius: var(--lu-radius-pill); background: var(--lu-hover-wash); }
+#repriseSetupGuide .sg-skel .sg-skel-mark { width: 32px; height: 32px; }
+#repriseSetupGuide .sg-skel .sg-skel-title { width: min(14rem, 60%); height: 16px; margin: 8px 0 12px; }
+#repriseSetupGuide .sg-skel .sg-skel-line { width: min(32rem, 90%); height: 14px; }
+
+@media (max-width: 575.98px) {
+  #repriseSetupGuide .rp-header { gap: 8px; }
+  /* The quiet buttons are transparent with 16px of padding: pull them left so their words line up with the heading above. */
+  #repriseSetupGuide .rp-header .rp-actions { width: 100%; margin-left: -16px; justify-content: flex-start; }
+  #repriseSetupGuide .rp-header .rp-actions > * { width: auto; }
+  #repriseSetupGuide .sg-error .rp-actions .rp-btn { width: 100%; }
+}
+/* reprise.css stops animations on elements; these two live on pseudo-elements (the turning ring and the "Working" chip's pulsing dot).
+   The ring's selector is repeated whole so this rule is not outranked by the one it switches off. */
+@media (prefers-reduced-motion: reduce) {
+  #repriseSetupGuide .sg-step[data-state=working] .sg-mark::after, #repriseSetupGuide .rp-chip::before { animation: none; }
+}

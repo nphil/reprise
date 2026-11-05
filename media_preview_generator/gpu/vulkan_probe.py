@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from loguru import logger
 
 from ..utils import is_node_mode, scratch_dir
-from .ffmpeg_capabilities import _is_hwaccel_available, ffmpeg_binary
+from .ffmpeg_capabilities import _is_hwaccel_available, ffmpeg_binary, ffmpeg_vulkan_left_out
 
 _VULKAN_DEVICE_CACHE: str | None = None
 _VULKAN_DEVICE_PROBED: bool = False
@@ -347,6 +347,11 @@ def _write_scratch_json(filename: str, payload: dict) -> str | None:
     return path
 
 
+def _vulkan_left_out() -> bool:
+    """Whether this FFmpeg has no Vulkan and its build recipe leaves it out on purpose (nothing to probe or warn about)."""
+    return not _is_hwaccel_available("vulkan") and ffmpeg_vulkan_left_out()
+
+
 def _run_vulkan_probe(
     env_overrides: dict | None = None,
 ) -> tuple[str | None, str]:
@@ -485,6 +490,10 @@ def _probe_vulkan_device() -> str | None:
         completely unavailable.
     """
     global _VULKAN_ENV_OVERRIDES, _VULKAN_DEBUG_BUFFER
+
+    # This build's FFmpeg has no Vulkan by its own recipe: there is nothing to probe, retry or warn about.
+    if _vulkan_left_out():
+        return None
 
     # Strategy 1: default probe.
     device, _ = _run_vulkan_probe()
@@ -748,7 +757,12 @@ def _run_first_vulkan_probe() -> None:
     #   - WARNING on software fallback (action needed)
     #   - INFO on no-Vulkan (informational, harmless)
     probe_device = _VULKAN_DEVICE_CACHE
-    if probe_device is None:
+    if probe_device is None and _vulkan_left_out():
+        logger.info(
+            "Vulkan is not part of this build's FFmpeg, on purpose. It is only used for Dolby Vision profile 5 "
+            "preview thumbnails, which Reprise doesn't make."
+        )
+    elif probe_device is None:
         logger.info("Vulkan not available in this container. {}", _sentences(DV5_NO_VULKAN_EFFECT, dv5_no_vulkan_fix()))
     elif _is_software_vulkan_device(probe_device):
         more_help = (

@@ -2317,7 +2317,7 @@ class TestCleanGpusKeepsTheVulkanCheck:
 
         (gpu,) = _clean_gpus(raw)
 
-        assert set(gpu["vulkan"]) == {"ok", "cause", "title", "why", "fix"}
+        assert set(gpu["vulkan"]) == {"ok", "neutral", "cause", "title", "why", "fix"}
         assert len(gpu["vulkan"]["why"]) == VULKAN_TEXT_MAX
         assert "\n" not in gpu["vulkan"]["fix"]
         assert gpu["vulkan"]["ok"] is False

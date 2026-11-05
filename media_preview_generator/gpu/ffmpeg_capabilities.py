@@ -8,7 +8,9 @@ needs these facts and they have no dependency on device state.
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import subprocess
 
 from loguru import logger
@@ -197,3 +199,26 @@ def _is_hwaccel_available(hwaccel: str) -> bool:
         logger.debug("✗ {} hardware acceleration is not available", hwaccel)
 
     return is_available
+
+
+def ffmpeg_vulkan_left_out() -> bool:
+    """Whether this is the image's own FFmpeg and its build recipe leaves Vulkan out on purpose.
+
+    ``docker/ffmpeg/build.sh`` records the arguments it configured FFmpeg with in
+    ``<prefix>/share/source/ffmpeg/configure-args.txt``. Vulkan missing from that recipe is a decision of the build, not a
+    fault of this container, so it must not be reported as one. A system FFmpeg, or any other build with no such record,
+    gives False: its missing Vulkan stays a finding.
+
+    Returns:
+        True when the recipe is next to the FFmpeg binary this app runs and names no Vulkan.
+    """
+    binary = shutil.which(ffmpeg_binary())
+    if not binary:
+        return False
+    prefix = os.path.dirname(os.path.dirname(os.path.realpath(binary)))
+    try:
+        with open(os.path.join(prefix, "share", "source", "ffmpeg", "configure-args.txt"), encoding="utf-8") as recipe:
+            arguments = [line.strip() for line in recipe if line.strip()]
+    except OSError:
+        return False
+    return bool(arguments) and not any("vulkan" in argument.lower() for argument in arguments)

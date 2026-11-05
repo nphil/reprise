@@ -74,15 +74,28 @@ class TestExternalAuthRouteBehavior:
         monkeypatch.setenv("AUTH_METHOD", "external")
 
     def test_home_and_dashboard_accessible_without_token(self, client):
-        """External auth allows the home redirect and both destination pages."""
+        """External auth allows the home redirect and both destination pages (the setup guide is skipped here)."""
+        from media_preview_generator.web import auth
+
         settings = get_settings_manager()
         settings.set("setup_complete", True)
+        auth.set_setup_guide_state(auth.SETUP_GUIDE_DISMISSED)
 
         response = client.get("/", follow_redirects=False)
         assert response.status_code == 302
         assert response.headers["Location"].endswith("/reprise")
         assert client.get("/reprise").status_code == 200
         assert client.get("/dashboard").status_code == 200
+
+    def test_home_opens_the_setup_guide_while_nothing_is_connected(self, client):
+        """There is no account to start it from, but an install with no server connected still gets the guide."""
+        settings = get_settings_manager()
+        settings.set("setup_complete", True)
+
+        response = client.get("/", follow_redirects=False)
+        assert response.status_code == 302
+        assert response.headers["Location"].endswith("/setup-guide")
+        assert client.get("/setup-guide").status_code == 200
 
     def test_api_jobs_accessible_without_token(self, client):
         """GET /api/jobs should succeed without any token."""

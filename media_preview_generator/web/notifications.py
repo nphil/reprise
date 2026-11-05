@@ -117,7 +117,11 @@ def _vulkan_failures() -> list[tuple[dict[str, Any], Any]]:
     except Exception as exc:  # noqa: BLE001 - the card still shows, with the general text
         logger.debug("Couldn't check why Vulkan is unavailable for the notification: {}", exc)
         return []
-    return [(gpu, check) for gpu, check in zip(gpus, checks, strict=True) if check is not None and not check.ok]
+    return [
+        (gpu, check)
+        for gpu, check in zip(gpus, checks, strict=True)
+        if check is not None and not check.ok and not check.neutral
+    ]
 
 
 def _vulkan_card_body(failures: list[tuple[dict[str, Any], Any]]) -> str:

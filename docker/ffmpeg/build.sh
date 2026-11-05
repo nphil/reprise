@@ -80,6 +80,10 @@ ffmpeg_args=(
     --enable-cuvid
     --enable-nvdec
     --enable-vaapi
+    # Vulkan (--enable-vulkan, libplacebo) is left out on purpose: it only serves Dolby Vision profile 5 preview
+    # thumbnails, which Reprise doesn't make. The app reads configure-args.txt (written below) to tell a build that
+    # leaves it out from a broken one (gpu/ffmpeg_capabilities.py ffmpeg_vulkan_left_out); a build with Vulkan in
+    # these arguments is expected to have it working.
     --disable-shared
     --enable-static
     --disable-debug

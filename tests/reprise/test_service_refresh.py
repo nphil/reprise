@@ -225,7 +225,14 @@ def test_refresh_queue_pause_cancel_partial_and_reconcile(tmp_path, monkeypatch)
         partial = wait_until(
             lambda: (r if (r := get(partial_id))["status"] in ("completed", "failed", "cancelled") else None)
         )
-        assert partial["status"] == "failed" and partial["refresh"]["skipped"] == 1
+        # Episodes that can't be read don't make a refresh fail: it completes with a warning naming each one.
+        assert partial["status"] == "completed" and partial["refresh"]["skipped"] == 1
+        assert partial["error"] is None
+        assert partial["warning"] == "1 episode could not be read and kept its earlier entry"
+        assert partial["refresh"]["skipped_items"] == [
+            {"episode": "Synthetic episode", "reason": "Reprise can't find its file where Plex says it is"}
+        ]
+        assert str(tmp_path) not in json.dumps(partial)
         # Plex no longer lists episode 999 or 101's old media: they go although episode 102 could not be read.
         assert store.resolve_binding(old) is None
         assert store.resolve_binding(upgraded) is None

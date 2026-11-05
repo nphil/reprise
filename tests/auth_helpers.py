@@ -20,14 +20,16 @@ def ensure_owner_account(username: str = OWNER_USERNAME, password: str = OWNER_P
 def sign_in(client, username: str = OWNER_USERNAME, password: str = OWNER_PASSWORD):
     """Make ``client`` a signed-in browser (creating the owner account first when the test has none yet).
 
-    The first-run tour counts as skipped: it opens by itself over a new account's pages, and a browser test that shares
-    this session (the ``authed_client`` cookie handed to Playwright) would find every click blocked by it. Tests of the
-    tour itself make their account through the Welcome page instead.
+    The first-run tour and the setup guide count as skipped: the tour opens by itself over a new account's pages, and a
+    browser test that shares this session (the ``authed_client`` cookie handed to Playwright) would find every click
+    blocked by it; the guide would send ``/`` to itself instead of the Library. Tests of either make their account
+    through the Welcome page instead.
     """
     from media_preview_generator.web import auth
 
     ensure_owner_account(username, password)
     auth.set_onboarding_state(auth.ONBOARDING_DISMISSED)
+    auth.set_setup_guide_state(auth.SETUP_GUIDE_DISMISSED)
     with client.session_transaction() as sess:
         sess["authenticated"] = True
         sess["epoch"] = auth.session_epoch()

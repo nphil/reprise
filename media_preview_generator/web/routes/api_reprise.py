@@ -6,11 +6,21 @@ from dataclasses import asdict, is_dataclass
 from functools import wraps
 
 from flask import Blueprint, Response, g, jsonify, request, stream_with_context
+from loguru import logger
 
 from ...reprise import acceleration
+from ...reprise import setup_guide as guide
 from ...reprise.api_auth import DEFAULT_SCOPES, SCOPES, bearer_secret, require_client
 from ...reprise.models import AnalysisRefused, PlaybackIdentity, ReviewRefused
-from ..auth import _check_token_headers, api_token_required
+from ..auth import (
+    SETUP_GUIDE_COMPLETED,
+    SETUP_GUIDE_DISMISSED,
+    _check_token_headers,
+    api_token_required,
+    get_setup_guide_state,
+    set_setup_guide_state,
+)
+from ..settings_manager import get_settings_manager
 
 _ID_FIELDS = (
     "plex_machine_identifier",
@@ -369,7 +379,12 @@ def create_reprise_blueprint(service):
             if not data or any(type(value) is not bool for value in data.values()):
                 raise ValueError("Invalid setting")
             if "writes_enabled" in data:
-                service.set_writes_enabled(data["writes_enabled"])
+                try:
+                    service.set_writes_enabled(data["writes_enabled"])
+                except ValueError as refused:
+                    # The switch refuses in plain words (what folder is missing, why no episode passed); the generic
+                    # handler below would hide them behind "Invalid request or operation".
+                    return jsonify(error=str(refused)), 400
             if "gpu_decode" in data:
                 acceleration.set_enabled(data["gpu_decode"])
             if "online_lookups" in data:
@@ -382,6 +397,35 @@ def create_reprise_blueprint(service):
             acceleration=acceleration.status(),
             # The owner's switch for asking public databases where an episode's intro and credits are.
             online_lookups=service.online_lookups_enabled(),
+        )
+
+    @bp.route("/api/reprise/setup-guide", methods=["GET", "POST"])
+    @owner
+    def setup_guide():
+        """The setup guide's seven steps with their live state (GET), and the owner's answer to it (POST).
+
+        GET reads saved settings, a few folder checks, one indexed count and in-memory state: no Plex call, no walk of
+        the catalogue, nothing written. POST remembers ``dismissed`` (stop opening it by itself) or ``completed``.
+        """
+        settings = get_settings_manager()
+        if request.method == "POST":
+            state = _body({"state"}, {"state"})["state"]
+            if state not in (SETUP_GUIDE_DISMISSED, SETUP_GUIDE_COMPLETED):
+                raise ValueError("Invalid state")
+            try:
+                set_setup_guide_state(state)
+            except OSError:
+                logger.exception("Could not save the setup guide's state")
+                return jsonify(error="Reprise couldn't save this. Check that its config folder is writable."), 500
+            return jsonify(state=state)
+        return jsonify(
+            guide.build_status(
+                service,
+                settings,
+                base_url=request.host_url.rstrip("/"),
+                guide_state=get_setup_guide_state(configured=settings.is_configured()),
+                wizard_complete=settings.is_setup_complete(),
+            )
         )
 
     @bp.route("/api/reprise/clients", methods=["GET", "POST"])

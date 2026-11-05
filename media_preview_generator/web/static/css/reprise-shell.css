@@ -109,6 +109,8 @@ html.rp-rail-collapsed{--rp-rail-w:72px}
   background:transparent;color:var(--lu-ink-2);font:inherit;font-size:14px;font-weight:650;text-align:left;text-decoration:none;cursor:pointer}
 .rp-rail-btn i{flex:0 0 auto;font-size:18px}
 .rp-rail-btn:hover,.rp-rail-btn.show{background:var(--lu-hover-wash);color:var(--lu-ink)}
+.rp-rail-btn[aria-current]{background:var(--lu-selected-wash);color:var(--lu-ink)}
+.rp-rail-btn[aria-current] i{color:var(--lu-accent-text)}
 .rp-rail-btn .badge{margin-left:auto;position:static;transform:none;background:var(--lu-accent)!important;color:var(--lu-accent-ink)!important}
 .rp-rail-version{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;padding:8px 12px 0;color:var(--lu-ink-3);font-size:12px;text-decoration:none}
 .rp-rail-version:hover{color:var(--lu-ink)}

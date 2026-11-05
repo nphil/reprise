@@ -426,7 +426,7 @@ def _clean_vulkan(raw: object) -> dict | None:
     """A node's Vulkan check for one GPU, keeping only the known keys (text cut to one short line)."""
     if not isinstance(raw, dict):
         return None
-    cleaned: dict[str, Any] = {"ok": raw.get("ok") is True}
+    cleaned: dict[str, Any] = {"ok": raw.get("ok") is True, "neutral": raw.get("neutral") is True}
     for key in ("cause", "title", "why", "fix"):
         cleaned[key] = protocol.relayed_text(raw.get(key), VULKAN_TEXT_MAX)
     return cleaned

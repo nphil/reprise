@@ -18,13 +18,13 @@ from urllib.parse import urlsplit
 from loguru import logger
 
 from ..gpu.ffmpeg_capabilities import ffmpeg_binary
-from ..markers.publishers.plex_db import PlexMarkerPublisher
 from ..servers.ownership import apply_path_mappings
 from . import scan_cache
 from .admission import admit_references, pair_provenance
 from .identity import currency, media_version
 from .models import SUGGESTION_ORIGINS, AnalysisRefused, CandidateWindow, PlaybackIdentity
 from .policy import eligible_ranges
+from .setup_guide import plex_database_findings, sending_refusal
 from .verification_profile import POLICY_VERSION, PROFILE_FINGERPRINT, is_current_profile
 
 _SERVICE = None
@@ -249,6 +249,48 @@ def _probe(path, streams, *, cancel_check=None, pause_check=None, ffmpeg_path=No
     )
 
 
+# How many unreadable episodes a refresh names in full; the count above them is always complete.
+_SKIPPED_ITEMS_KEPT = 50
+
+_SKIP_REASONS = {
+    "File path is missing, ambiguous, or outside the enabled library": "Reprise can't find its file where Plex says it is",
+    "Plex part size differs from local file": (
+        "The file on disk isn't the size Plex has recorded for it (it was probably replaced, so Plex needs to scan it "
+        "again)"
+    ),
+    "Plex audio tracks do not match the local file": "Plex's list of its audio tracks doesn't match the file",
+    "Media changed during discovery": "The file changed while Reprise was reading it",
+    "Plex library roots differ from configured library": "Its file is outside the folders set up for this library",
+    "Media metadata is too large": "The file's stream list is too large to read",
+}
+
+
+def _episode_label(info):
+    """An episode as the owner knows it (``Show S01E02 Title``) from a Plex metadata row, or its id when Plex gave none."""
+    show = str(info.get("grandparentTitle") or "").strip()
+    title = str(info.get("title") or "").strip()
+    season, episode = info.get("parentIndex"), info.get("index")
+    numbers = f"S{season:02d}E{episode:02d}" if isinstance(season, int) and isinstance(episode, int) else ""
+    label = " ".join(part for part in (show, numbers, title) if part)
+    return label or f"Episode {info.get('ratingKey', '?')}"
+
+
+def _skip_reason(exc, part):
+    """Why one episode could not be read, in a plain sentence with nothing in it a path or a stack trace would add."""
+    if isinstance(exc, subprocess.CalledProcessError):
+        streams = part.get("Stream", []) if isinstance(part, dict) else []
+        if not any(str(stream.get("streamType")) in ("1", "2") for stream in streams):
+            return "Plex and FFprobe can't read its audio/video streams (the file may be damaged or incomplete)"
+        return "FFprobe can't read the file (it may be damaged or incomplete)"
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return "Reading the file took too long"
+    if isinstance(exc, ValueError) and str(exc) in _SKIP_REASONS:
+        return _SKIP_REASONS[str(exc)]
+    if isinstance(exc, OSError):
+        return "Reprise couldn't open its file"
+    return "Plex's details for it were incomplete or unexpected"
+
+
 class SettingsRegistry:
     """Refresh the registry when an owner saves server settings."""
 
@@ -297,12 +339,11 @@ class RepriseService:
             plex = [
                 cfg for cfg in self.registry.configs() if cfg.enabled and getattr(cfg.type, "value", cfg.type) == "plex"
             ]
-            # Sending writes markers into Plex's own database file, so Reprise's container must see it.
-            if not any(os.path.isfile(PlexMarkerPublisher.db_path_for(cfg) or "") for cfg in plex):
-                raise ValueError(
-                    "Sending to Plex needs Plex's database, and Reprise can't see it: only Plex's preview folder "
-                    "is shared with Reprise. Share Plex's whole config folder with Reprise to turn this on."
-                )
+            # Sending writes markers into Plex's own database file, so Reprise's container must see it. The setup
+            # guide reads the same findings, so the switch and the guide name the same missing folder.
+            findings = [plex_database_findings(cfg) for cfg in plex]
+            if not any(finding["database_found"] for finding in findings):
+                raise ValueError(sending_refusal(findings))
             cursor, reasons, tried = None, collections.Counter(), 0
             valid = False
             # One current episode that passes every check is enough; a handful that fail tell why.
@@ -451,6 +492,15 @@ class RepriseService:
         registered = skipped = 0
         seen = []
         unreadable, touched, listed = set(), set(), {}
+        skipped_items: list[dict[str, str]] = []
+
+        def skip(info, reason):
+            """One episode this scan could not read: counted, and named with the plain reason (the first few kept)."""
+            nonlocal skipped
+            skipped += 1
+            if len(skipped_items) < _SKIPPED_ITEMS_KEPT:
+                skipped_items.append({"episode": _episode_label(info), "reason": reason})
+
         total = len(rows)
         if progress_callback:
             progress_callback(0, total)
@@ -460,7 +510,7 @@ class RepriseService:
                 raise ValueError("Library configuration changed during refresh")
             rating_key = str(summary.get("ratingKey", ""))
             if not rating_key.isdecimal():
-                skipped += 1
+                skip(summary, "Plex gave it an id Reprise can't use")
                 if progress_callback:
                     progress_callback(index + 1, total)
                 continue
@@ -480,7 +530,7 @@ class RepriseService:
                     for part in media.get("Part", [])
                 }
             if not media_rows and requested is None:
-                skipped += 1
+                skip(item, "Plex lists no file for it")
                 unreadable.add(rating_key)
             for media in media_rows:
                 checkpoint()
@@ -493,7 +543,7 @@ class RepriseService:
                     if not paths.intersection(requested):
                         continue
                 if len(parts) != 1:
-                    skipped += 1
+                    skip(item, "Plex lists more than one file for it" if parts else "Plex lists no file for it")
                     unreadable.add(rating_key)
                     continue
                 part = parts[0]
@@ -564,8 +614,15 @@ class RepriseService:
                             matched.add(path)
                             touched.add(rating_key)
                     registered += 1
-                except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError, json.JSONDecodeError):
-                    skipped += 1
+                except (
+                    KeyError,
+                    TypeError,
+                    ValueError,
+                    OSError,
+                    subprocess.SubprocessError,
+                    json.JSONDecodeError,
+                ) as exc:
+                    skip(item, _skip_reason(exc, part))
                     unreadable.add(rating_key)
             if progress_callback:
                 progress_callback(index + 1, total)
@@ -577,6 +634,7 @@ class RepriseService:
         return {
             "registered": registered,
             "skipped": skipped,
+            "skipped_items": skipped_items,
             "seen": seen,
             # What a refresh may drop afterwards: an episode whose media this scan could not read keeps its entries.
             "unreadable": frozenset(unreadable),
@@ -1011,7 +1069,7 @@ class RepriseService:
             "status": job.status.value,
             "progress": job.progress.to_dict(),
             "created_at": job.created_at,
-            "error": "Job failed" if job.error else None,
+            "error": "Job failed" if job.error and job.status.value != "completed" else None,
             "message": None,
             "pause_requested": self.job_manager.is_pause_requested(job.id),
         }
@@ -1019,6 +1077,8 @@ class RepriseService:
         data["operation"] = (
             "refresh" if config.get("refresh_request") else "preview" if config.get("preview_request") else "analysis"
         )
+        if job.status.value == "completed" and job.error:
+            data["warning"] = job.error
         if config.get("refresh_result"):
             data["refresh"] = config["refresh_result"]
         if config.get("media_version_ids"):
@@ -1187,6 +1247,8 @@ class RepriseService:
                 "skipped": scanned["skipped"],
                 "removed": 0,
             }
+            if scanned["skipped_items"]:
+                summary["skipped_items"] = scanned["skipped_items"]
 
             def reconcile():
                 if self._refresh_signature(server_id, library_id) != scanned["config_signature"]:
@@ -1202,12 +1264,28 @@ class RepriseService:
                 self.job_manager.merge_job_config(job_id, {"refresh_result": summary})
 
             if scanned["skipped"]:
+                # A refresh of the whole library whose only trouble is episodes it could not read did its job: it
+                # completes with a warning naming them. A scan of specific files (a webhook, an analysis) has no use for
+                # a partial answer, so it still fails.
+                whole_library = not for_analysis and request.get("candidate_paths") is None
 
                 def finish_partial():
                     reconcile()
-                    self.job_manager.complete_job(
-                        job_id, error="Library refresh incomplete; episodes that could not be read kept their entries"
-                    )
+                    if whole_library:
+                        count = scanned["skipped"]
+                        one = count == 1
+                        self.job_manager.complete_job(
+                            job_id,
+                            warning=(
+                                f"{count} {'episode' if one else 'episodes'} could not be read and kept "
+                                f"{'its' if one else 'their'} earlier {'entry' if one else 'entries'}"
+                            ),
+                        )
+                    else:
+                        self.job_manager.complete_job(
+                            job_id,
+                            error="Library refresh incomplete; episodes that could not be read kept their entries",
+                        )
 
                 if not self.job_manager.commit_if_active(job_id, finish_partial):
                     raise Cancelled("Library refresh cancelled")

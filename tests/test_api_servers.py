@@ -2511,3 +2511,64 @@ class TestPreviewsReadinessMarkerRows:
         assert [c["id"] for c in markers["checks"]] == ["markers_off"]
         assert markers["checks"][0]["severity"] == "recommended"
         assert markers["checks"][0]["ok"] is True
+
+
+class TestPlexConfigFolderIsCheckedWhenItChanges:
+    """The setup wizard fills in ``/plex`` whether or not anything is mounted there; that must not lock the owner out."""
+
+    def _seed(self, folder):
+        _seed_media_servers(
+            [
+                {
+                    "id": "plex-wizard",
+                    "type": "plex",
+                    "name": "Plex",
+                    "enabled": True,
+                    "url": "http://plex:32400",
+                    "auth": {"token": "test-token"},
+                    "output": {"plex_config_folder": folder},
+                }
+            ]
+        )
+
+    def test_an_unchanged_folder_with_nothing_mounted_does_not_block_other_edits(self, client, auth_headers, tmp_path):
+        folder = str(tmp_path / "never-mounted")
+        self._seed(folder)
+
+        response = client.put(
+            "/api/servers/plex-wizard",
+            headers=auth_headers,
+            json={"name": "Home Plex", "output": {"plex_config_folder": folder}},
+        )
+
+        assert response.status_code == 200
+        stored = _read_media_servers()[0]
+        assert (stored["name"], stored["output"]["plex_config_folder"]) == ("Home Plex", folder)
+
+    def test_a_new_folder_that_is_not_there_is_still_refused(self, client, auth_headers, tmp_path):
+        self._seed(str(tmp_path / "never-mounted"))
+        typo = str(tmp_path / "typo")
+
+        response = client.put(
+            "/api/servers/plex-wizard", headers=auth_headers, json={"output": {"plex_config_folder": typo}}
+        )
+
+        assert response.status_code == 400
+        assert "does not exist on this container" in response.get_json()["error"]
+        assert _read_media_servers()[0]["output"]["plex_config_folder"] != typo
+
+    def test_a_new_server_with_a_folder_that_is_not_there_is_still_refused(self, client, auth_headers, tmp_path):
+        response = client.post(
+            "/api/servers",
+            headers=auth_headers,
+            json={
+                "type": "plex",
+                "name": "Plex",
+                "url": "http://plex:32400",
+                "auth": {"token": "t"},
+                "output": {"plex_config_folder": str(tmp_path / "typo")},
+            },
+        )
+
+        assert response.status_code == 400
+        assert "does not exist on this container" in response.get_json()["error"]

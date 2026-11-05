@@ -1,3 +1,8 @@
+# Reprise example for Docker Compose (README: Install with Docker Compose).
+# 1. Replace /path/to/reprise/config and /path/to/media below with folders on your server (a host path is a folder on your server).
+# 2. Start it: docker compose -f docker-compose.example.yml up -d (or save it as docker-compose.yml and run: docker compose up -d).
+# 3. Open http://<your server's IP>:8080 and create your account.
+# Review only by default: media is read-only and no Plex folder is shared. Lines marked (optional) stay off until you remove the "# " in front of them.
 services:
   reprise:
     image: ${IMAGE:-ghcr.io/nphil/reprise@sha256:484b02fb7d2f12119384ff660a3d266d754fb88fb79a629c8d50278081947935}
@@ -12,14 +17,25 @@ services:
       - /tmp:rw,nosuid,size=64m
       - /run:rw,exec,nosuid,size=64m,mode=755
     ports:
+      # The left number is the port on your server. Change it if 8080 is taken; keep the right one.
       - "8080:8080"
     environment:
+      # Who Reprise runs as. 99 and 100 are Unraid's user and group; on other Linux systems use your own (id -u, id -g).
       PUID: "99"
       PGID: "100"
+      # Scratch space inside the config folder. It needs at least 1 GiB free, so it avoids the small /tmp above.
       TMP_FOLDER: "/config/tmp"
+      # (optional) Only to send results to Plex, together with the /plex folder below. Leave it out for review only.
+      # PLEX_CONFIG_FOLDER: "/plex"
     volumes:
+      # Reprise's settings, account and results (read-write).
       - /path/to/reprise/config:/config:rw
+      # Your videos, read-only: Reprise reads them and never changes them.
       - /path/to/media:/media:ro
+      # (optional) A second media folder, read-only: only if your videos live in two places.
+      # - /path/to/more/media:/media2:ro
+      # (optional) Plex's whole "Plex Media Server" folder, read-write: only to send results to Plex (README: Turn on sending to Plex).
+      # - "/path/to/plex/Library/Application Support/Plex Media Server:/plex:rw"
     # Optional GPU decoding (README: Optional GPU decoding). Uncomment what your host has; CPU is the default.
     # runtime: nvidia
     # devices:

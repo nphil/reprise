@@ -183,8 +183,32 @@ paths:
         content: {application/json: {schema: {type: object, additionalProperties: false, minProperties: 1, properties: {writes_enabled: {type: boolean}, gpu_decode: {type: boolean}, online_lookups: {type: boolean}}}}}
       responses:
         '200': {description: "Publication availability, write status, the active video decoder and online_lookups, as in GET"}
-        '400': {$ref: '#/components/responses/BadRequest'}
+        '400': {description: "Invalid request, or writes_enabled true was refused. A refusal body is {error: <plain sentence>} that names the owner's own folders, for example Sending to Plex needs Plex's database, and Reprise can't see it: ..."}
         '403': {$ref: '#/components/responses/Forbidden'}
+  /api/reprise/setup-guide:
+    get:
+      summary: Read the setup guide's seven steps and what is done (no Plex call, nothing written)
+      security: [{owner: []}]
+      responses:
+        '200':
+          description: "The owner's choice, whether the home page should open the guide, and the seven steps in order"
+          content: {application/json: {schema: {$ref: '#/components/schemas/SetupGuide'}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    post:
+      summary: Save that the owner skipped the setup guide (dismissed) or finished it (completed)
+      security: [{owner: []}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, additionalProperties: false, required: [state], properties: {state: {type: string, enum: [dismissed, completed]}}}}}
+      responses:
+        '200':
+          description: The saved state
+          content: {application/json: {schema: {type: object, required: [state], properties: {state: {type: string, enum: [dismissed, completed]}}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '500': {description: "The owner account file cannot be written; the body is {error: <plain sentence>}"}
   /api/reprise/jobs:
     get:
       summary: List Reprise jobs
@@ -330,6 +354,36 @@ components:
           required: [gpu, cpu, gpu_fallbacks]
           properties: {gpu: {type: integer}, cpu: {type: integer}, gpu_fallbacks: {type: integer}}
         last_problem: {type: string, nullable: true}
+    SetupGuide:
+      type: object
+      required: [state, auto_open, required_total, required_done, all_required_done, steps]
+      properties:
+        state: {type: string, enum: [pending, dismissed, completed], description: "The owner's choice. An install from before the guide existed has none saved: completed when a media server is connected, otherwise pending."}
+        auto_open: {type: boolean, description: "True when state is pending and a required step is open. The home page uses it to decide whether to open the guide."}
+        required_total: {type: integer}
+        required_done: {type: integer}
+        all_required_done: {type: boolean}
+        steps:
+          type: array
+          description: "Always seven steps in this order: connect_plex, libraries_and_folders and refresh_library (required), then gpu, online_lookup, webhooks and send_to_plex (optional)."
+          items: {$ref: '#/components/schemas/SetupGuideStep'}
+    SetupGuideStep:
+      type: object
+      required: [id, number, title, required, state, done, reason, details, values, action, help, progress, data]
+      properties:
+        id: {type: string, enum: [connect_plex, libraries_and_folders, refresh_library, gpu, online_lookup, webhooks, send_to_plex]}
+        number: {type: integer, minimum: 1, maximum: 7}
+        title: {type: string}
+        required: {type: boolean, description: "True for steps 1 to 3."}
+        state: {type: string, enum: [done, todo, blocked, working], description: "blocked: an earlier required step is open. working: a job is running now."}
+        done: {type: boolean, description: "True when state is done."}
+        reason: {type: string, description: "One plain sentence: what was found, or why the step is not done."}
+        details: {type: array, items: {type: string}, description: "Extra plain lines, such as one per missing folder."}
+        values: {type: array, items: {type: object, required: [label, value], properties: {label: {type: string}, value: {type: string}}}, description: "Things worth copying, such as the webhook addresses. The webhook secret is never included."}
+        action: {type: object, nullable: true, required: [label, href], properties: {label: {type: string}, href: {type: string}}, description: "The existing page that does the step."}
+        help: {type: object, nullable: true, required: [label, href], properties: {label: {type: string}, href: {type: string}}, description: "An external guide."}
+        progress: {type: object, nullable: true, properties: {percent: {type: integer, minimum: 0, maximum: 100}}, description: "Only while the step is working."}
+        data: {type: object, description: "Machine-readable facts for tools and tests; the web app does not need them."}
     Identity:
       type: object
       additionalProperties: false

@@ -12,6 +12,8 @@ from ..processing.multi_server import MOVIE_LIBRARY_KINDS
 from ..servers.base import ServerConfig, ServerType
 from .models import Cell, CellState, Feature
 
+PREVIEWS_OFF_SERVER = "Preview thumbnails are off for this server"
+
 
 @dataclass(frozen=True)
 class LibraryScope:
@@ -40,7 +42,10 @@ def library_scopes(cfg: ServerConfig) -> list[LibraryScope]:
         is_movie = lib.kind in MOVIE_LIBRARY_KINDS
         features: dict[Feature, Cell | None] = {}
 
-        if not lib.enabled:
+        # A server with its preview-thumbnail switch off gets nothing written, so nothing there is "to do".
+        if not cfg.preview_thumbnails_on:
+            features[Feature.PREVIEWS] = Cell(CellState.OFF, reason=PREVIEWS_OFF_SERVER)
+        elif not lib.enabled:
             features[Feature.PREVIEWS] = Cell(CellState.OFF, reason="Previews are off for this library")
         else:
             features[Feature.PREVIEWS] = None
@@ -49,6 +54,8 @@ def library_scopes(cfg: ServerConfig) -> list[LibraryScope]:
             features[Feature.CHAPTERS] = Cell(CellState.NOT_APPLICABLE, reason="Plex only")
         elif cfg.output.get("chapter_thumbnails") is not True:
             features[Feature.CHAPTERS] = Cell(CellState.OFF, reason="Chapter thumbnails are off for this server")
+        elif not cfg.preview_thumbnails_on:
+            features[Feature.CHAPTERS] = Cell(CellState.OFF, reason=PREVIEWS_OFF_SERVER)
         elif not lib.enabled:
             # Chapter thumbnails are made by the preview job, so they follow the library's previews switch.
             features[Feature.CHAPTERS] = Cell(CellState.OFF, reason="Previews are off for this library")

@@ -127,6 +127,14 @@ _NVIDIA_CHECKS = {
     ),
 }
 
+# Vulkan is left out of this image's FFmpeg on purpose (docker/ffmpeg/build.sh): the GPU card says so in grey instead of
+# calling it a fault.
+NOT_IN_BUILD = "not_in_this_build"
+NOT_IN_BUILD_WHY = (
+    "Vulkan is only used for Dolby Vision profile 5 preview thumbnails, which Reprise doesn't make. Credit-text "
+    "detection reads on the CPU instead. Nothing is wrong."
+)
+
 
 @dataclass(frozen=True)
 class VulkanCheck:
@@ -140,6 +148,7 @@ class VulkanCheck:
         fix: What the user can do, in a sentence or two (empty when ok).
         facts: Raw values for the diagnostic bundle only; :meth:`to_dict` leaves them out so they never reach a
             browser or the app.
+        neutral: Not a fault: Vulkan is absent by the build's own decision, so nothing is wrong and nothing to fix.
     """
 
     ok: bool
@@ -148,11 +157,13 @@ class VulkanCheck:
     why: str
     fix: str
     facts: dict[str, Any] = field(default_factory=dict)
+    neutral: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         """The check as a JSON-able dict, without ``facts`` (uid, groups, kernel release stay in the bundle)."""
         return {
             "ok": self.ok,
+            "neutral": self.neutral,
             "cause": self.cause,
             "title": self.title,
             "why": self.why,
@@ -472,6 +483,7 @@ def check_gpus(
     probe: VulkanProbeResult,
     *,
     ffmpeg_has_vulkan: bool = True,
+    vulkan_left_out: bool = False,
     nvidia_diag: Callable[[], dict[str, Any]] | None = None,
     debug_buffer: str = "",
 ) -> list[VulkanCheck | None]:
@@ -481,6 +493,8 @@ def check_gpus(
         gpus: The detected GPUs (``type``, ``name``, ``device``, ``status``).
         probe: The cached Vulkan probe result.
         ffmpeg_has_vulkan: Whether this FFmpeg build has Vulkan at all.
+        vulkan_left_out: Whether the build deliberately leaves Vulkan out (see
+            :func:`.ffmpeg_capabilities.ffmpeg_vulkan_left_out`): its GPUs get a neutral note, not a fault.
         nvidia_diag: Reads the container facts :func:`nvidia_cause` needs; called only when an NVIDIA GPU needs it.
         debug_buffer: The loader's debug capture, for its own failing line.
 
@@ -502,6 +516,18 @@ def check_gpus(
         vendor = gpu.get("type")
         if vendor not in ("NVIDIA", "INTEL", "AMD"):
             checks.append(None)
+        elif not ffmpeg_has_vulkan and vulkan_left_out:
+            checks.append(
+                VulkanCheck(
+                    False,
+                    NOT_IN_BUILD,
+                    "Not included in this build",
+                    NOT_IN_BUILD_WHY,
+                    "",
+                    {},
+                    neutral=True,
+                )
+            )
         elif not ffmpeg_has_vulkan:
             checks.append(
                 VulkanCheck(
@@ -545,7 +571,7 @@ def get_vulkan_checks(
 
     Cached per (probe device, GPU device list) since the container's devices and kernel don't change while it runs.
     """
-    from .ffmpeg_capabilities import _is_hwaccel_available
+    from .ffmpeg_capabilities import _is_hwaccel_available, ffmpeg_vulkan_left_out
 
     probe = get_vulkan_device_info()
     key = (probe.device, tuple((gpu.get("type"), gpu.get("device")) for gpu in gpus))
@@ -559,10 +585,13 @@ def get_vulkan_checks(
             generation = _generation
         if cached is not None:
             return cached
+        has_vulkan = _is_hwaccel_available("vulkan")
         checks = check_gpus(
             gpus,
             probe,
-            ffmpeg_has_vulkan=_is_hwaccel_available("vulkan"),
+            ffmpeg_has_vulkan=has_vulkan,
+            # Only asked when FFmpeg has no Vulkan: the recipe matters only to say that absence is deliberate.
+            vulkan_left_out=not has_vulkan and ffmpeg_vulkan_left_out(),
             nvidia_diag=nvidia_diag,
             debug_buffer=get_vulkan_debug_buffer(),
         )
@@ -590,7 +619,7 @@ def log_vulkan_warnings(gpus: list[dict[str, Any]], nvidia_diag: Callable[[], di
     """Log one WARNING per GPU that can't use Vulkan. Never raises: it only informs."""
     try:
         for gpu, check in zip(gpus, get_vulkan_checks(gpus, nvidia_diag), strict=True):
-            if check is not None and not check.ok:
+            if check is not None and not check.ok and not check.neutral:
                 logger.warning(startup_warning(gpu, check))
     except Exception as exc:  # noqa: BLE001 - a log line must never stop startup
         logger.debug("Couldn't check why Vulkan is unavailable: {}", exc)

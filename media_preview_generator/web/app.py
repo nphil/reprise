@@ -956,6 +956,13 @@ def create_app(config_dir: str | None = None) -> Flask:
             "main.first_run",
             "main.logout",
             "main.setup_wizard",
+            # Home sends a new install to the setup guide first, and to the wizard when the guide is skipped.
+            "main.index",
+            # The setup guide is where a new install is sent first, before any server is connected.
+            "main.setup_guide_page",
+            "reprise_api.setup_guide",
+            # The sidebar's Plex-safety chip asks this on every page, the guide included.
+            "reprise_api.settings",
             # Auth endpoints (the tour's state is saved the same way before and after the setup wizard)
             "api.auth_status",
             "api.api_login",
