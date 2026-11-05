@@ -38,7 +38,7 @@ Four words you will meet:
 - To **mount** a folder means to share it into the container, at a path you choose. That sharing is also called a mount.
 - **Read-only** means Reprise can read the files in a folder but cannot change, move or delete them. That is the right setting for your media.
 
-An unsigned image is published on GitHub Container Registry. The examples pin the accepted image built from commit `77935bd98f57053a375e2a9a862f7ef08fb7bbcb`; they do not update automatically. There is no versioned release or `latest` tag.
+An unsigned image is published on GitHub Container Registry. The examples pin the accepted image built from commit `c6798b9e4f202864933de231c348b170c9c60b44`; they do not update automatically. There is no versioned release or `latest` tag.
 
 In plain words: Docker downloads Reprise as a ready-made package called an image. This one is not digitally signed. The examples name one exact build by its digest, which is a long fingerprint, so what you install is what was tested. Nothing updates behind your back: to update, you choose a newer digest yourself. [Image delivery and acceptance](#image-delivery-and-acceptance) says which build is current.
 
@@ -318,7 +318,7 @@ After **Sending to Plex can't be turned on:** the reason that follows is one of 
 
 The image workflow makes one cold candidate build, pushes it by digest, and checks the bundled source and license artifacts, FFmpeg configuration, and startup health before publishing a full source-commit tag. A tag identifies the source revision; use the immutable image digest to ensure the image deployed is exactly the one independently tested and accepted. These automated checks do not establish legal compliance or replace independent acceptance.
 
-The current image, built from source `77935bd98f57053a375e2a9a862f7ef08fb7bbcb`, is `ghcr.io/nphil/reprise@sha256:a7b7bb86984a970162bddb098ed1eb76812cecf8b5f6acf602fe04e7e916b338`. It passed the candidate image checks and [full CI](https://github.com/nphil/reprise/actions/runs/41728941081). After deployment on the reference Unraid host it started healthy, migrated the old sign-in token unchanged to the webhook secret, opened first-run account setup, and its startup checks matched NVIDIA Tesla P40 (NVDEC) and Intel UHD 630 (VAAPI) decoding frame for frame against the CPU on the reference clips. Both deployment examples pin this exact image; use the digest rather than rebuilding or relying on a tag alone.
+The current image, built from source `c6798b9e4f202864933de231c348b170c9c60b44`, is `ghcr.io/nphil/reprise@sha256:4d0e60167504eebeadce94b5e14cbaa2b8643b2107d95aa923897f0e31880eeb`. It passed the candidate image checks and [full CI](https://github.com/nphil/reprise/actions/runs/41728941081). After deployment on the reference Unraid host it started healthy, migrated the old sign-in token unchanged to the webhook secret, opened first-run account setup, and its startup checks matched NVIDIA Tesla P40 (NVDEC) and Intel UHD 630 (VAAPI) decoding frame for frame against the CPU on the reference clips. Both deployment examples pin this exact image; use the digest rather than rebuilding or relying on a tag alone.
 
 The earlier detector candidate from source `170b633b8e6adeefadf5201106fbfce51a19e8e5` passed the independent native-engine holdout. This image changes the verification profile (audio timestamp tolerance, 3 nearest references, Plex suggestions), and that holdout has not been repeated for it.
 
