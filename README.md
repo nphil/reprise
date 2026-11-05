@@ -23,7 +23,7 @@ Reprise can also ask public intro and credits databases (IntroDB, SkipDB, and Th
 
 ## Quick start
 
-An unsigned image is published on GitHub Container Registry. The examples pin the accepted image built from commit `c8a70365c32eae965c49724494e2b78241c0d38d`; they do not update automatically. There is no versioned release or `latest` tag.
+An unsigned image is published on GitHub Container Registry. The examples pin the accepted image built from commit `6d69bcfd5abeb2b704b0dc1c07f611967446c3f0`; they do not update automatically. There is no versioned release or `latest` tag.
 
 1. Replace the host paths in `docker-compose.example.yml`. For production, set `IMAGE` to the independently accepted image digest described below.
 2. Run `docker compose -f docker-compose.example.yml up -d`.
@@ -100,7 +100,7 @@ Intel decoding needs the container's media driver to match its libva; images bui
 
 The image workflow makes one cold candidate build, pushes it by digest, and checks the bundled source and license artifacts, FFmpeg configuration, and startup health before publishing a full source-commit tag. A tag identifies the source revision; use the immutable image digest to ensure the image deployed is exactly the one independently tested and accepted. These automated checks do not establish legal compliance or replace independent acceptance.
 
-The current image, built from source `c8a70365c32eae965c49724494e2b78241c0d38d`, is `ghcr.io/nphil/reprise@sha256:20eb4c8cf4ef577934466f80dfa66986058eb7d52c527d63611564298db3cdd0`. It passed the candidate image checks and [full CI](https://github.com/nphil/reprise/actions/runs/41728941081). After deployment on the reference Unraid host it started healthy, migrated the old sign-in token unchanged to the webhook secret, opened first-run account setup, and its startup checks matched NVIDIA Tesla P40 (NVDEC) and Intel UHD 630 (VAAPI) decoding frame for frame against the CPU on the reference clips. Both deployment examples pin this exact image; use the digest rather than rebuilding or relying on a tag alone.
+The current image, built from source `6d69bcfd5abeb2b704b0dc1c07f611967446c3f0`, is `ghcr.io/nphil/reprise@sha256:484b02fb7d2f12119384ff660a3d266d754fb88fb79a629c8d50278081947935`. It passed the candidate image checks and [full CI](https://github.com/nphil/reprise/actions/runs/41728941081). After deployment on the reference Unraid host it started healthy, migrated the old sign-in token unchanged to the webhook secret, opened first-run account setup, and its startup checks matched NVIDIA Tesla P40 (NVDEC) and Intel UHD 630 (VAAPI) decoding frame for frame against the CPU on the reference clips. Both deployment examples pin this exact image; use the digest rather than rebuilding or relying on a tag alone.
 
 The earlier detector candidate from source `170b633b8e6adeefadf5201106fbfce51a19e8e5` passed the independent native-engine holdout. This image changes the verification profile (audio timestamp tolerance, 3 nearest references, Plex suggestions), and that holdout has not been repeated for it.
 
