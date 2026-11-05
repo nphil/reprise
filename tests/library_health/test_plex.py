@@ -291,6 +291,21 @@ def test_open_db_is_none_without_a_plex_config_folder(tmp_path):
     assert plex._open_db(cfg) is None
 
 
+def test_a_config_folder_without_plex_s_database_counts_through_the_api(tmp_path):
+    """Only Plex's preview bundles are shared (review-only): no 'unable to open database file' error."""
+    root = ET.fromstring(
+        '<MediaContainer><Video ratingKey="7" type="movie" title="A"><Media>'
+        '<Part file="/m/a.mkv"/></Media></Video></MediaContainer>'
+    )
+    server = MagicMock()
+    server._connect.return_value.query.return_value = root
+    cfg = _cfg(tmp_path, [_lib()])
+    (tmp_path / "plex" / "Media" / "localhost").mkdir(parents=True)
+    result = plex.count_plex(cfg, server, nothing_found={}, cancel_check=lambda: False, progress=lambda *_: None)
+    assert result.access == plex.ACCESS_API_ONLY and not result.error
+    assert _cell(result, "1", Feature.PREVIEWS).state != CellState.ERROR
+
+
 def test_open_db_is_the_local_database_with_agent_off_and_a_folder(tmp_path):
     db = plex._open_db(_cfg(tmp_path, [_lib()]))
     assert isinstance(db, LocalPlexDb)

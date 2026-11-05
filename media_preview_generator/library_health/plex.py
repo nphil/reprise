@@ -160,7 +160,10 @@ def count_plex(
     # A node checks its own disk; this app's view of the database path only matters when it opens the file itself.
     share = _network_share(cfg) if isinstance(db, LocalPlexDb) else None
     refused = _node_refusal(db) if isinstance(db, RemotePlexDb) else ""
-    if db is not None and share is None and not refused:
+    # Only Plex's preview bundles may be shared (a review-only install never mounts Plex's database): count through
+    # Plex's API rather than reporting "unable to open database file" for a file that isn't there.
+    unshared = isinstance(db, LocalPlexDb) and not share and not os.path.isfile(db._path() or "")
+    if db is not None and share is None and not refused and not unshared:
         libraries, todo = _count_from_db(
             cfg,
             db,
