@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections
 import hashlib
 import json
 import os
@@ -17,6 +18,7 @@ from urllib.parse import urlsplit
 from loguru import logger
 
 from ..gpu.ffmpeg_capabilities import ffmpeg_binary
+from ..markers.publishers.plex_db import PlexMarkerPublisher
 from ..servers.ownership import apply_path_mappings
 from . import scan_cache
 from .admission import admit_references, pair_provenance
@@ -26,6 +28,9 @@ from .policy import eligible_ranges
 from .verification_profile import POLICY_VERSION, PROFILE_FINGERPRINT, is_current_profile
 
 _SERVICE = None
+
+# How many episodes the Plex switch tries before it reports why none can be sent.
+SWITCH_CHECK_LIMIT = 25
 
 NOT_IN_LIBRARY = "This episode is not in the library any more. Refresh the library, then try again."
 CHANGED_ON_DISK = (
@@ -289,23 +294,37 @@ class RepriseService:
         if type(enabled) is not bool or self.publisher is None:
             raise ValueError("Publication is unavailable")
         if enabled:
-            cursor = None
+            plex = [
+                cfg for cfg in self.registry.configs() if cfg.enabled and getattr(cfg.type, "value", cfg.type) == "plex"
+            ]
+            # Sending writes markers into Plex's own database file, so Reprise's container must see it.
+            if not any(os.path.isfile(PlexMarkerPublisher.db_path_for(cfg) or "") for cfg in plex):
+                raise ValueError(
+                    "Sending to Plex needs Plex's database, and Reprise can't see it: only Plex's preview folder "
+                    "is shared with Reprise. Share Plex's whole config folder with Reprise to turn this on."
+                )
+            cursor, reasons, tried = None, collections.Counter(), 0
             valid = False
-            while True:
+            # One current episode that passes every check is enough; a handful that fail tell why.
+            while not valid and tried < SWITCH_CHECK_LIMIT:
                 page = self.store.list_media(cursor=cursor, limit=100)
                 for row in page["items"]:
                     identity = PlaybackIdentity(**row["identity"])
+                    tried += 1
                     try:
                         self.publisher.validate_target(row["media_version"]["id"], identity)
                         valid = True
                         break
-                    except Exception:
-                        continue
-                if valid or not page.get("next_cursor"):
+                    except Exception as exc:
+                        reasons[str(exc)] += 1
+                    if tried >= SWITCH_CHECK_LIMIT:
+                        break
+                if not page.get("next_cursor"):
                     break
                 cursor = page["next_cursor"]
             if not valid:
-                raise ValueError("No configured Plex database passed publication safety checks")
+                why = reasons.most_common(1)[0][0] if reasons else "no episodes are in the library yet"
+                raise ValueError(f"Sending to Plex can't be turned on: {why}")
         settings = self.registry.settings
         settings.set("reprise_plex_writes_enabled", enabled)
         self.publisher.writes_enabled = enabled

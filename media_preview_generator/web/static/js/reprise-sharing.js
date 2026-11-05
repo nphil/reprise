@@ -38,7 +38,11 @@
         if (enabled && !await ask('Reprise will be able to send reviewed changes to Plex. Nothing is sent yet: each change still needs your confirmation.', { title: 'Allow sending to Plex?', confirmText: 'Allow', variant: 'warning' })) { event.target.checked = false; return; }
         event.target.disabled = true;
         try { showSettings(await api('/api/reprise/settings', { method: 'PATCH', body: { writes_enabled: enabled } })); }
-        catch (error) { fail(error); try { showSettings(await api('/api/reprise/settings')); } catch (reloadError) { $('rpWriteState').textContent = reloadError.message; } }
+        catch (error) {
+            fail(error);
+            try { showSettings(await api('/api/reprise/settings')); } catch (reloadError) { $('rpWriteState').textContent = reloadError.message; return; }
+            $('rpWriteState').textContent = error.message;
+        }
     });
 
     function showSecret(result) {
