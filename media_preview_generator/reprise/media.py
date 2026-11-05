@@ -334,6 +334,13 @@ _NATIVE_FORMATS = {
 }
 _NATIVE_FRAME_LIMIT = 64 * 1024 * 1024
 _NATIVE_PROTOCOL_TIMEOUT = 30.0  # Fail closed if paired decoder pipes stop making progress.
+# The decoder logs a frame's showinfo record before it writes the frame's pixels and runs about 15 frames ahead of what
+# the reader has taken. A reader that stops taking the log while it waits for pixels (a full queue did that) deadlocks
+# with the decoder: the decoder blocks writing a log pipe nobody reads, so the pixels never come ("Native frame payload
+# stalled", seen with FFmpeg 5.1 and 8.1 on a host whose pipes hold 8 KB). So the log is always drained: records wait
+# unread in an unbounded queue (under 1 KB each), at most this many; a decoder further ahead than that is not behaving
+# like FFmpeg and fails closed.
+_NATIVE_METADATA_BACKLOG = 1024
 
 
 class _PendingAudit:
@@ -591,7 +598,7 @@ class NativeFrameReader:
         self.proc = None
         self.worker = None
         self.stop = threading.Event()
-        self.events = queue.Queue(maxsize=2)
+        self.events = queue.Queue()  # never blocks the metadata thread: see _NATIVE_METADATA_BACKLOG
         self.paused = False
         self.pre_count = 0
         self.pre_in_cap_count = 0
@@ -713,14 +720,6 @@ class NativeFrameReader:
             raise
         return self
 
-    def _put(self, event):
-        while not self.stop.is_set():
-            try:
-                self.events.put(event, timeout=0.05)
-                return
-            except queue.Full:
-                continue
-
     def _metadata(self):
         bases = {}
         pending = {}
@@ -785,7 +784,9 @@ class NativeFrameReader:
                     if number not in pending or not match:
                         raise DecodeError("Missing native frame color metadata")
                     if number == "2":
-                        self._put((pending[number], match.groups()))
+                        if self.events.qsize() >= _NATIVE_METADATA_BACKLOG:
+                            raise DecodeError("Native frame metadata ran too far ahead of its payload")
+                        self.events.put((pending[number], match.groups()))
                     del pending[number]
                     side_data[number] = False
                 elif number in pending and text.startswith("side data - "):
@@ -799,7 +800,7 @@ class NativeFrameReader:
         except Exception as exc:
             self.worker_error = exc
         finally:
-            self._put(None)
+            self.events.put(None)
 
     def _signal(self, sig):
         try:

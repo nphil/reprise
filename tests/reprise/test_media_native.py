@@ -1124,6 +1124,96 @@ def test_stderr_eof_does_not_stall_decoder_cleanup(tmp_path, monkeypatch, extra)
     assert proc.poll() is not None and not reader.worker.is_alive()
 
 
+def decoder_records_before_pixels(monkeypatch, tmp_path, media, item, end_ms):
+    """Make every later decode of this window log everything it will ever log before it writes its first pixel.
+
+    FFmpeg 7 and later filter, encode and write on separate threads, so a frame's showinfo record can reach stderr
+    many frames before its pixels reach stdout. This replays the real decoder's own stderr and stdout in that order
+    (all of the first, then all of the second) so the ordering never depends on timing. Returns what the real
+    decoder gave (frames and termination) and how many bytes it logged.
+    """
+    import sys
+
+    real_popen = media.subprocess.Popen
+    commands = []
+
+    def record(command, *args, **kwargs):
+        if "-vf" in command:
+            commands.append(command)
+        return real_popen(command, *args, **kwargs)
+
+    monkeypatch.setattr(media.subprocess, "Popen", record)
+    with media.native_frames(item, 0, 0, end_ms, lambda: False, lambda: False, 1) as reader:
+        frames = [(frame.pts_ms, [bytes(plane.data) for plane in frame.planes]) for frame in reader]
+    given = frames, reader.termination
+    captured = subprocess.run(commands[0], stdin=subprocess.DEVNULL, capture_output=True, check=True)
+    (tmp_path / "decoder.err").write_bytes(captured.stderr)
+    (tmp_path / "decoder.out").write_bytes(captured.stdout)
+    script = (
+        "import sys\n"
+        "err, out = (open(path, 'rb').read() for path in sys.argv[1:3])\n"
+        "sys.stderr.buffer.write(err)\n"  # blocks while the reader leaves stderr unread
+        "sys.stderr.buffer.flush()\n"
+        "sys.stdout.buffer.write(out)\n"
+        "sys.stdout.buffer.flush()\n"
+    )
+
+    def replay(command, *args, **kwargs):
+        if "-vf" in command:
+            command = [sys.executable, "-u", "-c", script, str(tmp_path / "decoder.err"), str(tmp_path / "decoder.out")]
+        return real_popen(command, *args, **kwargs)
+
+    monkeypatch.setattr(media.subprocess, "Popen", replay)
+    return given, len(captured.stderr)
+
+
+def make_clip_of_many_frames(tmp_path):
+    path = tmp_path / "many.mkv"
+    execute(
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=size=64x48:rate=50:duration=6",
+        "-c:v",
+        "ffv1",
+        "-chroma_sample_location",
+        "left",
+        "-y",
+        str(path),
+    )
+    assert_generated_video_format(path)
+    return media_version(str(path), 6000, "{}")
+
+
+def test_records_logged_far_ahead_of_their_pixels_never_stall_the_decoder(tmp_path, monkeypatch):
+    """A reader that stops taking the decoder's log while it waits for pixels deadlocks with it: the decoder blocks
+    writing a log pipe nobody reads, so the pixels never come (seen as 'Native frame payload stalled' on a busy NAS,
+    on FFmpeg 8.1 with 8 KB pipes). Reading must go on whatever the consumer is doing."""
+    from media_preview_generator.reprise import media
+
+    item = make_clip_of_many_frames(tmp_path)
+    (expected, termination), logged = decoder_records_before_pixels(monkeypatch, tmp_path, media, item, 6000)
+    assert len(expected) == 300 and logged > 2 * 65536  # more than twice what a pipe holds, so the decoder must block
+    monkeypatch.setattr(media, "_NATIVE_PROTOCOL_TIMEOUT", 10.0)  # a stalled reader would wait out the full 30 s
+    with media.native_frames(item, 0, 0, 6000, lambda: False, lambda: False, 1) as reader:
+        frames = [(frame.pts_ms, [bytes(plane.data) for plane in frame.planes]) for frame in reader]
+    assert frames == expected and reader.termination == termination
+
+
+def test_a_decoder_logging_past_the_backlog_cap_fails_closed_and_is_reaped(tmp_path, monkeypatch):
+    from media_preview_generator.reprise import media
+
+    item = make_clip_of_many_frames(tmp_path)
+    decoder_records_before_pixels(monkeypatch, tmp_path, media, item, 6000)
+    monkeypatch.setattr(media, "_NATIVE_METADATA_BACKLOG", 16)
+    with pytest.raises(DecodeError, match="metadata failed") as failure:
+        with media.native_frames(item, 0, 0, 6000, lambda: False, lambda: False, 1) as reader:
+            proc = reader.proc
+            list(reader)
+    assert "too far ahead" in str(failure.value.__cause__)
+    assert proc.poll() is not None and not reader.worker.is_alive()
+
+
 def test_native_rejects_actual_interlaced_frames(tmp_path):
     from media_preview_generator.reprise.media import native_frames
 

@@ -16,6 +16,10 @@ from media_preview_generator.reprise.models import CandidateWindow
 from tests.reprise.test_analysis_recurrence import CHIRP, catalog, make_video  # noqa: F401 - catalog is a fixture
 
 WINDOWS = [CandidateWindow("intro", 1000, 6000, "test")]
+# addopts has --timeout=30 (method thread: a test past it kills its xdist worker outright, "node down"). The first test
+# runs four analyses of three references, about 700 FFmpeg and ffprobe processes and 35 CPU-seconds, which a shared
+# 4-core CI runner cannot always do in 30 s.
+pytestmark = pytest.mark.timeout(150)
 
 
 @pytest.fixture
