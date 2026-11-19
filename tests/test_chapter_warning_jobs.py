@@ -1,5 +1,7 @@
 """Finished chapter warnings remain discoverable beside the unfinished queue."""
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 from media_preview_generator.web.job_details import job_has_chapter_warning
@@ -141,7 +143,8 @@ def test_chapter_problem_rows_survive_a_full_routine_outcome_bucket(app, monkeyp
 def _warning_job(manager, name):
     job = manager.create_job(library_name=name)
     job.status = JobStatus.COMPLETED
-    job.completed_at = "2026-10-10T09:00:00+00:00"
+    # Recent, so the jobs database's 30-day retention never drops it when a test reloads the jobs.
+    job.completed_at = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
     job.publishers = [{"chapter_counts": {"failed": 1}}]
     return job
 
