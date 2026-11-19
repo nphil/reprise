@@ -742,6 +742,11 @@ class RepriseService:
             answer.update(freshness="stale", reasons=["Plex mapping or local media has changed or is unavailable"])
             return answer, problem
         result = self.store.get_result(version.id)
+        if result is not None and result.analysis_status == "running":
+            # "Running" is true only of an analysis a thread here is carrying out. One a stop or restart cut off is
+            # ended now, not left to read "Analyzing" for good.
+            self.store.fail_stale_analyses(version.id)
+            result = self.store.get_result(version.id)
         if result is None:
             answer["freshness"] = "current"
             return answer, None
@@ -1578,3 +1583,5 @@ class RepriseService:
                     self.store.fail_analysis(aid, "failed", "Analysis failed or media changed")
                     self._record_outcome(job_id, mid, "failed", "Analysis failed or media changed")
                 raise
+            finally:
+                self.store.release_analysis(aid)

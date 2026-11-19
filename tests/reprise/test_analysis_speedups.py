@@ -125,6 +125,39 @@ def test_a_cancellation_reaches_every_search(season, monkeypatch):
     assert result.status == "cancelled"
 
 
+@pytest.mark.parametrize(
+    ("room", "most"),
+    [(None, 3), (analysis.APP_PIDS + analysis.SEARCH_PIDS - 1, 1)],
+    ids=["no-limit", "room-for-less-than-two"],
+)
+def test_references_are_searched_together_only_as_far_as_the_container_has_room(season, monkeypatch, room, most):
+    """A container that allows 128 processes and threads failed a decode when three searches ran at once (FFmpeg could
+    not start a thread), so a process limit with no room for a second search runs them one at a time."""
+    monkeypatch.setattr(analysis, "SEARCH_WORKERS", 3)
+    monkeypatch.setattr(analysis.container_limits, "process_headroom", lambda: room)
+    real = analysis._scan
+    references = {item.id for item in season[1]}
+    lock = threading.Lock()
+    seen = {"now": 0, "most": 0}
+
+    def scan(item, stream, start, end, cancel, pause, threads, **kwargs):
+        if item.id not in references:
+            return real(item, stream, start, end, cancel, pause, threads, **kwargs)
+        with lock:
+            seen["now"] += 1
+            seen["most"] = max(seen["most"], seen["now"])
+        try:
+            time.sleep(0.3)  # long enough for every search the pool allows to have started
+            return real(item, stream, start, end, cancel, pause, threads, **kwargs)
+        finally:
+            with lock:
+                seen["now"] -= 1
+
+    monkeypatch.setattr(analysis, "_scan", scan)
+    assert run(season).status == "complete"
+    assert seen["most"] == most
+
+
 @pytest.mark.parametrize("workers", [1, 3])
 def test_the_bar_moves_before_the_first_reference_is_done_and_never_goes_back(season, monkeypatch, workers):
     monkeypatch.setattr(analysis, "SEARCH_WORKERS", workers)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+import threading
 import uuid
 from dataclasses import asdict, replace
 from datetime import datetime
@@ -90,6 +91,10 @@ def _validate_range(r, duration):
 class RepriseStore:
     def __init__(self, existing_marker_store):
         self.marker_store = existing_marker_store
+        # The analyses being carried out in this process right now. A row that says "running" and is not among them was
+        # cut off (the app stopped or restarted mid-analysis), and nothing will ever finish it.
+        self._live_runs = set()
+        self._live_lock = threading.Lock()
         with self.transaction() as c:
             for sql in (
                 "CREATE TABLE IF NOT EXISTS reprise_media_versions (id TEXT PRIMARY KEY, data TEXT NOT NULL)",
@@ -466,27 +471,62 @@ class RepriseStore:
         if not signature or not job_id:
             raise ValueError("job and signature required")
         run = _id()
-        with self.transaction() as c:
-            if not c.execute(
-                "SELECT 1 FROM reprise_bindings WHERE version_id=? AND active=1", (media_version_id,)
-            ).fetchone():
-                raise KeyError(media_version_id)
-            c.execute(
-                "INSERT INTO reprise_analysis_runs(id,version_id,job_id,signature,status) VALUES (?,?,?,?,?)",
-                (run, media_version_id, job_id, signature, "running"),
-            )
-            previous = self._result(c, media_version_id)
-            if previous:
+        # Live before its row exists, so a read that finds the row never takes it for one that was cut off.
+        with self._live_lock:
+            self._live_runs.add(run)
+        try:
+            with self.transaction() as c:
+                if not c.execute(
+                    "SELECT 1 FROM reprise_bindings WHERE version_id=? AND active=1", (media_version_id,)
+                ).fetchone():
+                    raise KeyError(media_version_id)
                 c.execute(
-                    "UPDATE reprise_decision_results SET status=?,analysis_id=? WHERE version_id=?",
-                    ("running", run, media_version_id),
+                    "INSERT INTO reprise_analysis_runs(id,version_id,job_id,signature,status) VALUES (?,?,?,?,?)",
+                    (run, media_version_id, job_id, signature, "running"),
                 )
-            else:
-                c.execute(
-                    "INSERT INTO reprise_decision_results VALUES (?,?,?,?,?,?,?)",
-                    (media_version_id, run, 0, signature, POLICY_VERSION, "running", "[]"),
-                )
+                previous = self._result(c, media_version_id)
+                if previous:
+                    c.execute(
+                        "UPDATE reprise_decision_results SET status=?,analysis_id=? WHERE version_id=?",
+                        ("running", run, media_version_id),
+                    )
+                else:
+                    c.execute(
+                        "INSERT INTO reprise_decision_results VALUES (?,?,?,?,?,?,?)",
+                        (media_version_id, run, 0, signature, POLICY_VERSION, "running", "[]"),
+                    )
+        except BaseException:
+            self.release_analysis(run)
+            raise
         return run
+
+    def release_analysis(self, analysis_id):
+        """The run that began as ``analysis_id`` is over in this process, however it ended."""
+        with self._live_lock:
+            self._live_runs.discard(analysis_id)
+
+    def fail_stale_analyses(self, media_version_id=None):
+        """End, as cancelled, every analysis recorded as running that no run in this process is carrying out: the app
+        was stopped or restarted mid-analysis, so nothing will ever finish it and its episode would read "Analyzing"
+        for good. One episode's, or all of them. Returns how many it ended."""
+        with self.marker_store._reading(snapshot=True) as c:
+            running = [
+                row["id"]
+                for row in c.execute(
+                    "SELECT id FROM reprise_analysis_runs WHERE status=? AND (? IS NULL OR version_id=?)",
+                    ("running", media_version_id, media_version_id),
+                )
+            ]
+        with self._live_lock:  # after the rows are read: a run is live before its row exists
+            stale = [run for run in running if run not in self._live_runs]
+        ended = 0
+        for run in stale:
+            try:
+                self.fail_analysis(run, "cancelled", "Analysis was interrupted before it finished")
+            except RevisionConflict:
+                continue  # it finished, or another read ended it, since the rows were read
+            ended += 1
+        return ended
 
     def finish_analysis(self, analysis_id, evidence, ranges, expected_media_version, reasons=()):
         evidence, ranges, reasons = tuple(evidence), tuple(ranges), list(reasons)

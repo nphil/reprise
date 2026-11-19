@@ -513,6 +513,21 @@ def _fail_unrevived_own_runner_jobs() -> None:
         logger.warning("Couldn't settle interrupted Reprise jobs ({}: {})", type(exc).__name__, exc)
 
 
+def _end_interrupted_reprise_analyses(store) -> None:
+    """End the Reprise analyses a restart cut off, as cancelled.
+
+    No analysis has begun in this process yet, so every one still recorded as running was interrupted; left alone its
+    episode would read "Analyzing" for good. Its failure is logged and never stops the app from starting.
+    """
+    try:
+        ended = store.fail_stale_analyses()
+    except Exception as exc:
+        logger.warning("Couldn't end the Reprise analyses the restart interrupted ({}: {})", type(exc).__name__, exc)
+        return
+    if ended:
+        logger.info("Ended {} Reprise analysis run(s) the restart interrupted; analyze those episodes again", ended)
+
+
 def _fail_unrevived_preview_jobs() -> None:
     """Settle the preview jobs a restart left behind and didn't revive.
 
@@ -896,6 +911,7 @@ def create_app(config_dir: str | None = None) -> Flask:
     from .routes.api_reprise import create_reprise_blueprint
 
     reprise_store = RepriseStore(get_marker_store(config_dir))
+    _end_interrupted_reprise_analyses(reprise_store)
     reprise_registry = SettingsRegistry(sm)
     reprise_service = RepriseService(reprise_store, reprise_registry, get_job_manager())
     reprise_service.publisher = ReprisePublisher(

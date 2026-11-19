@@ -1083,6 +1083,77 @@ def test_metadata_error_interrupts_partial_payload(tmp_path, monkeypatch):
     assert proc.poll() is not None and not reader.worker.is_alive()
 
 
+def test_native_video_decoder_limits_the_threads_of_its_encoder_too(tmp_path, monkeypatch):
+    """FFmpeg's "-threads" before "-i" limits only the decoder. The rawvideo encoder behind it took one thread per CPU
+    of the host: one decode held 37 threads on the NAS's 16 CPUs (55 on its GPU), and a container allowed 128 ran out
+    of them when three references were searched together, which ended an analysis in 'Native frame metadata failed'.
+    The output side has to name its limit too."""
+    from media_preview_generator.reprise import media
+
+    item = make_clip_of_many_frames(tmp_path)
+    real_popen = media.subprocess.Popen
+    commands = []
+
+    def record(command, *args, **kwargs):
+        if "-vf" in command:
+            commands.append(list(command))
+        return real_popen(command, *args, **kwargs)
+
+    monkeypatch.setattr(media.subprocess, "Popen", record)
+    with media.native_frames(item, 0, 0, 1000, lambda: False, lambda: False, 1) as reader:
+        frames = list(reader)
+    assert frames and reader.termination is not None  # the real FFmpeg accepts the command and decodes with it
+    (command,) = commands
+    muxer = command.index("-f")
+    assert command[muxer : muxer + 2] == ["-f", "rawvideo"]
+    assert command[muxer - 2 : muxer] == ["-threads", "1"]  # after "-i": the output's
+    assert command.index("-threads") < command.index("-i") < muxer - 2  # the decoder's own stays ahead of it
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # Three searches decoding on the GPU at once, in a container that allows 128 processes (FFmpeg 8.1, Tesla P40):
+        "[swscaler @ 0x151200007980] [error] Failed initializing scaling graph (Resource temporarily unavailable): "
+        "fmt:p010le csp:bt709 prim:bt709 trc:bt709 -> fmt:yuv420p10le csp:bt709 prim:bt709 trc:bt709",
+        # Two searches decoding on the CPU at once, in the same container:
+        "[rawvideo @ 0x5598a60c62c0] [error] ff_frame_thread_encoder_init failed",
+    ],
+    ids=["gpu-scaler", "cpu-encoder"],
+)
+def test_a_decoder_that_could_not_start_its_threads_fails_closed_and_the_failure_names_the_line(
+    tmp_path, monkeypatch, line
+):
+    """The lines FFmpeg logged when the Reprise container ran out of processes, which ended the analysis of Community
+    S1E03 in 'Native frame metadata failed' with no word of why. The reader is right to refuse them: a decode that could
+    not start its threads has not decoded what it claims. What the failure says is what changed."""
+    import re
+    import sys
+    import time
+
+    from media_preview_generator.reprise import media
+
+    item = make_clip_of_many_frames(tmp_path)
+    real_popen = media.subprocess.Popen
+    script = f"import os,time; os.write(2,{(line + chr(10)).encode()!r}); time.sleep(10)"
+
+    def replacement(command, *args, **kwargs):
+        if "-vf" in command:
+            command = [sys.executable, "-u", "-c", script]
+        return real_popen(command, *args, **kwargs)
+
+    monkeypatch.setattr(media.subprocess, "Popen", replacement)
+    before = time.monotonic()
+    with pytest.raises(DecodeError, match="Native frame metadata failed") as failure:
+        with media.native_frames(item, 0, 0, 1000, lambda: False, lambda: False, 1) as reader:
+            proc = reader.proc
+            list(reader)
+    assert time.monotonic() - before < 8
+    assert re.sub(r" @ 0x[0-9a-f]+", "", line) in str(failure.value)  # the line, without the address that changes
+    assert proc.poll() is not None and not reader.worker.is_alive()
+    assert reader.termination is None  # nothing it produced is taken
+
+
 @pytest.mark.parametrize("extra", [True, False])
 def test_stderr_eof_does_not_stall_decoder_cleanup(tmp_path, monkeypatch, extra):
     import sys
@@ -1299,6 +1370,28 @@ def test_ac3_native_declarations_and_channels(ac3_native_audio):
     assert declarations["downmix"][0] == "unknown"
 
 
+def test_native_audio_decoder_limits_the_threads_of_its_encoder_too(ac3_native_audio, monkeypatch):
+    """As for video: an audio decode held 21 threads on the NAS, 6 with its output limited."""
+    from media_preview_generator.reprise import media
+
+    real_popen = media.subprocess.Popen
+    commands = []
+
+    def record(command, *args, **kwargs):
+        if "-af" in command:
+            commands.append(list(command))
+        return real_popen(command, *args, **kwargs)
+
+    monkeypatch.setattr(media.subprocess, "Popen", record)
+    decoded = media.native_audio_pcm(ac3_native_audio, 0, 0, 1000, lambda: False, lambda: False, 1)
+    assert decoded.data.shape == (48000, 6)
+    (command,) = commands
+    muxer = command.index("-f")
+    assert command[muxer : muxer + 2] == ["-f", "f64le"]
+    assert command[muxer - 2 : muxer] == ["-threads", "1"]
+    assert command.index("-threads") < command.index("-i") < muxer - 2
+
+
 def with_test_audio_declarations(lines):
     """Insert known records into real decoder logs for cross-version fault injection."""
     output = []
@@ -1427,7 +1520,7 @@ def test_sequential_audio_late_fault_invalidates_provisional_chunks(ac3_native_a
 
     intercept_audio_records(monkeypatch, alter)
     seen = []
-    with pytest.raises(DecodeError, match="decoder reported"):
+    with pytest.raises(DecodeError, match="decoder reported an error: .*injected late decoder diagnostic"):
         with native_audio_chunks(
             ac3_native_audio, 0, 0, 1000, lambda: False, lambda: False, 1, chunk_samples=4800
         ) as reader:

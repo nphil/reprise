@@ -69,6 +69,12 @@ def is_fatal_diagnostic(line, decoded_stream):
     return not (unsized and int(unsized.group(1)) != decoded_stream)
 
 
+def diagnostic_text(line):
+    """An FFmpeg log line as one short piece of an error message. The address FFmpeg prints after a component's name
+    ("[rawvideo @ 0x5598a60c62c0]") changes every run and says nothing."""
+    return re.sub(r" @ 0x[0-9a-fA-F]+", "", line).strip()[:240]
+
+
 def run(command, cancel_check, pause_check, limit=MAX_OUTPUT, *, reject_stderr=False, capture_stderr=False):
     """Capture stdout to a bounded temporary file and drain bounded diagnostics."""
     with tempfile.TemporaryFile() as output:
@@ -697,6 +703,11 @@ class NativeFrameReader:
             f"{self.time_base.numerator}:{self.time_base.denominator}",
             "-pix_fmt",
             self.pix,
+            # The output side too: the "-threads" above limits only the decoder. A bare output defaults to one
+            # rawvideo encoder thread per CPU of the host, which made one decode 37 threads (55 on the GPU, 16 CPUs)
+            # and a container capped at 128 processes could not start the threads of decodes running together.
+            "-threads",
+            "1",
             "-f",
             "rawvideo",
             "-",
@@ -730,7 +741,7 @@ class NativeFrameReader:
                     return
                 line = raw.decode("utf-8", "replace")
                 if is_fatal_diagnostic(line, self.stream):
-                    raise DecodeError("Native decoder reported a diagnostic")
+                    raise DecodeError(f"Native decoder reported a diagnostic: {diagnostic_text(line)}")
                 source = re.match(r"^\[Parsed_showinfo_(\d+)\s+@[^]]+\]\s+\[info\]\s?(.*)$", line)
                 if not source or source.group(1) not in self.showinfo:
                     if line.startswith("[Parsed_showinfo_"):
@@ -802,6 +813,9 @@ class NativeFrameReader:
         finally:
             self.events.put(None)
 
+    def _metadata_error(self):
+        return DecodeError(f"Native frame metadata failed: {self.worker_error}")
+
     def _signal(self, sig):
         try:
             os.killpg(self.proc.pid, sig)
@@ -835,7 +849,7 @@ class NativeFrameReader:
                 last_progress = time.monotonic()
             if self.worker_error:
                 check_current(self.media)
-                raise DecodeError("Native frame metadata failed") from self.worker_error
+                raise self._metadata_error() from self.worker_error
             if not select.select([fd], [], [], 0.05)[0]:
                 if time.monotonic() - last_progress > _NATIVE_PROTOCOL_TIMEOUT:
                     raise DecodeError("Native frame payload stalled")
@@ -885,7 +899,7 @@ class NativeFrameReader:
             except queue.Empty:
                 if self.worker_error:
                     check_current(self.media)
-                    raise DecodeError("Native frame metadata failed") from self.worker_error
+                    raise self._metadata_error() from self.worker_error
                 if stalled_since is None:
                     stalled_since = time.monotonic()
                 elif time.monotonic() - stalled_since > _NATIVE_PROTOCOL_TIMEOUT:
@@ -894,7 +908,7 @@ class NativeFrameReader:
             if event is None:
                 if self.worker_error:
                     check_current(self.media)
-                    raise DecodeError("Native frame metadata failed") from self.worker_error
+                    raise self._metadata_error() from self.worker_error
                 self._wait_for_exit()
                 if self.pre_in_cap_count != self.post_count:
                     raise DecodeError("Native frame count mismatch")
@@ -1200,9 +1214,12 @@ class _AudioLines:
 
         def reject_probe_errors():
             try:
-                for _line in _bounded_log_lines(self.proc.stderr):
-                    self.error = DecodeError("Native audio probe reported an error")
-                    self._put(DecodeError("Native audio probe reported an error"))
+                for raw in _bounded_log_lines(self.proc.stderr):
+                    error = DecodeError(
+                        f"Native audio probe reported an error: {diagnostic_text(raw.decode('utf-8', 'replace'))}"
+                    )
+                    self.error = error
+                    self._put(error)
                     return
             except Exception as exc:
                 self.error = exc
@@ -1724,6 +1741,9 @@ def _native_audio_stream(media, stream_index, start_ms, end_ms, cancel_check, pa
             f"asettb=1/{rate},ashowinfo,atrim=start_sample={first_sample}:end_sample={last_sample}",
             "-c:a",
             "pcm_f64le",
+            # The output side too, as in the video command: an audio decode was 21 threads, now 6.
+            "-threads",
+            "1",
             "-f",
             "f64le",
             "-",
@@ -1758,7 +1778,7 @@ def _native_audio_stream(media, stream_index, start_ms, end_ms, cancel_check, pa
                 break
             line = raw.decode("utf-8", "replace")
             if is_fatal_diagnostic(line, stream_index):
-                raise DecodeError("Native audio decoder reported an error")
+                raise DecodeError(f"Native audio decoder reported an error: {diagnostic_text(line)}")
             if "Parsed_ashowinfo_" not in line:
                 other_bytes += len(raw)
                 if other_bytes > 16 * 1024 * 1024:

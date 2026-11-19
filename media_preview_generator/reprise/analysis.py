@@ -19,8 +19,10 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import replace
 from fractions import Fraction
 
+from loguru import logger
+
 from ..gpu.ffmpeg_capabilities import ffmpeg_binary
-from . import acceleration, scan_cache
+from . import acceleration, container_limits, scan_cache
 from . import media as decoder
 from . import recurrence as verify
 from .admission import admit_references
@@ -69,6 +71,23 @@ def _workers():
 
 
 SEARCH_WORKERS = _workers()
+# What one search holds, in processes and threads, at its busiest: the picture check reads two windows at once, each an
+# ffmpeg, an ffprobe and the threads that watch them (measured on the NAS: 61 for two searches with an NVDEC decode
+# each). APP_PIDS stays free for the rest of the app. A container with a process limit (Docker --pids-limit, 128 there)
+# fails a decode whose thread cannot start, so no more searches run at once than the limit has room for.
+SEARCH_PIDS = 32
+APP_PIDS = 16
+
+
+def _search_workers():
+    """How many references are searched at once right now: SEARCH_WORKERS, or fewer when the container's process limit
+    has no room for that many (never fewer than one)."""
+    room = container_limits.process_headroom()
+    if room is None:
+        return SEARCH_WORKERS
+    return max(1, min(SEARCH_WORKERS, (room - APP_PIDS) // SEARCH_PIDS))
+
+
 # The progress bar: the share of a window's bar the target's scan takes (measured: about a tenth of the window's time),
 # the share of a search that is its reference scan (the rest is the sound and picture checks of its proposals), and how
 # often a scan reports (frames).
@@ -916,9 +935,18 @@ def _analyze(
                 return rows, notes
 
             def run(positions, number=number, window=window, searches=searches, progress=progress):
-                """Search these positions of ``searches`` (up to SEARCH_WORKERS at a time), report the bar as they go,
+                """Search these positions of ``searches`` (up to _search_workers() at a time), report the bar as they go,
                 and merge their rows and notes in position order: the first search to fail, in that order, raises."""
-                with ThreadPoolExecutor(max_workers=min(SEARCH_WORKERS, len(positions))) as pool:
+                configured = min(SEARCH_WORKERS, len(positions))
+                workers = min(_search_workers(), len(positions))
+                if workers < configured:
+                    logger.info(
+                        "Reprise compares with {} other episode(s) at a time instead of {}: the container's process "
+                        "limit leaves no room for more",
+                        workers,
+                        configured,
+                    )
+                with ThreadPoolExecutor(max_workers=workers) as pool:
 
                     def pinned_search(position):
                         with acceleration.pinned(position):  # a slot per search: see acceleration.order
