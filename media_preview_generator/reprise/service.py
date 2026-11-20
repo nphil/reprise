@@ -687,6 +687,13 @@ class RepriseService:
     def _valid_binding(self, version, identity, server_id, metadata):
         return self._binding_problem(version, identity, server_id, metadata) is None
 
+    def _unavailable_code(self, version, bindings):
+        """Why none of these bindings describes a readable file (a ``STALE_REASONS`` code), or None while one does."""
+        if not version or not bindings:
+            return "file_missing"
+        problems = [self._binding_problem(version, *b) for b in bindings]
+        return None if None in problems else problems[0]
+
     def _references_current(self, result):
         for version_id in {result.media_version_id} | {
             e.reference_version_id for e in result.evidence if e.reference_version_id
@@ -1090,6 +1097,8 @@ class RepriseService:
         )
         if job.status.value == "completed" and job.error:
             data["warning"] = job.error
+        if config.get("analysis_result"):
+            data["analysis"] = config["analysis_result"]
         if config.get("refresh_result"):
             data["refresh"] = config["refresh_result"]
         if config.get("media_version_ids"):
@@ -1134,23 +1143,37 @@ class RepriseService:
             return {"state": "failed", "message": message, "per_media": per_media}
         found = [entry for entry in per_media if entry["state"] == "found"]
         suggested = [entry for entry in per_media if entry["state"] == "suggested"]
+        failed = [entry for entry in per_media if entry["state"] == "failed"]
         many = len(per_media) > 1
+        # A finished job only has failed entries for episodes whose file went missing or changed: the rest ran.
+        left_out = (
+            f" {len(failed)} {'episode' if len(failed) == 1 else 'episodes'} could not be analyzed "
+            "(file missing, changed or unavailable)."
+            if many and failed
+            else ""
+        )
+        if many and len(failed) == len(per_media):
+            return {
+                "state": "failed",
+                "message": "No episode could be analyzed because its file is missing, changed or unavailable.",
+                "per_media": per_media,
+            }
         if found:
             message = (
                 f"Found ranges to review in {len(found)} of {len(per_media)} episodes." if many else found[0]["message"]
             )
             if many and suggested:
                 message += f" Suggestions were made for {len(suggested)} more."
-            return {"state": "found", "message": message, "per_media": per_media}
+            return {"state": "found", "message": message + left_out, "per_media": per_media}
         if suggested:
             message = (
                 f"Suggestions were made for {len(suggested)} of {len(per_media)} episodes; Reprise could not confirm them."
                 if many
                 else suggested[0]["message"]
             )
-            return {"state": "suggested", "message": message, "per_media": per_media}
-        message = f"Nothing found in {len(per_media)} episodes." if many else per_media[0]["message"]
-        return {"state": "nothing_found", "message": message, "per_media": per_media}
+            return {"state": "suggested", "message": message + left_out, "per_media": per_media}
+        message = f"Nothing found in {len(per_media) - len(failed)} episodes." if many else per_media[0]["message"]
+        return {"state": "nothing_found", "message": message + left_out, "per_media": per_media}
 
     def get_job(self, job_id, principal=None):
         job = self.job_manager.get_job(job_id)
@@ -1460,6 +1483,56 @@ class RepriseService:
         if not library_request:
             ids = job.config["media_version_ids"]
         lookups = self._online_lookups()
+        left_out = {"skipped": 0, "skipped_items": []}
+        finished = False
+
+        def leave_out(media_id, code, bindings):
+            """One episode whose file is gone, changed or unreachable: say so on it and on the job, and go on."""
+            stale = _stale(code)
+            meta = bindings[0][2] if bindings else {}
+            info = {
+                "grandparentTitle": meta.get("show_title"),
+                "title": meta.get("title"),
+                "parentIndex": meta.get("season"),
+                "index": meta.get("episode"),
+                "ratingKey": media_id,
+            }
+            self._record_outcome(job_id, media_id, "failed", f"{stale['message']} {stale['next']}")
+            left_out["skipped"] += 1
+            if len(left_out["skipped_items"]) < _SKIPPED_ITEMS_KEPT:
+                left_out["skipped_items"].append(
+                    {"episode": _episode_label(info), "reason": stale["message"].rstrip(".")}
+                )
+            self.job_manager.merge_job_config(
+                job_id, {"analysis_result": {**left_out, "skipped_items": list(left_out["skipped_items"])}}
+            )
+            logger.warning("Analysis left out episode {}: {}", media_id, code)
+
+        def finish(commit, last):
+            """Commit one result atomically with the cancellation check; after the last episode the job completes, with
+            a warning when episodes were left out."""
+            nonlocal finished
+            if not last:
+                return self.job_manager.commit_if_active(job_id, commit)
+
+            def done():
+                commit()
+                count = left_out["skipped"]
+                one = count == 1
+                self.job_manager.complete_job(
+                    job_id,
+                    warning=(
+                        f"{count} {'episode was' if one else 'episodes were'} not analyzed because "
+                        f"{'its' if one else 'their'} file is missing, changed or unavailable. "
+                        f"Refresh the library, then analyze {'it' if one else 'them'} again."
+                    )
+                    if count
+                    else None,
+                )
+
+            finished = self.job_manager.commit_if_active(job_id, done)
+            return finished
+
         for index, mid in enumerate(ids):
             from ..markers.freeze import Freeze
 
@@ -1468,7 +1541,7 @@ class RepriseService:
                 self.job_manager.cancel_job(job_id)
                 return
             version = self.store.get_media(mid)
-            bindings = self._bindings(mid)
+            bindings = all_bindings = self._bindings(mid)
             if library_request:
                 bindings = [
                     b
@@ -1479,8 +1552,13 @@ class RepriseService:
                     and self._valid_binding(version, *b)
                 ]
             if not version or not bindings or not any(self._valid_binding(version, *b) for b in bindings):
-                self._record_outcome(job_id, mid, "failed", CHANGED_ON_DISK)
-                raise ValueError("Media became unavailable or stale")
+                code = (
+                    self._unavailable_code(version, bindings)
+                    if bindings
+                    else (self._unavailable_code(version, all_bindings) or "library_changed")
+                )
+                leave_out(mid, code, all_bindings)
+                continue
             meta = bindings[0][2]
             candidates = [CandidateWindow(**c) for c in meta.get("candidates", [])]
             present = {candidate.kind for candidate in candidates}
@@ -1582,7 +1660,7 @@ class RepriseService:
                         self.store.finish_analysis(aid, draft.evidence, draft.ranges, version.id, reasons)
                         self._record_outcome(job_id, version.id, *_analysis_summary(draft.ranges, reasons))
 
-                    committed = self.job_manager.commit_if_active(job_id, commit, complete=index == len(ids) - 1)
+                    committed = finish(commit, index == len(ids) - 1)
                     if not committed:
                         self.store.fail_analysis(aid, "cancelled", "Analysis cancelled")
                         recorded_failure = True
@@ -1592,6 +1670,13 @@ class RepriseService:
                 if not recorded_failure:
                     self.store.fail_analysis(aid, "failed", "Analysis failed or media changed")
                     self._record_outcome(job_id, mid, "failed", "Analysis failed or media changed")
-                raise
+                # A file that went missing or changed while it was read is this episode's problem, not the job's.
+                code = self._unavailable_code(version, bindings)
+                if code is None:
+                    raise
+                leave_out(mid, code, bindings)
+                continue
             finally:
                 self.store.release_analysis(aid)
+        if not finished and not finish(lambda: None, True):
+            self.job_manager.cancel_job(job_id)

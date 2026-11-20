@@ -616,7 +616,11 @@
             else if (job.status === 'cancelled') detail = 'Cancelled.';
             else detail = 'Failed. Settings, Logs shows what went wrong.';
         }
-        return { title, detail };
+        /* Episodes whose file was gone or changed were left out; the rest ran. Name them like a refresh does. */
+        const a = job.analysis, items = a && Array.isArray(a.skipped_items) ? a.skipped_items : [];
+        const notes = items.map(item => `${item.episode}: ${item.reason}.`);
+        if (a && a.skipped > items.length) notes.push(`${plural(a.skipped - items.length, 'more episode')} not listed.`);
+        return { title, detail, notes };
     }
     function renderJobRow(job) {
         const terminal = terminalJob(job.status), { title, detail, notes = [] } = describeJob(job);
