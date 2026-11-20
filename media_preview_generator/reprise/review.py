@@ -1,5 +1,7 @@
 """Review is independent of publication; legacy marker writes are not authorization."""
 
+from dataclasses import replace
+
 from .models import ORIGIN_PLEX
 
 
@@ -34,15 +36,19 @@ def plex_projection(result, identity, eligible):
     if not approved or approved != eligible:
         raise ValueError("Approved skips are not fully eligible for this playback identity")
     seen = set()
-    previous_end = 0
+    previous = None
+    merged = []
     for item in approved:
-        if item.kind not in ("intro", "credits") or item.kind in seen:
+        # Pieces of one kind that touch exactly (one confirmed run split by evidence) are one Plex marker; any gap
+        # between them is a protected moment Plex can't represent, so it still refuses.
+        joins = previous is not None and previous.kind == item.kind and item.start_ms == previous.end_ms
+        if item.kind not in ("intro", "credits") or (item.kind in seen and not joins):
             raise ValueError("Plex cannot represent this set of skip ranges exactly")
         if (
             type(item.start_ms) is not int
             or type(item.end_ms) is not int
             or not 0 <= item.start_ms < item.end_ms <= identity.duration_ms
-            or item.start_ms < previous_end
+            or (previous is not None and item.start_ms < previous.end_ms)
         ):
             raise ValueError("Skip ranges overlap or have invalid bounds")
         if item.terminal or item.end_ms >= identity.duration_ms - 2000:
@@ -51,6 +57,10 @@ def plex_projection(result, identity, eligible):
             raise ValueError("Plex cannot represent this credits start exactly")
         if identity.audio_stream_id not in item.audio_stream_ids:
             raise ValueError("Selected audio track was not reviewed")
+        if joins:
+            merged[-1] = replace(merged[-1], end_ms=item.end_ms)
+        else:
+            merged.append(item)
         seen.add(item.kind)
-        previous_end = item.end_ms
-    return tuple(approved)
+        previous = item
+    return tuple(merged)

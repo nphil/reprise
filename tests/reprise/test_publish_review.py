@@ -34,6 +34,15 @@ def test_projection_rejects_trimming_and_disjoint_ranges():
         plex_projection(_result(r, other), _identity(), (r, other))
 
 
+def test_projection_joins_pieces_that_touch_exactly_and_refuses_a_gap():
+    first, second = _range(end_ms=3000), _range(id="b", start_ms=3000, end_ms=5000)
+    (joined,) = plex_projection(_result(first, second), _identity(), (first, second))
+    assert (joined.kind, joined.start_ms, joined.end_ms) == ("intro", 1000, 5000)
+    gap = _range(id="b", start_ms=3001, end_ms=5000)
+    with pytest.raises(ValueError):
+        plex_projection(_result(first, gap), _identity(), (first, gap))
+
+
 def test_projection_refuses_unreviewed_track_and_end_hazard():
     r = _range(audio_stream_ids=("other",))
     with pytest.raises(ValueError):
