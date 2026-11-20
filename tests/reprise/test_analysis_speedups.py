@@ -70,25 +70,42 @@ def test_the_same_draft_comes_back_for_one_worker_or_three_with_and_without_the_
 
 
 def test_the_first_search_to_fail_in_order_is_the_failure_whichever_finishes_first(season, monkeypatch):
-    real = analysis._scan
+    """A search fails the analysis when reading the target itself fails (here: its sound, while measuring the offset)."""
+    real = analysis._sound_offset
     references = season[1]
 
-    def scan(item, stream, start, end, cancel, pause, threads, **kwargs):
-        if item.id == references[1].id:  # slow, and first in order
+    def sound_offset(media, reference, *args, **kwargs):
+        if reference.id == references[1].id:  # slow, and first in order
             time.sleep(0.4)
             raise decoder.DecodeError("first by order")
-        if item.id == references[2].id:  # quick, later in order
+        if reference.id == references[2].id:  # quick, later in order
             raise decoder.DecodeError("second by order")
-        return real(item, stream, start, end, cancel, pause, threads, **kwargs)
+        return real(media, reference, *args, **kwargs)
 
-    monkeypatch.setattr(analysis, "_scan", scan)
+    monkeypatch.setattr(analysis, "_sound_offset", sound_offset)
     monkeypatch.setattr(analysis, "SEARCH_WORKERS", 3)
     result = run(season)
     assert result.status == "failed" and "first by order" in result.reasons
 
 
+def test_a_reference_that_cannot_be_read_is_left_out_instead_of_failing_the_target(season, monkeypatch):
+    real = analysis._scan
+    references = season[1]
+
+    def scan(item, stream, start, end, cancel, pause, threads, **kwargs):
+        if item.id == references[1].id:
+            raise decoder.DecodeError("damaged reference")
+        return real(item, stream, start, end, cancel, pause, threads, **kwargs)
+
+    monkeypatch.setattr(analysis, "_scan", scan)
+    monkeypatch.setattr(analysis, "SEARCH_WORKERS", 3)
+    result = run(season)
+    assert result.status == "complete" and "damaged reference" not in result.reasons
+
+
 def test_searches_after_a_failure_are_stopped_but_earlier_ones_finish(season, monkeypatch):
     real = analysis._scan
+    real_offset = analysis._sound_offset
     references = season[1]
     seen = {}
 
@@ -99,12 +116,15 @@ def test_searches_after_a_failure_are_stopped_but_earlier_ones_finish(season, mo
                 time.sleep(0.02)
             seen["first_was_stopped"] = cancel()
             return real(item, stream, start, end, lambda: False, pause, threads, **kwargs)
-        if item.id == references[1].id:
-            raise decoder.DecodeError("boom")
-        seen["third_was_stopped"] = True
         return real(item, stream, start, end, cancel, pause, threads, **kwargs)
 
+    def sound_offset(media, reference, *args, **kwargs):
+        if reference.id == references[1].id:
+            raise decoder.DecodeError("boom")  # the target's own sound could not be read
+        return real_offset(media, reference, *args, **kwargs)
+
     monkeypatch.setattr(analysis, "_scan", scan)
+    monkeypatch.setattr(analysis, "_sound_offset", sound_offset)
     monkeypatch.setattr(analysis, "SEARCH_WORKERS", 3)
     result = run(season)
     assert result.status == "failed" and "boom" in result.reasons

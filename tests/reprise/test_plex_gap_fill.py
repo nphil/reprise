@@ -89,8 +89,8 @@ def skips(draft):
     return [r for r in draft.ranges if r.action == "skip"]
 
 
-def test_the_profile_is_v7_and_says_how_far_a_gap_may_be_filled():
-    assert PROFILE_ID == "native-signal-review-first-v7"
+def test_the_profile_is_v8_and_says_how_far_a_gap_may_be_filled():
+    assert PROFILE_ID == "native-signal-review-first-v8"
     assert PROFILE_SPEC["bridge"]["max_gap_ms"] == 3000
     assert PROFILE_SPEC["bridge"]["suggested_window"] is True
 

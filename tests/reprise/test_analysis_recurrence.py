@@ -497,7 +497,8 @@ def test_a_marker_that_starts_after_the_sound_has_ended_is_never_confirmed(tmp_p
     assert result.reasons[0] == headline
 
 
-ODD_PICTURE = "testsrc2=size=128x80:rate=10:duration=7"  # another size is another picture format
+# Twice as wide: another shape, beyond any crop, is a picture that cannot be compared (another size alone can be).
+ODD_PICTURE = "testsrc2=size=192x64:rate=10:duration=7"
 
 
 def test_an_episode_in_another_picture_format_is_passed_over_for_the_next_nearest(tmp_path, catalog, monkeypatch):
@@ -529,9 +530,9 @@ def test_an_episode_in_another_picture_format_is_passed_over_for_the_next_neares
     assert [name for name in probed if name != "target.mkv"] == [f"episode-{n}.mkv" for n in (2, 3, 4, 5)]  # not 6
 
 
-def test_a_copy_in_a_picture_format_no_other_episode_has_says_so(tmp_path, catalog):
-    """The live season's one H.264 8-bit episode among HEVC 10-bit ones was only told that none of the others could be
-    used for the comparison. Now it is told why, and nothing is confirmed against them."""
+def test_a_copy_in_a_picture_shape_no_other_episode_has_says_so(tmp_path, catalog):
+    """A copy whose picture cannot be compared with any other episode's was only told that none of the others could
+    be used for the comparison. Now it is told why, and nothing is confirmed against them."""
     target = make_video(tmp_path / "target.mkv", sound=chirp(), source=ODD_PICTURE)
     others = [make_video(tmp_path / f"episode-{n}.mkv", sound=chirp()) for n in (2, 3)]
     result = analyze_windows(target, [CandidateWindow("intro", 1000, 6000, "test")], catalog, others)
@@ -540,14 +541,28 @@ def test_a_copy_in_a_picture_format_no_other_episode_has_says_so(tmp_path, catal
     assert not skips(result) and not matches(result)
 
 
-def test_a_copy_with_another_sound_layout_than_every_other_episode_says_so(tmp_path, catalog):
+def test_a_stereo_copy_is_compared_with_mono_episodes_through_one_mono_mix(tmp_path, catalog):
+    """A copy in another sound layout than every other episode used to be told it could not be compared. Every track
+    is now folded to one mono signal first, so the same sound in two layouts is the same sound."""
     stereo = "aevalsrc=0.3*sin(2*PI*440*t)|0.3*sin(2*PI*440*t):c=stereo:s=48000:d=7"
     target = make_video(tmp_path / "target.mkv", sound=stereo, layout="stereo")
     others = [make_video(tmp_path / f"episode-{n}.mkv") for n in (2, 3)]
     result = analyze_windows(target, [CandidateWindow("intro", 1000, 6000, "test")], catalog, others)
     assert result.status == "complete", result.reasons
-    assert COPY_AUDIO_DIFFERS in result.reasons and NO_USABLE_REFERENCES not in result.reasons
-    assert not skips(result) and not matches(result)
+    assert COPY_AUDIO_DIFFERS not in result.reasons and NO_USABLE_REFERENCES not in result.reasons
+    assert overlaps(2000, 5000, skips(result)), result.reasons
+    assert all(["FL", "FR"] in e.metrics["checked_channels"].values() for e in matches(result))
+
+
+def test_a_track_pairs_by_language_then_by_position_and_one_without_a_partner_ends_the_comparison():
+    from media_preview_generator.reprise.analysis import _track_map
+
+    eng, jpn, untagged = ("1", 1, 48000, 6, "eng"), ("2", 2, 48000, 2, "jpn"), ("3", 1, 48000, 2, None)
+    assert _track_map([eng], [jpn, eng]) == [eng]  # by language, wherever it sits
+    assert _track_map([jpn, eng], [eng, jpn]) == [jpn, eng]
+    assert _track_map([untagged], [eng]) == [eng]  # a language the reference lacks: the track at the same position
+    assert _track_map([eng], [eng, jpn]) == [eng]  # the reference's extra tracks are not compared
+    assert _track_map([eng, jpn], [eng]) is None  # a track with no partner: nothing is confirmed against it
 
 
 def test_references_left_out_for_different_reasons_are_each_counted(tmp_path, catalog, monkeypatch):
@@ -579,7 +594,7 @@ def test_left_out_notes_count_each_cause_in_plain_words():
 
     assert _left_out_notes({"picture": 2, "audio": 1, "unreadable": 0}) == [
         "2 other episodes of this season have a different picture format, so they were left out of the comparison.",
-        "1 other episode of this season has a different audio format, so it was left out of the comparison.",
+        "1 other episode of this season has different audio tracks, so it was left out of the comparison.",
     ]
     assert _left_out_notes({"picture": 0, "audio": 0, "unreadable": 3}) == [
         "3 other episodes of this season could not be read, so they were left out of the comparison."

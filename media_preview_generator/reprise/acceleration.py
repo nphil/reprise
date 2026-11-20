@@ -77,14 +77,6 @@ class Accelerator:
         return "NVDEC" if self.kind == "cuda" else "VAAPI"
 
     @property
-    def cuda_index(self) -> int | None:
-        """The CUDA device index of an NVIDIA GPU ("cuda:1" is 1), None for any other kind."""
-        if self.kind != "cuda":
-            return None
-        index = self.device.partition(":")[2]
-        return int(index) if index.isdigit() else None
-
-    @property
     def title(self) -> str:
         """A short display name: lspci's "Intel Corporation CoffeeLake-S GT2 [UHD Graphics 630] (rev 02)" reads as
         "Intel UHD Graphics 630"; nvidia-smi's "Tesla P40" gains its vendor."""

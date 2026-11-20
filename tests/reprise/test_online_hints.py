@@ -234,12 +234,15 @@ def test_a_hinted_search_that_fails_is_only_noted(library, target, far_reference
     assert analysis.ONLINE_HINT_FAILED.format(kind=INTRO) in draft.reasons
 
 
-def test_a_plex_window_that_cannot_be_compared_still_fails_the_comparison_as_before(
+def test_a_reference_that_cannot_be_read_under_a_plex_window_is_left_out_and_plex_stays_a_suggestion(
     library, target, unrelated, monkeypatch
 ):
+    """A reference that cannot be read is the reference's failure: it is left out, never a failure of the target."""
     failing_scan(monkeypatch, unrelated.id, lambda start, end: start == 0)  # where Plex's marker is searched
     draft, _ = compare(library, target, unrelated, [PLEX], {target.id: (window(INTRO, 1000, 15000, "IntroDB"),)})
-    assert analysis.COMPARISON_FAILED in draft.reasons or analysis.COMPARISON_UNREADABLE in draft.reasons
+    assert draft.status == "complete"
+    assert analysis.COMPARISON_FAILED not in draft.reasons and analysis.COMPARISON_UNREADABLE not in draft.reasons
+    assert "1 other episode of this season could not be read, so it was left out of the comparison." in draft.reasons
     assert [r.origin for r in suggestions(draft)] == ["plex"]
 
 

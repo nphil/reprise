@@ -516,15 +516,17 @@ def test_native_vfr_nonzero_origin_and_lookahead_cap(tmp_path):
         assert list(reader) == []
 
 
-def test_native_rejects_missing_chroma_and_reaps_on_exception(tmp_path):
+def test_native_reads_an_undeclared_chroma_location_and_reaps_on_exception(tmp_path):
     from media_preview_generator.reprise.media import native_frames
 
     path = tmp_path / "unknown.mkv"
     execute("-f", "lavfi", "-i", "testsrc2=size=64x48:rate=4:duration=2", "-c:v", "ffv1", "-y", str(path))
     item = media_version(str(path), 2000, "{}")
-    with pytest.raises(DecodeError, match="chroma"):
-        with native_frames(item, 0, 0, 1000, lambda: False, lambda: False, 1):
-            pass
+    # Most real files declare no chroma location. The canonical picture averages whole cells, where the siting (half
+    # a pixel) is an eighth of a cell, so such a file is read and its frames say what the file said.
+    with native_frames(item, 0, 0, 1000, lambda: False, lambda: False, 1) as reader:
+        frames = list(reader)
+    assert frames and len({frame.chroma_location for frame in frames}) == 1
     path = tmp_path / "known.mkv"
     execute(
         "-f",
@@ -679,7 +681,7 @@ def test_streamed_native_audio_global_grid_with_container_origin(tmp_path, offse
     assert np.array_equal(result.data, reference[48000:96000])
 
 
-def test_native_audio_rejects_gap_and_unknown_layout(tmp_path):
+def test_native_audio_rejects_gap_and_reads_an_undeclared_mono_layout(tmp_path):
     from media_preview_generator.reprise.media import native_audio_pcm
 
     path = tmp_path / "gap.mka"
@@ -704,15 +706,16 @@ def test_native_audio_rejects_gap_and_unknown_layout(tmp_path):
         "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=2", "-c:a", "pcm_s16le", "-y", str(path)
     )
     item = media_version(str(path), 2000, "{}")
-    with pytest.raises(DecodeError, match="layout"):
-        native_audio_pcm(item, 0, 0, 1000, lambda: False, lambda: False, 1)
+    # one channel with no declared layout is read as FFmpeg reads it: mono
+    assert native_audio_pcm(item, 0, 0, 1000, lambda: False, lambda: False, 1).channel_ids == ("FC",)
 
 
-@pytest.mark.parametrize("shift_ms,accepted", [(0, True), (1, True), (3, False)])
-def test_native_audio_tolerates_one_container_tick_of_timestamp_error(tmp_path, shift_ms, accepted):
-    """MKV timestamps are whole milliseconds: real AC3 files stray from the sample grid by one tick, a gap by a frame.
+@pytest.mark.parametrize("shift_ms,accepted", [(0, True), (1, True), (3, True), (20, False)])
+def test_native_audio_tolerates_the_timestamp_error_containers_have_and_no_more(tmp_path, shift_ms, accepted):
+    """MKV timestamps are whole milliseconds, and those of frames laced into one block are the demuxer's estimates:
+    real files stray from the sample grid by up to 5.7 ms (measured over 127 library files), a gap by a whole frame.
 
-    Every Community episode of the live library failed analysis because of this one-millisecond wobble.
+    Every Community episode of the live library failed analysis because of a one-millisecond wobble.
     """
     from media_preview_generator.reprise.media import native_audio_pcm
 
@@ -803,17 +806,24 @@ SUBTITLE_WARNING = (
 )
 
 
+AUDIO_WARNING = "[in#0/matroska,webm @ 0x55d0] [warning] Could not find codec parameters for stream 1 (Audio: ac3)"
+
+
 @pytest.mark.parametrize(
     "line,decoded,fatal",
     [
         (SUBTITLE_WARNING, 0, False),  # a Blu-ray rip's PGS subtitles are never decoded here
         (SUBTITLE_WARNING, 3, True),  # but the decoded stream itself must be understood
-        ("[in#0/matroska,webm @ 0x55d0] [warning] Could not find codec parameters for stream 1 (Audio: ac3)", 0, True),
+        (AUDIO_WARNING, 0, False),  # whatever kind of stream it is, as long as this command does not decode it
+        (AUDIO_WARNING, 1, True),  # ... and that track fails when it is the one decoded
         ("[hevc @ 0x55d0] [error] Error splitting the input into NAL units", 0, True),
         ("[Parsed_showinfo_0 @ 0x55d0] [info] n:0 pts:0", 0, False),
+        ("[warning] Guessed Channel Layout for Input Stream #0.0 : mono", 0, False),  # FFmpeg 5 and 6
+        ("[in#0/wav @ 0x55d0] [warning] Guessed Channel Layout: mono", 0, False),  # FFmpeg 7 and later
+        ("[warning] Guessed something else", 0, True),
     ],
 )
-def test_only_the_unsized_subtitle_warning_of_an_undecoded_stream_is_tolerated(line, decoded, fatal):
+def test_only_packaging_warnings_and_the_unsized_warning_of_an_undecoded_stream_are_tolerated(line, decoded, fatal):
     from media_preview_generator.reprise.media import is_fatal_diagnostic
 
     assert is_fatal_diagnostic(line, decoded) is fatal
@@ -939,9 +949,10 @@ def test_frame_display_matrix_needs_stream_rejection_flag(tmp_path, monkeypatch,
         with media.native_frames(item, 0, 0, 1000, lambda: False, lambda: False, 1) as reader:
             frames = list(reader)
         assert frames and all(frame.interpretation_flags == ("display_matrix",) for frame in frames)
-        from media_preview_generator.reprise.recurrence import video_metrics
+        from media_preview_generator.reprise import canonical
 
-        assert video_metrics(frames[0], frames[0]) is None
+        with pytest.raises(ValueError, match="Unsupported native picture"):
+            canonical.picture(frames[0])  # a rotated picture is read but never compared
     else:
         with pytest.raises(DecodeError, match="Unsupported native frame interpretation metadata"):
             with media.native_frames(item, 0, 0, 1000, lambda: False, lambda: False, 1):
@@ -1031,7 +1042,7 @@ def test_per_frame_sei_payload_does_not_count_towards_the_diagnostics_cap_but_di
     oversized payload line still trips the per-line bound."""
     import sys
 
-    from media_preview_generator.reprise.media import _SEI_PAYLOAD, _bounded_log_lines
+    from media_preview_generator.reprise.media import _SIDE_DATA_LINE, _bounded_log_lines
 
     payload = b"[Parsed_showinfo_1 @ 0x1486bc003280] [info] User Data=" + b"78" * 2350
     other = b"[Parsed_showinfo_1 @ 0x1486bc003280] [info] n:1 pts:42 " + b"x" * 4700
@@ -1044,7 +1055,7 @@ def test_per_frame_sei_payload_does_not_count_towards_the_diagnostics_cap_but_di
             [sys.executable, "-c", script, kind.decode()], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
         )
         try:
-            return list(_bounded_log_lines(proc.stdout, pipe_limit, uncounted=_SEI_PAYLOAD.match))
+            return list(_bounded_log_lines(proc.stdout, pipe_limit, uncounted=_SIDE_DATA_LINE.match))
         finally:
             proc.kill()
             proc.wait()
@@ -1429,14 +1440,9 @@ def test_ac3_native_declarations_and_channels(ac3_native_audio):
     ).reshape(-1, 6)
     assert decoded.data.shape == (48000, 6)
     assert np.array_equal(decoded.data, reference[:48000])
-    declarations = dict(decoded.declarations)
-    assert set(declarations) <= {"audio_service_initial", "audio_service_per_frame", "matrix_encoding", "downmix"}
-    for key in ("audio_service_initial", "audio_service_per_frame"):
-        if key in declarations:
-            assert declarations[key] == ("Main Audio Service",)
-    if "matrix_encoding" in declarations:
-        assert declarations["matrix_encoding"] == ("none",)
-    assert declarations["downmix"][0] == "unknown"
+    # what the frames say about themselves, by kind: recorded, never compared
+    assert "downmix" in decoded.declarations
+    assert set(decoded.declarations) <= {"audio service type", "matrix encoding", "downmix"}
 
 
 def test_native_audio_decoder_limits_the_threads_of_its_encoder_too(ac3_native_audio, monkeypatch):
@@ -1726,7 +1732,7 @@ def test_streamed_native_audio_rejects_protocol_faults_and_reaps(ac3_native_audi
         "filter_id",
     ],
 )
-def test_ac3_native_rejects_bad_declarations(ac3_native_audio, monkeypatch, fault):
+def test_ac3_declarations_are_recorded_by_kind_and_only_a_broken_log_is_refused(ac3_native_audio, monkeypatch, fault):
     from media_preview_generator.reprise import media
 
     def altered(lines):
@@ -1762,30 +1768,32 @@ def test_ac3_native_rejects_bad_declarations(ac3_native_audio, monkeypatch, faul
         return [line.rstrip(b"\n") for line in lines]
 
     intercept_audio_records(monkeypatch, altered)
-    if fault == "valid":
-        decoded = media.native_audio_pcm(ac3_native_audio, 0, 0, 1000, lambda: False, lambda: False, 1)
-        assert dict(decoded.declarations)["audio_service_initial"] == ("Main Audio Service",)
-        assert dict(decoded.declarations)["matrix_encoding"] == ("none",)
-    else:
+    if fault in ("before_frame", "filter_id"):  # a log that is not what one decode of one stream writes
         with pytest.raises(DecodeError):
             media.native_audio_pcm(ac3_native_audio, 0, 0, 1000, lambda: False, lambda: False, 1)
+    else:
+        # What a frame says about itself (a downmix preference, a service type) is for a player and never changes the
+        # decoded samples: every kind is recorded, none is compared, so none of these stops a decode.
+        decoded = media.native_audio_pcm(ac3_native_audio, 0, 0, 1000, lambda: False, lambda: False, 1)
+        assert decoded.data.shape == (48000, 6)
+        assert {"audio service type", "downmix", "matrix encoding"} <= set(decoded.declarations)
+        assert ("unknown declaration" in decoded.declarations) == (fault == "unknown")
 
 
 @pytest.mark.parametrize(
-    ("declaration", "other"),
+    ("declaration", "other", "read"),
     [
-        (None, None),
-        ((), ()),
-        ((("matrix_encoding", ("none",)),), (("matrix_encoding", ("none",)),)),
-        ((("matrix_encoding", ("none",)),), ()),
-        ((("matrix_encoding", ("none",)),), (("matrix_encoding", ("different",)),)),
-        (
-            (("audio_service_initial", ("Main Audio Service",)),),
-            (("audio_service_per_frame", ("Main Audio Service",)),),
-        ),
+        ((), (), True),
+        (("matrix encoding",), ("matrix encoding",), True),
+        (("matrix encoding",), (), True),  # what the frames declare is never compared: the samples are
+        (("audio service type",), ("downmix", "matrix encoding"), True),
+        (None, (), False),  # a reader that did not run to its end publishes nothing
+        ((), None, False),
     ],
 )
-def test_native_audio_comparison_requires_identical_declarations(ac3_native_audio, monkeypatch, declaration, other):
+def test_native_audio_comparison_needs_both_readers_finished_not_equal_declarations(
+    ac3_native_audio, monkeypatch, declaration, other, read
+):
     from media_preview_generator.reprise import analysis, media
 
     original_reader = media.native_audio_chunks
@@ -1804,7 +1812,10 @@ def test_native_audio_comparison_requires_identical_declarations(ac3_native_audi
             return self
 
         def __iter__(self):
-            return iter(self.inner)
+            return self
+
+        def __next__(self):
+            return next(self.inner)
 
         def __exit__(self, exc_type, exc, tb):
             result = self.inner.__exit__(exc_type, exc, tb)
@@ -1824,18 +1835,21 @@ def test_native_audio_comparison_requires_identical_declarations(ac3_native_audi
     )
     monkeypatch.setattr(analysis.verify, "AudioVerifier", TrackingVerifier)
     item = ac3_native_audio
-    args = (item, item, [("a", 0, 48000, 6)], [("b", 0, 48000, 6)], 0, 1000, 0, lambda: False, lambda: False, 1)
-    if declaration is not None and other == declaration:
-        analysis._audio_support(*args)
-        assert finished == [True]
+    same = (analysis.verify.Clock(Fraction(1), Fraction(0)), 1.0)  # the reference's sound clock and level
+    tracks, others = [("a", 0, 48000, 6, None)], [("b", 0, 48000, 6, None)]
+    args = (item, item, tracks, others, Fraction(0), Fraction(1000), [same], lambda: False, lambda: False, 1)
+    if read:
+        support, checked, levels = analysis._audio_support(*args)
+        assert finished == [True] and support
+        assert checked == {"a": ["FL", "FR", "FC", "SL", "SR"]} and levels == {"a": 1.0}
     else:
-        with pytest.raises(DecodeError, match="declarations differ"):
+        with pytest.raises(DecodeError, match="not read to its end"):
             analysis._audio_support(*args)
         assert not finished
 
 
 @pytest.mark.parametrize("repeat", [True, False])
-def test_ac3_per_frame_service_scope_and_absent_matrix(ac3_native_audio, monkeypatch, repeat):
+def test_ac3_service_declarations_on_every_frame_or_on_some_are_one_kind(ac3_native_audio, monkeypatch, repeat):
     from media_preview_generator.reprise import media
 
     def altered(lines):
@@ -1855,12 +1869,7 @@ def test_ac3_per_frame_service_scope_and_absent_matrix(ac3_native_audio, monkeyp
         return [line.rstrip(b"\n") for line in output]
 
     intercept_audio_records(monkeypatch, altered)
-    if repeat:
-        result = media.native_audio_pcm(ac3_native_audio, 0, 0, 1000, lambda: False, lambda: False, 1)
-        declarations = dict(result.declarations)
-        assert declarations["audio_service_per_frame"] == ("Main Audio Service",)
-        assert "audio_service_initial" not in declarations and "matrix_encoding" not in declarations
-        assert declarations["downmix"][0] == "unknown"
-    else:
-        with pytest.raises(DecodeError, match="ambiguous scope"):
-            media.native_audio_pcm(ac3_native_audio, 0, 0, 1000, lambda: False, lambda: False, 1)
+    # on every frame or only on the first two: a kind is recorded once, and no scope is read into where it appears
+    result = media.native_audio_pcm(ac3_native_audio, 0, 0, 1000, lambda: False, lambda: False, 1)
+    assert "audio service type" in result.declarations and "matrix encoding" not in result.declarations
+    assert "downmix" in result.declarations

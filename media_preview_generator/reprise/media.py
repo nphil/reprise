@@ -26,8 +26,9 @@ from loguru import logger
 
 from ..gpu.ffmpeg_capabilities import ffmpeg_binary
 from ..markers.probe import ffprobe_path_for
-from . import acceleration, cuda_metrics
+from . import acceleration
 from .identity import is_current
+from .verification_profile import PROFILE_SPEC
 
 MAX_OUTPUT = 128 * 1024 * 1024
 
@@ -55,18 +56,28 @@ def check_current(media):
 
 
 _DIAGNOSTIC = re.compile(r"^(?:\[[^\]\r\n]*\]\s*)?\[(?:warning|error|fatal|panic)\]")
-_UNSIZED_SUBTITLE = re.compile(
-    r"^\[[^\]\r\n]*\]\s*\[warning\]\s*Could not find codec parameters for stream (\d+) \(Subtitle: "
+_UNSIZED_STREAM = re.compile(r"^\[[^\]\r\n]*\]\s*\[warning\]\s*Could not find codec parameters for stream (\d+) \(")
+# Warnings about a file's packaging that say nothing about the decoded picture or sound: a PCM track without a
+# declared layout (FFmpeg assumes the one for its channel count, as the reader does), a Dolby Vision block the
+# Matroska reader does not know, an MP4 user-data box it reads the other way.
+_HARMLESS = re.compile(
+    r"^(?:\[[^\]\r\n]*\]\s*)?\[warning\]\s*(?:"
+    r"Guessed Channel Layout(?: for Input Stream #\d+\.\d+ )?: |"  # FFmpeg 7 and later, and its older wording
+    r"Invalid Block Addition value \S+ for unknown Block Addition Mapping type |"
+    r"UDTA parsing failed retrying raw$)"
 )
 
 
 def is_fatal_diagnostic(line, decoded_stream):
     """Whether an FFmpeg log line fails a decode: every warning and error does, except the demuxer saying it could
-    not size a subtitle stream this command never decodes (a Blu-ray rip's PGS subtitles)."""
+    not size a stream this command never decodes (a Blu-ray rip's PGS subtitles, an anime rip's attached fonts) and
+    the packaging warnings in ``_HARMLESS``."""
     if not _DIAGNOSTIC.match(line):
         return False
-    unsized = _UNSIZED_SUBTITLE.match(line)
-    return not (unsized and int(unsized.group(1)) != decoded_stream)
+    unsized = _UNSIZED_STREAM.match(line)
+    if unsized:
+        return int(unsized.group(1)) == decoded_stream
+    return not _HARMLESS.match(line)
 
 
 def diagnostic_text(line):
@@ -170,7 +181,9 @@ def probe(media, cancel_check, pause_check, *, ffmpeg_path=None):
             raise DecodeError("Unsupported audio format")
         ids.add(track_id)
         indices.add(idx)
-        result.append((track_id, idx, rate, channels))
+        tags = s.get("tags")
+        language = str(tags.get("language", "")).lower() if isinstance(tags, dict) else ""
+        result.append((track_id, idx, rate, channels, "" if language == "und" else language))
     if indices != set(audio):
         raise DecodeError("Not every audio stream has a verified Plex mapping")
     videos = [
@@ -234,7 +247,7 @@ def video_frames(media, stream, start, end, cancel_check, pause_check, threads, 
 
 def audio_pcm(media, track, start, end, origin, cancel_check, pause_check, threads, *, ffmpeg_path=None):
     selected = ffmpeg_path if ffmpeg_path is not None else ffmpeg_binary()
-    _, idx, rate, channels = track
+    _, idx, rate, channels = track[:4]  # a track as ``probe`` gives it also carries its language
     # Raw PCM has no timestamps; independently check the input timeline.
     # A start timestamp causes a seek, which can skip the first decoded frame.
     interval = f"%{float(origin + Fraction(end, 1000)):.6f}"
@@ -334,10 +347,42 @@ _NATIVE_FORMATS = {
     "yuv420p": (2, 2, 1),
     "yuv422p": (2, 1, 1),
     "yuv444p": (1, 1, 1),
+    "yuvj420p": (2, 2, 1),  # the same layouts declared full range
+    "yuvj422p": (2, 1, 1),
+    "yuvj444p": (1, 1, 1),
     "yuv420p10le": (2, 2, 2),
     "yuv422p10le": (2, 1, 2),
     "yuv444p10le": (1, 1, 2),
 }
+_CHROMA_LOCATIONS = {"left", "center", "topleft", "top", "bottomleft", "bottom", "unspecified"}
+# Side data that describes a picture or how a display should show it and never changes the decoded samples the
+# comparison reads: HDR mastering and light levels, Dolby Vision and HDR10+ dynamic metadata, timecodes, captions.
+# Anything else (a rotation, 3D packing, a crop) changes what the samples mean and is refused.
+STREAM_SIDE_DATA = frozenset(
+    {
+        "DOVI configuration record",
+        "Mastering display metadata",
+        "Content light level metadata",
+        "Ambient viewing environment",
+        "CPB properties",
+    }
+)
+_FRAME_SIDE_DATA = frozenset(
+    {
+        "H.26[45] User Data Unregistered SEI message",
+        "Mastering display metadata",
+        "Content light level metadata",
+        "Dolby Vision Metadata",
+        "Dolby Vision RPU Data",
+        "HDR Dynamic Metadata SMPTE2094-40 (HDR10+)",
+        "HDR Dynamic Metadata CUVA 005.1 2021 (Vivid)",
+        "Ambient viewing environment",
+        "SMPTE 12-1 timecode",
+        "GOP timecode",
+        "ATSC A53 Part 4 Closed Captions",
+        "Active format description",
+    }
+)
 _NATIVE_FRAME_LIMIT = 64 * 1024 * 1024
 _NATIVE_PROTOCOL_TIMEOUT = 30.0  # Fail closed if paired decoder pipes stop making progress.
 # The decoder logs a frame's showinfo record before it writes the frame's pixels and runs about 15 frames ahead of what
@@ -439,7 +484,7 @@ def _native_audit(media, stream, start, end, cancel, pause, threads, ffmpeg_path
         selected = info["streams"][0]
         origin = Fraction(info["format"]["start_time"])
         tb = Fraction(selected["time_base"])
-        chroma = selected.get("chroma_location")
+        chroma = selected.get("chroma_location") or "unspecified"
         pix = selected["pix_fmt"]
         width, height = int(selected["width"]), int(selected["height"])
         sar = Fraction(selected["sample_aspect_ratio"].replace(":", "/"))
@@ -448,7 +493,8 @@ def _native_audit(media, stream, start, end, cancel, pause, threads, ffmpeg_path
         if not isinstance(stream_side_data, list) or not isinstance(tags, dict):
             raise DecodeError("Invalid stream interpretation metadata")
         if any(
-            not isinstance(side, dict) or side.get("side_data_type") != "Display Matrix" for side in stream_side_data
+            not isinstance(side, dict) or side.get("side_data_type") not in STREAM_SIDE_DATA | {"Display Matrix"}
+            for side in stream_side_data
         ):
             raise DecodeError("Unsupported stream interpretation side data")
         flags = tuple(
@@ -459,7 +505,7 @@ def _native_audit(media, stream, start, end, cancel, pause, threads, ffmpeg_path
         )
     except (KeyError, IndexError, ValueError, ZeroDivisionError) as exc:
         raise DecodeError("Missing native video format or timing metadata") from exc
-    if pix not in _NATIVE_FORMATS or chroma not in {"left", "center", "topleft", "top", "bottomleft", "bottom"}:
+    if pix not in _NATIVE_FORMATS or chroma not in _CHROMA_LOCATIONS:
         raise DecodeError("Unsupported native pixel format or chroma location")
     if width <= 0 or height <= 0 or tb <= 0 or sar <= 0:
         raise DecodeError("Invalid native video dimensions or time base")
@@ -494,7 +540,11 @@ def _native_audit(media, stream, start, end, cancel, pause, threads, ffmpeg_path
         try:
             for frame in parsed["frames"]:
                 point = (int(frame["pts"]) * tb - origin) * 1000
-                if point in pts or frame["chroma_location"] != chroma or int(frame.get("decode_error_flags", 0)):
+                if (
+                    point in pts
+                    or (frame.get("chroma_location") or "unspecified") != chroma
+                    or int(frame.get("decode_error_flags", 0))
+                ):
                     raise DecodeError("Ambiguous native video chroma audit")
                 frame_sar = Fraction(frame["sample_aspect_ratio"].replace(":", "/"))
                 side_data = frame.get("side_data_list", [])
@@ -512,7 +562,7 @@ def _native_audit(media, stream, start, end, cancel, pause, threads, ffmpeg_path
                     or any(
                         not isinstance(side, dict)
                         or not (
-                            side.get("side_data_type") == "H.26[45] User Data Unregistered SEI message"
+                            side.get("side_data_type") in _FRAME_SIDE_DATA
                             or (side.get("side_data_type") == "3x3 displaymatrix" and "display_matrix" in flags)
                         )
                         for side in side_data
@@ -547,10 +597,11 @@ def _native_audit(media, stream, start, end, cancel, pause, threads, ffmpeg_path
     )
 
 
-# A showinfo line carrying the hex payload of a frame's H.264/HEVC user-data SEI. Some encodes write one per frame
-# (a 4.7 KB x264 SEI on every frame of one Blu-ray rip: 15 MB over a 97-s window), and the reader ignores them, so
-# they do not count towards the diagnostics cap; every other line does, and every line keeps the per-line bound.
-_SEI_PAYLOAD = re.compile(rb"^\[Parsed_showinfo_\d+ @ [^\]]+\] \[info\] (?:UUID=|User Data=)")
+# A showinfo line that belongs to a frame's side data: the record itself or one of the lines it continues on (the hex
+# payload of an H.264/HEVC user-data SEI, a Dolby Vision frame's mappings). Some encodes write kilobytes of them per
+# frame (a 4.7 KB x264 SEI on every frame of one Blu-ray rip: 15 MB over a 97-s window), and the reader ignores them,
+# so they do not count towards the diagnostics cap; every other line does, and every line keeps the per-line bound.
+_SIDE_DATA_LINE = re.compile(rb"^\[Parsed_showinfo_\d+ @ [^\]]+\] \[info\](?!\s*(?:n:|color_range:|config ))")
 
 
 def _bounded_log_lines(pipe, total_limit=16 * 1024 * 1024, *, uncounted=None):
@@ -736,7 +787,7 @@ class NativeFrameReader:
         pending = {}
         side_data = {"0": False, "2": False}
         try:
-            for raw in _bounded_log_lines(self.proc.stderr, uncounted=_SEI_PAYLOAD.match):
+            for raw in _bounded_log_lines(self.proc.stderr, uncounted=_SIDE_DATA_LINE.match):
                 if self.stop.is_set():
                     return
                 line = raw.decode("utf-8", "replace")
@@ -802,8 +853,8 @@ class NativeFrameReader:
                     side_data[number] = False
                 elif number in pending and text.startswith("side data - "):
                     side_data[number] = True
-                elif number in pending and side_data[number] and (text.startswith(("UUID=", "User Data=")) or not text):
-                    continue
+                elif number in pending and side_data[number]:
+                    continue  # the lines a side data record continues on; the audit decides which records are allowed
                 else:
                     raise DecodeError("Unrecognized native showinfo record")
             if pending:
@@ -1122,10 +1173,7 @@ class _FallbackFrames:
 
 def native_frames(media, stream, start_ms, end_ms, cancel_check, pause_check, threads, *, ffmpeg_path=None):
     selected = ffmpeg_path if ffmpeg_path is not None else ffmpeg_binary()
-    attempts = acceleration.plan(selected)
-    # The comparison of frame pairs runs on the same NVIDIA GPU the owner allows for decoding (or on none).
-    cuda_metrics.use(next((a.cuda_index for a in attempts if a.cuda_index is not None), None))
-    attempts = acceleration.order(attempts)
+    attempts = acceleration.order(acceleration.plan(selected))
     if not attempts:
         acceleration.record_cpu()
         return NativeFrameReader(media, stream, start_ms, end_ms, cancel_check, pause_check, threads, selected)
@@ -1141,7 +1189,7 @@ class NativeAudio:
     channel_ids: tuple[str, ...]
     support_start_ms: Fraction
     support_end_ms: Fraction
-    declarations: tuple[tuple[str, tuple[str, ...]], ...]
+    declarations: tuple[str, ...]
 
 
 _AUDIO_LAYOUTS = {
@@ -1149,39 +1197,27 @@ _AUDIO_LAYOUTS = {
     "stereo": ("FL", "FR"),
     "2.1": ("FL", "FR", "LFE"),
     "3.0": ("FL", "FR", "FC"),
+    "3.1": ("FL", "FR", "FC", "LFE"),
     "4.0": ("FL", "FR", "FC", "BC"),
+    "4.1": ("FL", "FR", "FC", "LFE", "BC"),
     "quad": ("FL", "FR", "BL", "BR"),
     "5.0": ("FL", "FR", "FC", "BL", "BR"),
     "5.0(side)": ("FL", "FR", "FC", "SL", "SR"),
     "5.1": ("FL", "FR", "FC", "LFE", "BL", "BR"),
     "5.1(side)": ("FL", "FR", "FC", "LFE", "SL", "SR"),
+    "6.0": ("FL", "FR", "FC", "BC", "SL", "SR"),
+    "6.1": ("FL", "FR", "FC", "LFE", "BC", "SL", "SR"),
+    "7.0": ("FL", "FR", "FC", "BL", "BR", "SL", "SR"),
     "7.1": ("FL", "FR", "FC", "LFE", "BL", "BR", "SL", "SR"),
 }
-
-
-def _native_audio_side_record(text):
-    """Parse only supported ashowinfo declarations, preserving printed tokens."""
-    if text == "side data - audio service type: Main Audio Service":
-        return "audio_service_initial", ("Main Audio Service",)
-    if text == "side data - matrix encoding: none":
-        return "matrix_encoding", ("none",)
-    number = r"([01]\.\d{6})"
-    match = re.fullmatch(
-        r"side data - downmix: preferred downmix type - (unknown) Mix levels: center "
-        + number
-        + r" \("
-        + number
-        + r" ltrt\) - surround "
-        + number
-        + r" \("
-        + number
-        + r" ltrt\) - lfe "
-        + number,
-        text,
-    )
-    if not match or any(Fraction(value) > 1 for value in match.groups()[1:]):
-        raise DecodeError("Unsupported native audio interpretation metadata")
-    return "downmix", match.groups()
+# A track that declares no layout (PCM in Matroska) is read as FFmpeg reads it: the standard layout of its channels.
+_UNDECLARED_LAYOUTS = {1: "mono", 2: "stereo"}
+# How far a frame's container timestamp may sit from where the count of decoded samples puts it. Matroska stores one
+# timestamp per block and the demuxer estimates those of the other frames laced into it: measured over 127 library
+# files the estimates stray up to 5.7 ms (Vorbis; DTS, AAC and FLAC about 2 ms) and never accumulate. Timestamps can
+# attest continuity only to this precision; a shorter gap moves the sound after it off the reference's, where the
+# sample comparison stops matching.
+_AUDIO_TIMESTAMP_SLACK = Fraction(PROFILE_SPEC["audio"]["timestamp_slack_ms"], 1000)
 
 
 class _AudioLines:
@@ -1340,9 +1376,10 @@ class NativeAudioChunk:
 class NativeAudioChunkReader:
     """One-pass bounded PCM stream; successful full context exit commits evidence.
 
-    A window must be covered entirely, unless ``to_end`` says it may run past the stream's own end: then it is cut
-    there (``support_end_ms`` of the last chunk is where the sound really ends) once the decode and the audit agree
-    on that end sample for sample. A window that starts at or after the end is never covered."""
+    A window must be covered entirely, unless ``to_end`` says it may reach past the stream's own ends: then it is
+    cut to them (``support_start_ms`` of the first chunk and ``support_end_ms`` of the last are where the sound
+    really starts and ends) once the decode and the audit agree on that end sample for sample. A window that starts
+    at or after the end is never covered."""
 
     def __init__(
         self, media, stream_index, start_ms, end_ms, cancel, pause, threads, chunk_samples, ffmpeg_path, to_end=False
@@ -1577,8 +1614,8 @@ def native_audio_chunks(
 def native_audio_pcm(
     media, stream_index, start_ms, end_ms, cancel_check, pause_check, threads, *, ffmpeg_path=None, to_end=False
 ):
-    """Collect a bounded native window after complete stream verification. With ``to_end`` a window that runs past
-    the end of the sound is cut there (see NativeAudioChunkReader); ``support_end_ms`` says where."""
+    """Collect a bounded native window after complete stream verification. With ``to_end`` a window that reaches
+    past the sound's own start or end is cut there (see NativeAudioChunkReader); the support says where."""
     import numpy as np
 
     chunks = []
@@ -1658,8 +1695,9 @@ def _native_audio_stream(media, stream_index, start_ms, end_ms, cancel_check, pa
         if stream["index"] != stream_index or stream["codec_type"] != "audio":
             raise DecodeError("Selected stream is not native audio")
         rate = int(stream["sample_rate"])
-        layout = stream["channel_layout"]
         channels = int(stream["channels"])
+        declared = stream.get("channel_layout")
+        layout = declared or _UNDECLARED_LAYOUTS[channels]
         ids = _AUDIO_LAYOUTS[layout]
         tb = Fraction(stream["time_base"])
         origin = Fraction(info["format"]["start_time"])
@@ -1711,23 +1749,27 @@ def _native_audio_stream(media, stream_index, start_ms, end_ms, cancel_check, pa
                         }:
                             raise ValueError("invalid frame field")
                         fields[key] = value
-                    pts = int(fields["pts"]) * tb - origin
                     n = int(fields["nb_samples"])
                     if (
                         n <= 0
                         or int(fields["channels"]) != channels
-                        or fields["channel_layout"] != layout
+                        or fields.get("channel_layout", "unknown") != (declared or "unknown")
                         or int(fields.get("decode_error_flags", 0))
                     ):
                         raise DecodeError("Dynamic or invalid native audio format")
+                    # A frame the container gives no timestamp of its own (all but the first of a TrueHD access
+                    # unit) is where the samples before it end.
+                    stamped = fields["pts"] != "N/A"
                     if first is None:
-                        first = pts
-                        if (first * rate).denominator != 1:
-                            raise DecodeError("Native audio start is not on the media sample grid")
-                    # Container timestamps are whole ticks while samples sit on an exact grid, and the first
-                    # frame is itself a rounded observation, so a gapless stream may stray by one full tick
-                    # (real MKV AC3 files alternate between 0 and -1 ms). A real gap or overlap is a whole frame.
-                    if abs(pts - (first + Fraction(count, rate))) > tb:
+                        if not stamped:
+                            raise DecodeError("Missing native audio timing")
+                        first = int(fields["pts"]) * tb - origin
+                    predicted = first + Fraction(count, rate)
+                    pts = int(fields["pts"]) * tb - origin if stamped else predicted
+                    # Container timestamps are whole ticks while samples sit on an exact grid, the first frame is
+                    # itself a rounded observation, and a laced frame's timestamp is the demuxer's estimate (see
+                    # _AUDIO_TIMESTAMP_SLACK). A real gap or overlap is a whole frame.
+                    if abs(pts - predicted) > max(tb, _AUDIO_TIMESTAMP_SLACK):
                         raise DecodeError("Native audio timestamps are discontinuous")
                     count += n
                     yield pts, n
@@ -1740,6 +1782,10 @@ def _native_audio_stream(media, stream_index, start_ms, end_ms, cancel_check, pa
             raise DecodeError("Missing native audio timing")
         start_fraction = (start_ms / 1000 - first) * rate
         first_sample = -(-start_fraction.numerator // start_fraction.denominator)
+        if first_sample < 0 and sink.to_end:
+            # The sound starts inside the window (a track often begins a frame or two after the picture does). The
+            # audit read the file from its start, so this is the track's very first sample: a clamp, as at its end.
+            first_sample = 0
         end_fraction = (end_ms / 1000 - first) * rate
         last_sample = end_fraction.numerator // end_fraction.denominator
         if first_sample < 0 or last_sample <= first_sample:
@@ -1785,22 +1831,9 @@ def _native_audio_stream(media, stream_index, start_ms, end_ms, cancel_check, pa
         decoded = 0
         decoded_samples = 0
         sample_format = None
-        frame_declarations = None
-        uniform_declarations = None
-        initial_service = None
-        service_count = 0
-        frame_has_service = False
+        declarations = set()
         audio_filter_id = None
         other_bytes = 0
-
-        def finish_frame():
-            nonlocal uniform_declarations
-            if frame_declarations is None:
-                return
-            if uniform_declarations is None:
-                uniform_declarations = frame_declarations
-            elif frame_declarations != uniform_declarations:
-                raise DecodeError("Native audio frame declarations changed")
 
         while True:
             raw = decoder.next_line(processes, cancel_check, pause_check)
@@ -1823,27 +1856,12 @@ def _native_audio_stream(media, stream_index, start_ms, end_ms, cancel_check, pa
                 raise DecodeError("Ambiguous native audio metadata source")
             text = source.group(2).strip()
             if text.startswith("side data - "):
-                if frame_declarations is None:
+                # What a frame says about itself (a downmix preference, a service type) describes the stream for a
+                # player and never changes the decoded samples: recorded by kind, never compared.
+                if not decoded:
                     raise DecodeError("Native audio declaration precedes its frame")
-                name, value = _native_audio_side_record(text)
-                if name == "audio_service_initial":
-                    if frame_has_service or frame_declarations or (initial_service is None and decoded != 1):
-                        raise DecodeError("Ambiguous native audio service declaration")
-                    if initial_service is not None and value != initial_service:
-                        raise DecodeError("Native audio service declaration changed")
-                    initial_service = value
-                    frame_has_service = True
-                    service_count += 1
-                else:
-                    if name == "matrix_encoding" and "downmix" in frame_declarations:
-                        raise DecodeError("Ambiguous native audio declaration order")
-                    if name in frame_declarations:
-                        raise DecodeError("Duplicate native audio frame declaration")
-                    frame_declarations[name] = value
+                declarations.add(text.removeprefix("side data - ").split(":", 1)[0])
                 continue
-            finish_frame()
-            frame_declarations = {}
-            frame_has_service = False
             match = re.match(
                 r"\bn:(\d+)\s+pts:(-?\d+).*?fmt:(\S+)\s+channels:(\d+)\s+chlayout:(\S+)\s+rate:(\d+)\s+nb_samples:(\d+)",
                 text,
@@ -1864,11 +1882,12 @@ def _native_audio_stream(media, stream_index, start_ms, end_ms, cancel_check, pa
                 or int(n) != audited[1]
             ):
                 raise DecodeError("Native audio decoder format or frame count changed")
-            if abs(Fraction(int(pts), rate) - audited[0]) > tb / 2 + Fraction(1, rate):
+            # The decoder smooths the estimated timestamps of laced frames onto the sample grid; the audit reads
+            # them raw, so the two may differ by the same slack.
+            if abs(Fraction(int(pts), rate) - audited[0]) > max(tb, _AUDIO_TIMESTAMP_SLACK) + Fraction(1, rate):
                 raise DecodeError("Native audio decoder timeline disagrees with audit")
             decoded += 1
             decoded_samples += int(n)
-        finish_frame()
         decoder.finish(processes, cancel_check, pause_check)
         for _ in audit:
             pass
@@ -1884,14 +1903,8 @@ def _native_audio_stream(media, stream_index, start_ms, end_ms, cancel_check, pa
                 raise DecodeError("Native audio decoder did not cover the window")
             covered = count
         sink._finish_output((covered - first_sample) * channels * 8, channels)
-        declarations = dict(uniform_declarations or {})
-        if initial_service is not None:
-            if service_count not in (1, decoded):
-                raise DecodeError("Native audio service declaration has ambiguous scope")
-            scope = "audio_service_per_frame" if service_count > 1 else "audio_service_initial"
-            declarations[scope] = initial_service
         check_current(media)
-        return tuple(sorted(declarations.items()))
+        return tuple(sorted(declarations))
     except BaseException:
         sink.output_abort.set()
         raise

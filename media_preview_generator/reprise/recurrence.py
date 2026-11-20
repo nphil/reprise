@@ -1,16 +1,19 @@
-"""Bounded native-signal gates and disjoint alignment anchors.
+"""Bounded gates on the canonical picture and sound, and disjoint alignment anchors.
 
 Hints never constitute support. Decode lifecycle and generation checks belong to
 analysis; this module retains only descriptors, interval vetoes and rolling spectra.
 """
 
+import bisect
+import functools
 import math
 from collections import defaultdict, deque
 from fractions import Fraction
+from typing import NamedTuple
 
 import numpy as np
 
-from . import cuda_metrics
+from . import canonical
 from .verification_profile import PROFILE_SPEC
 
 CANDIDATE = PROFILE_SPEC["candidate"]
@@ -18,28 +21,50 @@ VIDEO = PROFILE_SPEC["video"]
 AUDIO = PROFILE_SPEC["audio"]
 ANCHORS = PROFILE_SPEC["anchors"]
 SOUND = PROFILE_SPEC["sound_offset"]
+TIMING = PROFILE_SPEC["timing"]
 COLOR_FIELDS = tuple(PROFILE_SPEC["metadata"]["color_fields"])
 CHANGE_GUARD_MS = PROFILE_SPEC["support"]["guard_ms"]
 MIN_RUN_MS = PROFILE_SPEC["support"]["minimum_run_ms"]
 MAX_FRAME_GAP_MS = VIDEO["max_frame_gap_ms"]
+PICTURE_METRICS = ("peak", "local4", "local8", "concentration8", "signed8", "signed16", "signed32")
+NEAR_RATIO = VIDEO["near_ratio"]
+NEAR_SHARE = Fraction(VIDEO["near_share"])
+NEAR_REACH_MS = Fraction(VIDEO["near_window_ms"], 2)
 
 
-def plane_array(plane):
-    return np.ndarray(
-        (plane.height, plane.width),
-        dtype=np.dtype("u1" if plane.sample_bytes == 1 else "<u2"),
-        buffer=plane.data,
-        strides=(plane.stride_bytes, plane.sample_bytes),
-    )
+class Clock(NamedTuple):
+    """Where a reference shows what the target shows: reference time = ``rate`` x target time + ``offset`` (ms).
+    The rate is 1 unless the two files play the footage at different speeds (a 25 fps copy of film-rate footage)."""
+
+    rate: Fraction
+    offset: Fraction
+
+    def at(self, time):
+        """The reference time of a target time."""
+        return self.rate * time + self.offset
+
+    def back(self, time):
+        """The target time of a reference time."""
+        return (time - self.offset) / self.rate
 
 
-def declaration(value, field):
-    metadata = PROFILE_SPEC["metadata"]
-    if value in metadata["unspecified_tokens"]:
-        return "unspecified"
-    if value not in metadata[field.removeprefix("color_")]:
-        raise ValueError("Unsupported native " + field + " declaration")
-    return value
+def speeds(target_fps, reference_fps):
+    """The speeds a reference may play the target's footage at, as reference time per target time: the same speed,
+    and the ratio of the two frame rates when that is a speed change a transfer makes (within the profile's
+    tolerance of 1: film rate against 25 fps, 23.976 against 24, 29.97 against 30). A larger ratio is the same speed
+    with repeated frames (23.976 against 29.97), never another speed."""
+    ratio = Fraction(target_fps) / Fraction(reference_fps)
+    if ratio != 1 and abs(ratio - 1) <= Fraction(TIMING["speed_tolerance"]):
+        return [Fraction(1), ratio]
+    return [Fraction(1)]
+
+
+def hold(rate, target_fps, reference_fps):
+    """How long a frame of the slower stream stays up (ms) when the two files do not run frame for frame at ``rate``:
+    a frame's partner is then any frame the other file shows meanwhile. Zero when they do run frame for frame (one
+    reference frame per target frame), where a partner sits within a container tick of where the clock puts it."""
+    mapped, own = Fraction(rate) * 1000 / Fraction(target_fps), Fraction(1000) / Fraction(reference_fps)
+    return Fraction(0) if mapped == own else max(mapped, own)
 
 
 def frame_declarations(frame):
@@ -49,49 +74,40 @@ def frame_declarations(frame):
         frame.pixel_format,
         frame.bit_depth,
         frame.sample_aspect_ratio,
-        *(declaration(getattr(frame, key), key) for key in COLOR_FIELDS),
+        *(canonical.declaration(getattr(frame, key), key) for key in COLOR_FIELDS),
         frame.chroma_location,
         frame.interpretation_flags,
     )
 
 
-def descriptor(frame):
+def descriptor(picture):
+    """4x4 tile means of each canonical plane: where a frame may recur, never whether it does."""
     values = []
-    for plane in frame.planes:
-        for rows in np.array_split(plane_array(plane), 4, axis=0):
+    for plane in picture:
+        for rows in np.array_split(plane, 4, axis=0):
             for tile in np.array_split(rows, 4, axis=1):
-                values.append(float(tile[::4, ::4].mean()) * 255 / ((1 << frame.bit_depth) - 1))
+                values.append(tile.mean(dtype=np.float64))
     return np.asarray(values, dtype=np.float32)
 
 
-def _plane_std(plane, bit_depth):
-    return float(plane_array(plane).std(dtype=np.float64)) * 255 / ((1 << bit_depth) - 1)
+def spatial_information(picture):
+    """The largest within-plane population standard deviation of a canonical picture: a flat frame (black, a fade)
+    recurs everywhere and is never a hint."""
+    return max(float(plane.std(dtype=np.float64)) for plane in picture)
 
 
-def spatial_information(frame):
-    """The largest within-plane population standard deviation, normalised to 8 bits.
+def perceptual_shifts(target, reference, speeds=((Fraction(1), Fraction(0)),)):
+    """Up to maximum_offsets clocks at which sampled target hints recur in the reference, most votes first, each with
+    the hold of its speed: ``speeds`` are the ``(rate, hold)`` to try (see ``speeds`` and ``hold``).
 
-    Only ever compared with ``plane_std``, so it comes from the planes' exact integer moments (sum and sum of squares:
-    no float64 copy of the plane, 3x faster) instead of numpy's float64 two-pass. The two agree to 1e-14; within 1e-6 of
-    the limit the numpy value decides, so the comparison is the one numpy's value would give.
-    """
-    limit = CANDIDATE["plane_std"]
-    best = 0.0
-    for plane in frame.planes:
-        flat = plane_array(plane).reshape(-1)
-        n = flat.size
-        total = int(flat.sum(dtype=np.uint64))
-        squares = int(np.einsum("i,i->", flat, flat, dtype=np.uint64))
-        value = math.sqrt((n * squares - total * total) / (n * n)) * 255 / ((1 << frame.bit_depth) - 1)
-        best = max(best, _plane_std(plane, frame.bit_depth) if abs(value - limit) < 1e-6 else value)
-    return best
-
-
-def perceptual_shifts(target, reference):
+    A vote is a sampled target frame and one of its nearest reference descriptors; votes agree when their offsets at
+    a rate fall in one bucket. Frame for frame at the same speed an offset repeats exactly, so the bucket is the
+    profile's fraction of a millisecond; at another speed both timestamps' rounding moves it (``speed_vote_spread_ms``);
+    with different cadences the same frame is up for a hold, and the bucket is that wide."""
     if not target or not reference:
         return []
     right = np.stack([r[1] for r in reference])
-    votes = defaultdict(list)
+    pairs = []
     for pts, feature, std in target[:: max(1, len(target) // CANDIDATE["sample_count"])]:
         if std < CANDIDATE["plane_std"]:
             continue
@@ -100,28 +116,44 @@ def perceptual_shifts(target, reference):
         for idx in np.argpartition(distance, count - 1)[:count]:
             if reference[int(idx)][2] < CANDIDATE["plane_std"] or distance[idx] > CANDIDATE["descriptor_mse"]:
                 continue
-            offset = reference[int(idx)][0] - pts
-            votes[round(offset * CANDIDATE["bucket_per_ms"])].append((pts, offset))
-    valid = [
-        p
-        for p in votes.values()
-        if len(p) >= CANDIDATE["minimum_votes"]
-        and max(q[0] for q in p) - min(q[0] for q in p) >= CANDIDATE["minimum_vote_span_ms"]
+            pairs.append((pts, reference[int(idx)][0]))
+    found = []
+    for rate, held in speeds:
+        per_ms = (
+            1 / Fraction(held)
+            if held
+            else Fraction(CANDIDATE["bucket_per_ms"])
+            if rate == 1
+            else 1 / Fraction(TIMING["speed_vote_spread_ms"])
+        )
+        votes = defaultdict(list)
+        for pts, reference_pts in pairs:
+            offset = reference_pts - rate * pts
+            votes[round(offset * per_ms)].append((pts, offset))
+        for group in votes.values():
+            if (
+                len(group) >= CANDIDATE["minimum_votes"]
+                and max(q[0] for q in group) - min(q[0] for q in group) >= CANDIDATE["minimum_vote_span_ms"]
+            ):
+                found.append((group, rate, held))
+    found.sort(key=lambda entry: (-len(entry[0]), abs(entry[0][0][1])))
+    return [
+        (Clock(rate, sorted(q[1] for q in group)[len(group) // 2]), held)
+        for group, rate, held in found[: CANDIDATE["maximum_offsets"]]
     ]
-    valid.sort(key=lambda p: (-len(p), abs(p[0][1])))
-    return [p[len(p) // 2][1] for p in valid[: CANDIDATE["maximum_offsets"]]]
 
 
 def sound_lag(target, reference, nearest, block):
-    """The whole-sample lag at which the longer ``reference`` PCM best contains ``target`` (both samples x channels),
-    as ``(lag, score)``. The target is cut into blocks of ``block`` samples (a shorter last block is dropped unless
-    it is the only one); each block's normalised cross-correlation (every channel as one signal) is taken over every
-    lag the reference allows, and the block with the highest peak decides: a probe that straddles shared and unshared
-    sound still has blocks wholly inside the shared part. Among that block's scores within the profile's tie of its
-    peak, the lag nearest ``nearest`` (the lag the picture predicts) wins. ``None`` when nothing audible can be
-    correlated. A lag is a proposal, never support."""
+    """Where the longer ``reference`` sound best contains ``target`` (both canonical mono), as ``(lag, score, gain)``:
+    the lag in samples, to a fraction of one, the correlation there, and the factor that brings the reference to the
+    target's level. The target is cut into blocks of ``block`` samples (a shorter last block is dropped unless it is
+    the only one); each block's normalised cross-correlation is taken over every whole-sample lag the reference
+    allows, and the block with the highest peak decides: a probe that straddles shared and unshared sound still has
+    blocks wholly inside the shared part. Among that block's scores within the profile's tie of its peak, the lag
+    nearest ``nearest`` (the lag the picture predicts) wins, and a parabola through it and its two neighbours places
+    the peak between samples. ``None`` when nothing audible can be correlated. A lag is a proposal, never support."""
     x, y = np.asarray(target, dtype=np.float64), np.asarray(reference, dtype=np.float64)
-    if x.ndim != 2 or y.shape[1:] != x.shape[1:] or len(x) == 0 or len(y) < len(x) or block <= 0:
+    if x.ndim != 1 or y.ndim != 1 or len(x) == 0 or len(y) < len(x) or block <= 0:
         raise ValueError("Malformed sound probe")
     lags = len(y) - len(x) + 1
     floor = AUDIO["denominator_floor"]
@@ -132,45 +164,49 @@ def sound_lag(target, reference, nearest, block):
             break
         ys = y[start : start + len(xs) + lags - 1]
         energy = float(np.sum(xs * xs))
-        squares = np.concatenate(([0.0], np.cumsum(np.sum(ys * ys, axis=1))))
+        squares = np.concatenate(([0.0], np.cumsum(ys * ys)))
         windows = squares[len(xs) : len(xs) + lags] - squares[:lags]
         audible = windows > floor
         if energy <= floor or not audible.any():
             continue
         size = 1 << (len(ys) - 1).bit_length()
-        spectrum = np.zeros(size // 2 + 1, dtype=np.complex128)
-        for channel in range(x.shape[1]):
-            spectrum += np.fft.rfft(ys[:, channel], size) * np.conj(np.fft.rfft(xs[:, channel], size))
-        correlation = np.fft.irfft(spectrum, size)[:lags]
+        correlation = np.fft.irfft(np.fft.rfft(ys, size) * np.conj(np.fft.rfft(xs, size)), size)[:lags]
         scores = np.where(audible, correlation / np.sqrt(np.maximum(windows, floor) * energy), -1.0)
         peak = float(scores.max())
-        if best is None or peak > best[0]:
+        if best is None or peak > best[1]:
             candidates = np.flatnonzero(scores >= peak - SOUND["tie"])
             lag = int(candidates[np.argmin(np.abs(candidates - nearest))])
-            best = (peak, lag)
-    return None if best is None else (best[1], best[0])
+            fraction = 0.0
+            if 0 < lag < lags - 1 and audible[lag - 1] and audible[lag + 1]:
+                before, here, after = (float(scores[lag + step]) for step in (-1, 0, 1))
+                bend = before - 2 * here + after
+                if bend < 0:
+                    fraction = max(-0.5, min(0.5, 0.5 * (before - after) / bend))
+            best = (lag + fraction, peak, float(correlation[lag] / windows[lag]))
+    return best
 
 
-def agreeing_frames(target, reference, lo, hi, offset):
-    """The target hints in [lo, hi) whose descriptor agrees with the reference's at exactly ``offset``, as (pts,
-    descriptor). Agreement places anchors and the sound probe; it is never support."""
-    mapped = {t: (feature, std) for t, feature, std in reference}
+def agreeing_frames(target, reference, lo, hi, clock, slack):
+    """The target hints in [lo, hi) whose descriptor agrees with a reference hint within ``slack`` ms of where
+    ``clock`` puts it, as (pts, descriptor). Agreement places anchors and the sound probe; it is never support."""
+    times = [t for t, _, _ in reference]
     points = []
     for t, feature, std in target:
         if not lo <= t < hi or std < CANDIDATE["plane_std"]:
             continue
-        ref = mapped.get(t + offset)
-        if (
-            ref is not None
-            and ref[1] >= CANDIDATE["plane_std"]
-            and np.mean((feature - ref[0]) ** 2) <= CANDIDATE["descriptor_mse"]
-        ):
-            points.append((t, feature))
+        wanted = clock.at(t)
+        for index in range(bisect.bisect_left(times, wanted - slack), len(times)):
+            if times[index] > wanted + slack:
+                break
+            _, other, other_std = reference[index]
+            if other_std >= CANDIDATE["plane_std"] and np.mean((feature - other) ** 2) <= CANDIDATE["descriptor_mse"]:
+                points.append((t, feature))
+                break
     return points
 
 
-def anchor(target, reference, lo, hi, offset):
-    points = agreeing_frames(target, reference, lo, hi, offset)
+def anchor(target, reference, lo, hi, clock, slack):
+    points = agreeing_frames(target, reference, lo, hi, clock, slack)
     if len(points) < ANCHORS["minimum_total_frames"]:
         return None
 
@@ -219,124 +255,137 @@ def anchor(target, reference, lo, hi, offset):
     )
 
 
-def _local_max(data, size):
-    worst = 0.0
-    h, w = data.shape
-    for oy in (0, size // 2):
-        for ox in (0, size // 2):
-            ys = np.unique(np.r_[0, np.arange(oy, h, size), h]).astype(int)
-            xs = np.unique(np.r_[0, np.arange(ox, w, size), w]).astype(int)
-            sums = np.add.reduceat(np.add.reduceat(data, ys[:-1], axis=0), xs[:-1], axis=1)
-            worst = max(worst, float((sums / (np.diff(ys)[:, None] * np.diff(xs)[None, :])).max()))
-    return worst
-
-
 def _integral(data):
-    """Inclusive float64 prefix sums with a zero row and column, shared by every signed tile size."""
+    """Inclusive float64 prefix sums with a zero row and column: every tile sum is four lookups."""
     h, w = data.shape
     integral = np.zeros((h + 1, w + 1), dtype=np.float64)
-    np.cumsum(data, axis=0, dtype=np.float64, out=integral[1:, 1:])
-    np.cumsum(integral[1:, 1:], axis=1, out=integral[1:, 1:])
+    integral[1:, 1:] = data
+    np.cumsum(integral, axis=1, out=integral)
+    np.cumsum(integral, axis=0, out=integral)
     return integral
 
 
+def _tile_sums(integral, ys, xs, height, width):
+    """The sums over the tiles whose top-left corners are ``ys`` x ``xs`` and whose sizes are ``height`` x ``width``
+    (scalars or one per corner)."""
+    bottom, right = (ys + height)[:, None], (xs + width)[None, :]
+    return (
+        integral[bottom, right]
+        - integral[ys[:, None], right]
+        - integral[bottom, xs[None, :]]
+        + integral[ys[:, None], xs]
+    )
+
+
+@functools.lru_cache(maxsize=256)
+def _grid(length, size, offset):
+    """Where the tiles of one phase start along an axis and how long each is: whole tiles from ``offset``, the cells
+    before it and after the last whole tile as partial tiles of their actual length."""
+    edges = np.unique(np.r_[0, np.arange(offset, length, size), length])
+    return edges[:-1], np.diff(edges)
+
+
+def _local_max(integral, shape, size):
+    """The largest tile mean over four grids of ``size`` tiles (offsets 0 and half a tile each way)."""
+    worst = 0.0
+    for oy in (0, size // 2):
+        ys, heights = _grid(shape[0], size, oy)
+        for ox in (0, size // 2):
+            xs, widths = _grid(shape[1], size, ox)
+            sums = _tile_sums(integral, ys, xs, heights, widths)
+            worst = max(worst, float((sums / (heights[:, None] * widths[None, :])).max()))
+    return worst
+
+
+@functools.lru_cache(maxsize=256)
+def _strides(length, size):
+    """Where whole ``size`` windows start along an axis: every half window, and the one that ends at the far edge."""
+    return np.unique(np.r_[np.arange(0, length - size + 1, size // 2), length - size])
+
+
 def _signed_local(data, size, integral):
+    """The largest absolute signed mean over whole ``size`` windows (the plane's own mean when it is smaller)."""
     h, w = data.shape
     if h < size or w < size:
         return float(abs(data.mean()))
-    ys = np.unique(np.r_[np.arange(0, h - size + 1, size // 2), h - size])
-    xs = np.unique(np.r_[np.arange(0, w - size + 1, size // 2), w - size])
-    sums = (
-        integral[(ys + size)[:, None], xs + size]
-        - integral[ys[:, None], xs + size]
-        - integral[(ys + size)[:, None], xs]
-        + integral[ys[:, None], xs]
-    )
+    sums = _tile_sums(integral, _strides(h, size), _strides(w, size), size, size)
     return float(np.max(np.abs(sums)) / (size * size))
 
 
-def video_metrics(left, right):
-    """Every metric's worst value over the planes (None when the frames are not comparable): the reference the
-    verdict functions are tested against, and the numbers behind a diagnosis."""
-    if (
-        left.interpretation_flags
-        or right.interpretation_flags
-        or frame_declarations(left) != frame_declarations(right)
-        or len(left.planes) != len(right.planes)
-    ):
-        return None
-    maxima = dict.fromkeys(("peak", "local4", "local8", "concentration8", "signed8", "signed16", "signed32"), 0.0)
-    for a, b in zip(left.planes, right.planes, strict=True):
-        if (a.width, a.height, a.sample_bytes) != (b.width, b.height, b.sample_bytes):
-            return None
-        left_data, right_data = plane_array(a).astype(np.float32), plane_array(b).astype(np.float32)
-        raw = left_data - right_data
-        absolute = np.abs(raw) * (255 / ((1 << left.bit_depth) - 1))
-        residual = raw * 255 / ((1 << left.bit_depth) - 1)
-        maxima["peak"] = max(maxima["peak"], float(absolute.max()))
-        for size in (4, 8):
-            key = "local" + str(size)
-            maxima[key] = max(maxima[key], _local_max(absolute, size))
-        maxima["concentration8"] = max(
-            maxima["concentration8"], _local_max((absolute > VIDEO["concentration_level"]).astype(np.float32), 8)
-        )
-        integral = _integral(residual)
-        for size in (8, 16, 32):
-            key = "signed" + str(size)
-            maxima[key] = max(maxima[key], _signed_local(residual, size, integral))
+def _plane_metrics(left, right):
+    """One plane pair's metrics, cheapest first, each computed only when asked for (a generator)."""
+    residual = left - right
+    absolute = np.abs(residual)
+    yield "peak", float(absolute.max())
+    integral = _integral(absolute)
+    for size in (4, 8):
+        yield "local" + str(size), _local_max(integral, absolute.shape, size)
+    yield "concentration8", _local_max(_integral(absolute > VIDEO["concentration_level"]), absolute.shape, 8)
+    integral = _integral(residual)
+    for size in (8, 16, 32):
+        yield "signed" + str(size), _signed_local(residual, size, integral)
+
+
+def picture_metrics(left, right):
+    """Every metric's worst value over the planes of two canonical pictures of one grid: the numbers behind a
+    verdict and the reference ``picture_excess`` is tested against."""
+    maxima = dict.fromkeys(PICTURE_METRICS, 0.0)
+    for a, b in zip(left, right, strict=True):
+        if a.shape != b.shape:
+            raise ValueError("Canonical pictures are not on one grid")
+        for name, value in _plane_metrics(a, b):
+            maxima[name] = max(maxima[name], value)
     return maxima
 
 
-def _plane_matches(left_data, right_data, bit_depth):
-    """Whether every VIDEO limit holds on one plane pair, stopping at the first limit exceeded.
-
-    The limits are one conjunction, so the stop gives the verdict ``video_metrics`` gives; it only skips metrics that can
-    no longer change it. The arithmetic of every metric is ``video_metrics``'s own, cheapest metrics first: a pair that
-    differs (a neighbouring frame, another scene) fails on the peak alone, which costs 1/15th of the full set.
-    """
-    scale = 255 / ((1 << bit_depth) - 1)
-    raw = left_data.astype(np.float32) - right_data.astype(np.float32)
-    absolute = np.abs(raw) * scale
-    if float(absolute.max()) > VIDEO["peak"]:
-        return False
-    for size in (4, 8):
-        if _local_max(absolute, size) > VIDEO["local" + str(size)]:
-            return False
-    if _local_max((absolute > VIDEO["concentration_level"]).astype(np.float32), 8) > VIDEO["concentration8"]:
-        return False
-    residual = raw * 255 / ((1 << bit_depth) - 1)
-    integral = _integral(residual)
-    return all(_signed_local(residual, size, integral) <= VIDEO["signed" + str(size)] for size in (8, 16, 32))
+def picture_excess(left, right):
+    """How far two canonical pictures are from agreeing: the largest ratio of a metric to its limit over the planes.
+    At most 1 is agreement within every limit; above ``near_ratio`` the pictures differ, and the answer is then only
+    known to be above it (the remaining metrics cannot change the verdict, so they are not computed: a neighbouring
+    frame or another scene is decided by the first metric)."""
+    worst = 0.0
+    for a, b in zip(left, right, strict=True):
+        if a.shape != b.shape:
+            raise ValueError("Canonical pictures are not on one grid")
+        for name, value in _plane_metrics(a, b):
+            worst = max(worst, value / VIDEO[name])
+            if worst > NEAR_RATIO:
+                return worst
+    return worst
 
 
-def video_matches(left, right):
-    """Whether two decoded frames agree within every VIDEO limit (``video_metrics``'s verdict, computed lazily).
+def agreeing(times, ratios):
+    """Per frame, whether its picture counts as the reference's: ``ratios`` are the frames' ``picture_excess`` (None
+    for a frame with no partner) at the increasing ``times`` (ms).
 
-    Each plane pair goes to the GPU first when one is usable (``cuda_metrics``): it answers pass or fail only when the
-    exact result is outside the arithmetic's error band, and None otherwise, which is decided here on the CPU.
-    """
-    if (
-        left.interpretation_flags
-        or right.interpretation_flags
-        or frame_declarations(left) != frame_declarations(right)
-        or len(left.planes) != len(right.planes)
-    ):
-        return False
-    pairs = list(zip(left.planes, right.planes, strict=True))
-    if any((a.width, a.height, a.sample_bytes) != (b.width, b.height, b.sample_bytes) for a, b in pairs):
-        return False
-    for a, b in pairs:
-        left_data, right_data = plane_array(a), plane_array(b)
-        verdict = cuda_metrics.plane_verdict(left_data, right_data, left.bit_depth)
-        if verdict is None:
-            verdict = _plane_matches(left_data, right_data, left.bit_depth)
-        if not verdict:
-            return False
-    return True
+    A frame within every limit agrees. A near miss (above a limit by at most ``near_ratio``) agrees only as an
+    isolated one: when at most ``near_share`` of the frames within half ``near_window_ms`` of it, itself included,
+    are outside the limits. Two encodes of one picture miss a limit in single frames (a fade, a flash); footage that
+    really differs misses in every frame, and a frame that differs outright (another scene) never agrees."""
+    outside = [ratio is None or ratio > 1 for ratio in ratios]
+    result = []
+    first = last = 0  # the frames within reach of frame i are first..last-1
+    misses = 0
+    for i, ratio in enumerate(ratios):
+        while last < len(times) and times[last] <= times[i] + NEAR_REACH_MS:
+            misses += outside[last]
+            last += 1
+        while times[first] < times[i] - NEAR_REACH_MS:
+            misses -= outside[first]
+            first += 1
+        result.append(
+            ratio is not None and (ratio <= 1 or (ratio <= NEAR_RATIO and misses <= NEAR_SHARE * (last - first)))
+        )
+    return result
 
 
 class AudioVerifier:
-    """One exact sample grid, rolling spectra, and a permanent union of vetoes."""
+    """One exact sample grid, rolling spectra, and a permanent union of vetoes.
+
+    A spectral difference is judged against how loud the shared sound is: two encodes or mixes of one recording
+    differ in proportion to the sound itself, a sound only one of them has does not shrink with it. Each limit is
+    therefore its floor or its share of the quietest window the difference is held across, whichever is larger.
+    """
 
     def __init__(self, rate, origin):
         if rate <= 0 or rate % 100:
@@ -350,6 +399,7 @@ class AudioVerifier:
         self.magnitude = deque(maxlen=AUDIO["novelty_windows"])
         self.phase = deque(maxlen=AUDIO["phase_windows"])
         self.levels = deque(maxlen=AUDIO["moving_windows"])
+        self.loud = deque(maxlen=max(AUDIO["novelty_windows"], AUDIO["phase_windows"], AUDIO["moving_windows"]))
         self.bad = []
         self.last = None
 
@@ -358,6 +408,10 @@ class AudioVerifier:
         # Branch witnesses arrive in different temporal order; retain a union,
         # never allow a later pass to erase an earlier witnessed veto.
         self.bad = union([*self.bad, (lo, hi)])
+
+    def _limit(self, floor, share, windows):
+        """Per channel, what a difference held across the last ``windows`` windows may not exceed."""
+        return np.maximum(floor, share * np.minimum.reduce(list(self.loud)[-windows:]))
 
     def feed(self, left, right):
         if left.shape != right.shape or left.ndim != 2 or not np.isfinite(left).all() or not np.isfinite(right).all():
@@ -390,18 +444,19 @@ class AudioVerifier:
             self.magnitude.append(M)
             self.phase.append(np.maximum(np.abs(X - Y) - AUDIO["phase_shared_ratio"] * np.minimum(A, B), 0))
             self.levels.append(np.sqrt(np.sum(M * M, axis=0)))
-            for history, floor, guard in (
-                (self.magnitude, AUDIO["novelty_floor"], CHANGE_GUARD_MS),
-                (self.phase, AUDIO["phase_floor"], AUDIO["short_phase_guard_ms"]),
+            self.loud.append(rms)
+            for history, floor, share, guard in (
+                (self.magnitude, AUDIO["novelty_floor"], AUDIO["novelty_level"], CHANGE_GUARD_MS),
+                (self.phase, AUDIO["phase_floor"], AUDIO["phase_level"], AUDIO["short_phase_guard_ms"]),
             ):
                 if len(history) == history.maxlen:
                     held = np.minimum.reduce(history)
-                    if float(np.max(np.sqrt(np.sum(held * held, axis=0)))) > floor:
+                    if np.any(np.sqrt(np.sum(held * held, axis=0)) > self._limit(floor, share, history.maxlen)):
                         span = (history.maxlen - 1) * AUDIO["hop_ms"]
                         self._veto(start - span, span + AUDIO["window_ms"], guard)
-            if (
-                len(self.levels) == self.levels.maxlen
-                and float(np.max(np.minimum.reduce(self.levels))) > AUDIO["moving_floor"]
+            if len(self.levels) == self.levels.maxlen and np.any(
+                np.minimum.reduce(self.levels)
+                > self._limit(AUDIO["moving_floor"], AUDIO["moving_level"], self.levels.maxlen)
             ):
                 span = (self.levels.maxlen - 1) * AUDIO["hop_ms"]
                 self._veto(start - span, span + AUDIO["window_ms"], AUDIO["short_phase_guard_ms"])
