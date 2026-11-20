@@ -412,15 +412,152 @@ def test_undo_refuses_unrelated_later_tagging_insertion(case):
     assert _rows(c["plex"]) == edited
 
 
-def test_unapproved_existing_marker_type_is_not_deleted(case):
+def _approve(c, kinds):
+    """Replace the fixture's review with an approved result of exactly these (kind, start, end) ranges."""
+    base = c["result"].evidence[0]
+    evidence, ranges, ids = [], [], []
+    for kind, start, end in kinds:
+        eid = "match" if kind == "intro" else kind + "-match"  # the fixture's locked intro keeps its own evidence id
+        evidence.append(
+            replace(base, id=eid, start_ms=start, end_ms=end, reference_start_ms=start, reference_end_ms=end)
+        )
+        ranges.append(
+            DecisionRange(kind, kind, "skip", start, end, "proposed", False, "detector", "same", "", (eid,), ("1",))
+        )
+        ids.append({"range_id": kind, "review_status": "approved", "locked": True})
+    run = c["store"].begin_analysis(c["version"].id, "kinds-job", "kinds-signature")
+    result = c["store"].finish_analysis(run, tuple(evidence), tuple(ranges), c["version"].id)
+    return c["store"].save_review(c["version"].id, result.result_revision, ids, "owner")
+
+
+def _plex_marker_rows(path):
+    with sqlite3.connect(path) as db:
+        return db.execute(
+            "SELECT id,[index],text,time_offset,end_time_offset,extra_data FROM taggings ORDER BY id"
+        ).fetchall()
+
+
+def _part_extra(path):
+    from media_preview_generator.markers.publishers.plex_db import decode_extra_data
+
+    with sqlite3.connect(path) as db:
+        value = db.execute("SELECT extra_data FROM media_parts WHERE id=1").fetchone()[0]
+    return decode_extra_data(value)[0]
+
+
+def _seed_plex_marker(path, kind, start, end, index):
+    """A Plex-native row plus its pv: part payload, written the way the legacy writer does."""
+    from media_preview_generator.markers.models import Marker, MarkerType
+    from media_preview_generator.markers.publishers import plex_db
+
+    marker = Marker(MarkerType(kind), start, end, ("plex",))
+    stored_start, stored_end, extra = plex_db._stored_row(marker, 100000)
+    key = "pv:intros" if kind == "intro" else "pv:credits"
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "INSERT INTO taggings (metadata_item_id,tag_id,[index],text,time_offset,end_time_offset,extra_data) VALUES (1,12,?,?,?,?,?)",
+            (index, kind, stored_start, stored_end, extra),
+        )
+        current = db.execute("SELECT extra_data FROM media_parts WHERE id=1").fetchone()[0]
+        fields, url_form = plex_db.decode_extra_data(current)
+        fields[key] = plex_db._part_payload(marker.type, [marker], 100000)
+        db.execute(
+            "UPDATE media_parts SET extra_data=? WHERE id=1", (plex_db.encode_extra_data(fields, url_form=url_form),)
+        )
+
+
+def test_credits_only_approval_replaces_credits_and_keeps_plex_intro(case):
     c = case
+    _seed_plex_marker(c["plex"], "intro", 10000, 20000, 0)
+    _seed_plex_marker(c["plex"], "credits", 40000, 50000, 1)
+    result = _approve(c, [("credits", 60000, 80000)])
+    before = _rows(c["plex"])
+    intro_row = [r for r in _plex_marker_rows(c["plex"]) if r[2] == "intro"][0]
+    intro_payload = _part_extra(c["plex"])["pv:intros"]
+    prepared = c["publisher"].prepare(c["version"].id, result.result_revision, c["identity"], "owner")
+    kept = {"type": "intro", "start_ms": 10000, "end_ms": 20000, "rating_key": "1", "unchanged": True}
+    assert kept in prepared["before_markers"] and kept in prepared["after_markers"]
+    assert {"type": "credits", "start_ms": 60000, "end_ms": 80000, "rating_key": "1", "unchanged": False} in prepared[
+        "after_markers"
+    ]
+    assert not any(m["type"] == "credits" and m["unchanged"] for m in prepared["after_markers"])
+    c["publisher"].apply(prepared["id"], "owner")
+    rows = _plex_marker_rows(c["plex"])
+    assert [r for r in rows if r[2] == "intro"] == [(*intro_row[:1], 1, *intro_row[2:])]  # same id, times, data
+    credits = [r for r in rows if r[2] == "credits"]
+    assert len(credits) == 1 and credits[0][0] != 2 and credits[0][1] == 0
+    assert _part_extra(c["plex"])["pv:intros"] == intro_payload
+    assert "58000" in _part_extra(c["plex"])["pv:credits"]
+    c["publisher"].undo(prepared["id"], "owner")
+    assert _rows(c["plex"]) == before
+
+
+def test_intro_only_approval_replaces_intro_and_keeps_plex_credits(case):
+    c = case
+    _seed_plex_marker(c["plex"], "credits", 60000, 80000, 0)
+    _seed_plex_marker(c["plex"], "intro", 1000, 2000, 1)
+    before = _rows(c["plex"])
+    credits_row = [r for r in _plex_marker_rows(c["plex"]) if r[2] == "credits"][0]
+    credits_payload = _part_extra(c["plex"])["pv:credits"]
+    prepared = c["publisher"].prepare(c["version"].id, c["result"].result_revision, c["identity"], "owner")
+    c["publisher"].apply(prepared["id"], "owner")
+    rows = _plex_marker_rows(c["plex"])
+    assert [r for r in rows if r[2] == "credits"] == [credits_row]  # untouched, index included
+    intro = [r for r in rows if r[2] == "intro"]
+    assert len(intro) == 1 and intro[0][3] == 10000 and intro[0][1] == 1
+    assert _part_extra(c["plex"])["pv:credits"] == credits_payload
+    c["publisher"].undo(prepared["id"], "owner")
+    assert _rows(c["plex"]) == before
+
+
+def test_approving_both_kinds_replaces_both(case):
+    c = case
+    _seed_plex_marker(c["plex"], "credits", 40000, 50000, 0)
+    _seed_plex_marker(c["plex"], "intro", 1000, 2000, 1)
+    result = _approve(c, [("intro", 10000, 20000), ("credits", 60000, 80000)])
+    before = _rows(c["plex"])
+    old_ids = {r[0] for r in _plex_marker_rows(c["plex"])}
+    prepared = c["publisher"].prepare(c["version"].id, result.result_revision, c["identity"], "owner")
+    assert not any(m["unchanged"] for m in prepared["after_markers"])
+    c["publisher"].apply(prepared["id"], "owner")
+    rows = _plex_marker_rows(c["plex"])
+    assert {r[2]: r[3] for r in rows if r[2] == "intro"} == {"intro": 10000}
+    assert len(rows) == 2 and not old_ids & {r[0] for r in rows}
+    c["publisher"].undo(prepared["id"], "owner")
+    assert _rows(c["plex"]) == before
+
+
+@pytest.mark.parametrize("kept_kind", ["intro", "credits"])
+def test_unsupported_encoding_of_the_kept_kind_still_refuses(case, kept_kind):
+    c = case
+    _seed_plex_marker(c["plex"], "intro" if kept_kind == "credits" else "credits", 1000, 2000, 0)
     with sqlite3.connect(c["plex"]) as db:
         db.execute(
-            "INSERT INTO taggings (metadata_item_id,tag_id,[index],text,time_offset,end_time_offset,extra_data) VALUES (1,12,0,'credits',60000,80000,'')"
+            "INSERT INTO taggings (metadata_item_id,tag_id,[index],text,time_offset,end_time_offset,extra_data) VALUES (1,12,1,?,60000,80000,'pv%3Aversion=999')",
+            (kept_kind,),
         )
+    result = _approve(c, [("intro" if kept_kind == "credits" else "credits", 30000, 40000)])
     before = _rows(c["plex"])
-    with pytest.raises((ValueError, RuntimeError)):
-        _prepare(c)
+    with pytest.raises(ValueError):
+        c["publisher"].prepare(c["version"].id, result.result_revision, c["identity"], "owner")
+    assert _rows(c["plex"]) == before
+
+
+def test_unsupported_part_payload_of_the_kept_kind_still_refuses(case):
+    from media_preview_generator.markers.publishers import plex_db
+
+    c = case
+    with sqlite3.connect(c["plex"]) as db:
+        current = db.execute("SELECT extra_data FROM media_parts WHERE id=1").fetchone()[0]
+        fields, url_form = plex_db.decode_extra_data(current)
+        fields["pv:intros"] = '{"MediaPartMarkersArray":{"attributeName":"intros","version":999,"MediaPartMarker":[]}}'
+        db.execute(
+            "UPDATE media_parts SET extra_data=? WHERE id=1", (plex_db.encode_extra_data(fields, url_form=url_form),)
+        )
+    result = _approve(c, [("credits", 60000, 80000)])
+    before = _rows(c["plex"])
+    with pytest.raises(ValueError):
+        c["publisher"].prepare(c["version"].id, result.result_revision, c["identity"], "owner")
     assert _rows(c["plex"]) == before
 
 
@@ -587,7 +724,9 @@ def test_nonfinal_credits_projection_and_existing_row_restore(case):
         )
     before = _rows(c["plex"])
     prepared = c["publisher"].prepare(c["version"].id, result.result_revision, c["identity"], "owner")
-    assert {"type": "credits", "start_ms": 60000, "end_ms": 80000, "rating_key": "1"} in prepared["after_markers"]
+    assert {"type": "credits", "start_ms": 60000, "end_ms": 80000, "rating_key": "1", "unchanged": False} in prepared[
+        "after_markers"
+    ]
     c["publisher"].apply(prepared["id"], "owner")
     with sqlite3.connect(c["plex"]) as db:
         row = db.execute(

@@ -569,7 +569,7 @@
             if (summaryValid) {
                 for (const [heading, markers] of [['Current markers', change.before_markers], ['Proposed markers', change.after_markers]]) {
                     info.append(el('strong', heading));
-                    if (!markers.length) info.append(el('span', 'None', 'rp-note')); else markers.forEach(marker => info.append(el('span', marker.type + ' · ' + ms(marker.start_ms) + ' – ' + ms(marker.end_ms) + ' · item ' + marker.rating_key, 'rp-note')));
+                    if (!markers.length) info.append(el('span', 'None', 'rp-note')); else markers.forEach(marker => info.append(el('span', marker.type + ' · ' + ms(marker.start_ms) + ' – ' + ms(marker.end_ms) + ' · item ' + marker.rating_key + (marker.unchanged ? ' · unchanged, kept as Plex has it' : ''), 'rp-note')));
                 }
             }
             if (change.status === 'prepared') {

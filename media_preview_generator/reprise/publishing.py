@@ -330,9 +330,9 @@ class ReprisePublisher:
             )
             if not 0 <= start < end:
                 raise ValueError("Existing Plex marker bounds are unsupported")
+        # Only approved kinds are replaced. Rows and part payloads of any other kind stay exactly as Plex has them
+        # (they were still validated above), so fixing credits never touches Plex's intro, and the reverse.
         approved_kinds = {kind for kind, _, _ in projection}
-        if any(r["text"] not in approved_kinds for r in old):
-            raise ValueError("Existing markers of an unreviewed type cannot be replaced or removed")
         columns = [r[1] for r in conn.execute("PRAGMA table_info(taggings)")]
         known = {
             "id",
@@ -348,7 +348,10 @@ class ReprisePublisher:
         }
         if set(columns) != known:
             raise ValueError("Plex tagging columns differ from the verified representation")
-        after["taggings"] = [r for r in before["taggings"] if r["tag_id"] not in marker_tags]
+        # `after` is a deep copy: rewrite its own rows, never `before`'s.
+        after["taggings"] = [
+            r for r in after["taggings"] if r["tag_id"] not in marker_tags or r["text"] not in approved_kinds
+        ]
         sequence = before["tagging_sequence"]
         last_id = sequence[0]["seq"] if sequence else 0
         next_id = max(last_id, conn.execute("SELECT COALESCE(MAX(id),0) FROM taggings").fetchone()[0]) + 1
@@ -358,14 +361,15 @@ class ReprisePublisher:
         metadata_ids = sorted({m["metadata_item_id"] for m in before["media_items"] if _live(m)})
         for key in metadata_ids:
             duration = next(m["duration"] for m in before["media_items"] if m["metadata_item_id"] == key and _live(m))
-            for index, marker in enumerate(markers):
+            new_rows = []
+            for marker in markers:
                 start, end, extra = plex_db._stored_row(marker, duration)
-                after["taggings"].append(
+                new_rows.append(
                     dict(
                         id=next_id,
                         metadata_item_id=key,
                         tag_id=tag_id,
-                        index=index,
+                        index=0,
                         text=marker.type.value,
                         time_offset=start,
                         end_time_offset=end,
@@ -375,6 +379,18 @@ class ReprisePublisher:
                     )
                 )
                 next_id += 1
+            kept = [r for r in after["taggings"] if r["metadata_item_id"] == key and r["tag_id"] in marker_tags]
+            if kept:
+                # Same numbering as the legacy writer: one contiguous run per item, ordered by type then time.
+                # A kept row changes only its `index` (when that run needs it); id, times and extra_data never.
+                for index, row in enumerate(
+                    sorted(kept + new_rows, key=lambda r: (r["text"], r["time_offset"], r["end_time_offset"]))
+                ):
+                    row["index"] = index
+            else:
+                for index, row in enumerate(new_rows):
+                    row["index"] = index
+            after["taggings"].extend(new_rows)
         after["taggings"].sort(key=lambda r: r["id"])
         for part in after["media_parts"]:
             if not _live(part) or part["media_item_id"] not in durations:
@@ -383,6 +399,7 @@ class ReprisePublisher:
                 fields, url_form = plex_db.decode_extra_data(part["extra_data"])
             except plex_db.PublishError as exc:
                 raise ValueError("Existing Plex part encoding is unsupported") from exc
+            changed = False
             for kind in ("intro", "credits"):
                 key = "pv:" + ("intros" if kind == "intro" else "credits")
                 if key in fields:
@@ -393,11 +410,11 @@ class ReprisePublisher:
                 mtype = MarkerType(kind)
                 selected = [m for m in markers if m.type == mtype]
                 if not selected:
-                    if key in fields and fields[key] and plex_db._part_entries(mtype, fields[key]) != []:
-                        raise ValueError("Existing part markers of an unreviewed type cannot be removed")
                     continue
                 fields[key] = plex_db._part_payload(mtype, selected, durations[part["media_item_id"]])
-            part["extra_data"] = plex_db.encode_extra_data(fields, url_form=url_form)
+                changed = True
+            if changed:
+                part["extra_data"] = plex_db.encode_extra_data(fields, url_form=url_form)
         after["tagging_sequence"] = [{"name": "taggings", "seq": next_id - 1}]
         return after
 
@@ -460,8 +477,14 @@ class ReprisePublisher:
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
-        for side in ("before", "after"):
+        for side, other in (("before", "after"), ("after", "before")):
             snapshot = row["payload"][side]
+            # A marker row the change leaves exactly as Plex has it (same row, times and data) is flagged, so a kind
+            # that was not approved reads as unchanged.
+            kept = {
+                (r["id"], r["time_offset"], r["end_time_offset"], r["extra_data"])
+                for r in row["payload"][other]["taggings"]
+            }
             tags = {t["id"] for t in snapshot["tags"] if t["tag_type"] == 12}
             markers = []
             for marker in snapshot["taggings"]:
@@ -479,6 +502,13 @@ class ReprisePublisher:
                         "start_ms": start,
                         "end_ms": end,
                         "rating_key": str(marker["metadata_item_id"]),
+                        "unchanged": (
+                            marker["id"],
+                            marker["time_offset"],
+                            marker["end_time_offset"],
+                            marker["extra_data"],
+                        )
+                        in kept,
                     }
                 )
             answer[side + "_markers"] = markers
