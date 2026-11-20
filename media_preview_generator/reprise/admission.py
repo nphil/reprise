@@ -59,7 +59,9 @@ def pair_provenance(target, target_bindings, reference, reference_bindings):
 
 
 def admit_references(target, references, store):
-    """Select one file per proven episode (the first given), then the MAX_REFERENCES nearest to the target.
+    """Every other episode that may be a reference, one file per proven episode (the first given), nearest to the
+    target first. The comparison uses the first MAX_REFERENCES of them that it can compare exactly with the target, so
+    an episode in another picture format, which can't be, is passed over for the next nearest.
 
     Nearest is by episode number, the lower number first on a tie, so the same library always yields the same
     references in the same order. Admission needs the same show and season, so every candidate is of the target's season.
@@ -76,4 +78,4 @@ def admit_references(target, references, store):
     if admitted:
         number = _episode(target_bindings)[3]
         admitted.sort(key=lambda entry: (abs(entry[2] - number), entry[2]))
-    return [(reference, provenance) for reference, provenance, _ in admitted[:MAX_REFERENCES]]
+    return [(reference, provenance) for reference, provenance, _ in admitted]

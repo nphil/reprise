@@ -7,7 +7,12 @@ from pathlib import Path
 import pytest
 
 from media_preview_generator.markers.store import MarkerStore
-from media_preview_generator.reprise.analysis import analyze
+from media_preview_generator.reprise.analysis import (
+    COPY_AUDIO_DIFFERS,
+    COPY_PICTURE_DIFFERS,
+    NO_USABLE_REFERENCES,
+    analyze,
+)
 from media_preview_generator.reprise.identity import media_version
 from media_preview_generator.reprise.models import CandidateWindow, PlaybackIdentity
 from media_preview_generator.reprise.store import RepriseStore
@@ -440,6 +445,146 @@ def test_a_plex_marker_is_still_offered_when_the_episode_cannot_be_compared(tmp_
     # with no Plex marker the same failure is still a failure: there is nothing to offer instead
     guess = [CandidateWindow("intro", 1000, 6000, "opening-window")]
     assert analyze_windows(target, guess, catalog, [reference]).status == "failed"
+
+
+def sine(seconds):
+    return f"aevalsrc=0.3*sin(2*PI*440*t):s=48000:d={seconds}"
+
+
+@pytest.mark.parametrize("short", ["both", "reference"])
+def test_a_marker_that_runs_to_the_end_of_the_file_is_compared_up_to_where_the_sound_ends(tmp_path, catalog, short):
+    """Plex ends a credits marker at the very end of the file, and the sound of a Blu-ray rip stops a few frames before
+    its picture does (15 to 40 ms in the live Community season, where four episodes failed whole): what the two
+    sounds hold is compared, and nothing is claimed past where either ends."""
+    reference = make_video(tmp_path / "reference.mkv", sound=sine(6.96))
+    target = make_video(tmp_path / "target.mkv", sound=sine(6.96 if short == "both" else 7))
+    result = analyze_windows(target, [CandidateWindow("credits", 2000, 7000, "plex")], catalog, [reference])
+    assert result.status == "complete", result.reasons
+    assert not any("can't be compared" in reason or "did not cover" in reason for reason in result.reasons)
+    assert not [r for r in result.ranges if r.origin == "plex"]  # confirmed, so no longer only a suggestion
+    assert overlaps(3000, 6000, skips(result)), result.reasons
+    assert max(r.end_ms for r in skips(result)) <= 6960
+
+
+def test_a_sound_that_stops_a_second_early_confirms_only_what_it_holds(tmp_path, catalog):
+    reference = make_video(tmp_path / "reference.mkv")
+    target = make_video(tmp_path / "target.mkv", sound=sine(6))
+    result = analyze_windows(target, [CandidateWindow("credits", 1000, 7000, "plex")], catalog, [reference])
+    assert result.status == "complete", result.reasons
+    assert not [r for r in result.ranges if r.origin == "plex"]
+    assert overlaps(2000, 5000, skips(result)), result.reasons
+    assert max(r.end_ms for r in skips(result)) <= 6000
+
+
+@pytest.mark.parametrize(
+    "seconds,headline",
+    [
+        # the comparison reads from 2 s before the marker, so it finds 1 s of sound there: outside the marker
+        (3, "Compared with 1 other episode of this season, but no repeating intro or credits could be confirmed."),
+        # nothing of what the comparison reads is in the sound: the failure is the old one, unchanged
+        (1.5, "This episode can't be compared exactly with the others, so nothing could be confirmed."),
+    ],
+)
+def test_a_marker_that_starts_after_the_sound_has_ended_is_never_confirmed(tmp_path, catalog, seconds, headline):
+    """A stream that is missing the marker altogether is no clamp: nothing is claimed, so it stays Plex's suggestion."""
+    reference = make_video(tmp_path / "reference.mkv")
+    target = make_video(tmp_path / "target.mkv", sound=sine(seconds))
+    result = analyze_windows(target, [CandidateWindow("credits", 4000, 7000, "plex")], catalog, [reference])
+    assert result.status == "complete", result.reasons
+    assert not matches(result)
+    (suggestion,) = result.ranges  # nothing confirmed: only Plex's own marker, as a suggestion
+    assert (suggestion.origin, suggestion.start_ms, suggestion.end_ms) == ("plex", 4000, 7000)
+    assert result.reasons[0] == headline
+
+
+ODD_PICTURE = "testsrc2=size=128x80:rate=10:duration=7"  # another size is another picture format
+
+
+def test_an_episode_in_another_picture_format_is_passed_over_for_the_next_nearest(tmp_path, catalog, monkeypatch):
+    """One odd sibling (in the live season a different encode of one episode) used to cost the comparison a reference:
+    the three nearest were picked first and the odd one dropped, leaving two. The next nearest takes its place, and the
+    comparison stops looking once it has three."""
+    from media_preview_generator.reprise import analysis
+
+    target = make_video(tmp_path / "target.mkv", sound=chirp("0.3*sin(2*PI*(300*t+9*t*t))"))  # nothing repeats
+    others = [
+        make_video(tmp_path / f"episode-{n}.mkv", sound=chirp(), source=ODD_PICTURE if n == 3 else None)
+        for n in (2, 3, 4, 5, 6)
+    ]
+    probed, original = [], analysis._representation
+
+    def spy(item, *args, **kwargs):
+        probed.append(Path(item.canonical_path).name)
+        return original(item, *args, **kwargs)
+
+    monkeypatch.setattr(analysis, "_representation", spy)
+    result = analyze_windows(target, [CandidateWindow("intro", 1000, 6000, "test")], catalog, others)
+    assert result.status == "complete", result.reasons
+    assert "1 other episode of this season has a different picture format, so it was left out of the comparison." in (
+        result.reasons
+    )
+    assert "Compared with 3 other episodes of this season, but no repeating intro or credits could be confirmed." in (
+        result.reasons
+    )
+    assert [name for name in probed if name != "target.mkv"] == [f"episode-{n}.mkv" for n in (2, 3, 4, 5)]  # not 6
+
+
+def test_a_copy_in_a_picture_format_no_other_episode_has_says_so(tmp_path, catalog):
+    """The live season's one H.264 8-bit episode among HEVC 10-bit ones was only told that none of the others could be
+    used for the comparison. Now it is told why, and nothing is confirmed against them."""
+    target = make_video(tmp_path / "target.mkv", sound=chirp(), source=ODD_PICTURE)
+    others = [make_video(tmp_path / f"episode-{n}.mkv", sound=chirp()) for n in (2, 3)]
+    result = analyze_windows(target, [CandidateWindow("intro", 1000, 6000, "test")], catalog, others)
+    assert result.status == "complete", result.reasons
+    assert COPY_PICTURE_DIFFERS in result.reasons and NO_USABLE_REFERENCES not in result.reasons
+    assert not skips(result) and not matches(result)
+
+
+def test_a_copy_with_another_sound_layout_than_every_other_episode_says_so(tmp_path, catalog):
+    stereo = "aevalsrc=0.3*sin(2*PI*440*t)|0.3*sin(2*PI*440*t):c=stereo:s=48000:d=7"
+    target = make_video(tmp_path / "target.mkv", sound=stereo, layout="stereo")
+    others = [make_video(tmp_path / f"episode-{n}.mkv") for n in (2, 3)]
+    result = analyze_windows(target, [CandidateWindow("intro", 1000, 6000, "test")], catalog, others)
+    assert result.status == "complete", result.reasons
+    assert COPY_AUDIO_DIFFERS in result.reasons and NO_USABLE_REFERENCES not in result.reasons
+    assert not skips(result) and not matches(result)
+
+
+def test_references_left_out_for_different_reasons_are_each_counted(tmp_path, catalog, monkeypatch):
+    from media_preview_generator.reprise import analysis
+
+    target = make_video(tmp_path / "target.mkv", sound=chirp())
+    odd = make_video(tmp_path / "odd.mkv", sound=chirp(), source=ODD_PICTURE)
+    broken = make_video(tmp_path / "broken.mkv", sound=chirp())
+    original = analysis.decoder.probe
+
+    def probe(item, *args, **kwargs):
+        if Path(item.canonical_path).name == "broken.mkv":
+            raise analysis.decoder.DecodeError("The file cannot be read")
+        return original(item, *args, **kwargs)
+
+    monkeypatch.setattr(analysis.decoder, "probe", probe)
+    result = analyze_windows(target, [CandidateWindow("intro", 1000, 6000, "test")], catalog, [odd, broken])
+    assert result.status == "complete", result.reasons
+    assert NO_USABLE_REFERENCES in result.reasons  # nothing is blamed on the copy: the others differ in different ways
+    assert COPY_PICTURE_DIFFERS not in result.reasons
+    assert "1 other episode of this season has a different picture format, so it was left out of the comparison." in (
+        result.reasons
+    )
+    assert "1 other episode of this season could not be read, so it was left out of the comparison." in result.reasons
+
+
+def test_left_out_notes_count_each_cause_in_plain_words():
+    from media_preview_generator.reprise.analysis import _left_out_notes
+
+    assert _left_out_notes({"picture": 2, "audio": 1, "unreadable": 0}) == [
+        "2 other episodes of this season have a different picture format, so they were left out of the comparison.",
+        "1 other episode of this season has a different audio format, so it was left out of the comparison.",
+    ]
+    assert _left_out_notes({"picture": 0, "audio": 0, "unreadable": 3}) == [
+        "3 other episodes of this season could not be read, so they were left out of the comparison."
+    ]
+    assert _left_out_notes({"picture": 0, "audio": 0, "unreadable": 0}) == []
 
 
 def matches(result):

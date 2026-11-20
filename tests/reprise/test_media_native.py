@@ -728,6 +728,75 @@ def test_native_audio_tolerates_one_container_tick_of_timestamp_error(tmp_path, 
             native_audio_pcm(item, 0, 0, 2500, lambda: False, lambda: False, 1)
 
 
+@pytest.mark.parametrize("codec", ["flac", "ac3"])
+def test_a_window_may_run_past_the_end_of_the_sound_only_when_the_caller_allows_it(tmp_path, codec):
+    """Plex ends a marker at the file's last millisecond, past where the sound stops (an AC-3 stream ends on a whole
+    frame, here 3.008 s, so no two of the live files agree): a caller that allows it gets the window cut at the end."""
+    import numpy as np
+
+    from media_preview_generator.reprise.media import native_audio_chunks, native_audio_pcm
+
+    path = tmp_path / f"{codec}.mka"
+    source = "aevalsrc=0.3*sin(2*PI*(200*t+13*t*t))|0.3*sin(2*PI*(310*t+7*t*t)):s=48000:d=3:c=stereo"
+    execute("-f", "lavfi", "-i", source, "-c:a", codec, "-y", str(path))
+    item = media_version(str(path), 4000, "{}")
+    full = np.frombuffer(execute("-i", str(path), "-c:a", "pcm_f64le", "-f", "f64le", "-"), dtype="<f8").reshape(-1, 2)
+    end_ms = Fraction(len(full) * 1000, 48000)
+    assert 3000 <= end_ms <= 3100
+
+    def read(start, end, to_end):
+        return native_audio_pcm(item, 0, start, end, lambda: False, lambda: False, 1, to_end=to_end)
+
+    for start in (2500, 2990):
+        with pytest.raises(DecodeError, match="cover"):
+            read(start, 4000, False)
+        clipped = read(start, 4000, True)
+        assert (clipped.support_start_ms, clipped.support_end_ms) == (start, end_ms)
+        assert np.array_equal(clipped.data, full[start * 48 :])
+    inside = read(1000, 2000, True)  # a window the sound holds is read exactly as before
+    assert (inside.support_start_ms, inside.support_end_ms) == (1000, 2000)
+    assert np.array_equal(inside.data, full[48000:96000])
+    for to_end in (False, True):  # a window that starts after the sound has ended is no window at all
+        with pytest.raises(DecodeError):
+            read(3500, 4000, to_end)
+    with native_audio_chunks(
+        item, 0, 1500, 4000, lambda: False, lambda: False, 1, chunk_samples=48000, to_end=True
+    ) as reader:
+        chunks = list(reader)
+    assert [c.support_start_ms for c in chunks] == [1500, 2500]
+    assert [c.support_end_ms for c in chunks] == [2500, end_ms]  # only the last chunk is short
+    assert np.array_equal(np.concatenate([c.data for c in chunks]), full[1500 * 48 :])
+
+
+def test_running_to_the_end_of_the_sound_never_hides_a_gap_or_a_truncated_file(tmp_path):
+    from media_preview_generator.reprise.media import native_audio_pcm
+
+    gap = tmp_path / "gap.mka"
+    execute(
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=440:sample_rate=48000:duration=3",
+        "-af",
+        "asetpts='PTS+if(gte(T,1),0.2/TB,0)'",
+        "-c:a",
+        "flac",
+        "-y",
+        str(gap),
+    )
+    assert_generated_audio_gap(gap)
+    item = media_version(str(gap), 4000, "{}")
+    with pytest.raises(DecodeError, match="discontinuous"):
+        native_audio_pcm(item, 0, 0, 4000, lambda: False, lambda: False, 1, to_end=True)
+    whole = tmp_path / "whole.mka"
+    execute("-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=3", "-c:a", "flac", "-y", str(whole))
+    cut = tmp_path / "cut.mka"
+    cut.write_bytes(whole.read_bytes()[: whole.stat().st_size * 6 // 10])
+    item = media_version(str(cut), 4000, "{}")
+    with pytest.raises(DecodeError):
+        native_audio_pcm(item, 0, 500, 4000, lambda: False, lambda: False, 1, to_end=True)
+
+
 SUBTITLE_WARNING = (
     "[in#0/matroska,webm @ 0x55d0] [warning] Could not find codec parameters for stream 3 "
     "(Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size"

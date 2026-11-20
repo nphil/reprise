@@ -35,7 +35,7 @@ Owner `POST /api/reprise/setup-guide` accepts `{"state":"dismissed"}` (stop open
 
 Recurrence references must be actively registered in the Reprise store and belong to a different, numbered Plex episode on the same Plex machine, in the same known show and season. Alternate files or audio bindings of the same episode do not count, even if they have a different rating key. Missing, ambiguous, conflicting or changed binding metadata cannot establish an independent reference and is rejected rather than guessed. Without an admissible reference, recurrence cannot support a skip proposal; review and publication remain separate steps.
 
-At most the three nearest such episodes are compared: by episode number, the lower number first on a tie, one file per episode, so the same library always gives the same references in the same order.
+At most three such episodes are compared, the nearest ones that can be compared exactly with the target: by episode number, the lower number first on a tie, one file per episode, so the same library always gives the same references in the same order. An episode in another picture or audio format, or one that cannot be read, is passed over for the next nearest, and the result says how many were left out.
 
 When evidence changes, reanalysis replaces untouched detector proposals, including provisional keeps. Manual ranges, review overrides and locks survive on the same media generation; retained skip overrides lose approval until reviewed again. An unchanged rescan retains its revision and approvals. This lets a newly available reference produce reviewable skips without obsolete detector keeps blocking them.
 

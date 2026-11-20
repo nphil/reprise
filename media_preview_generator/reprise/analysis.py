@@ -18,6 +18,7 @@ from collections.abc import Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import replace
 from fractions import Fraction
+from itertools import zip_longest
 
 from loguru import logger
 
@@ -25,7 +26,7 @@ from ..gpu.ffmpeg_capabilities import ffmpeg_binary
 from . import acceleration, container_limits, scan_cache
 from . import media as decoder
 from . import recurrence as verify
-from .admission import admit_references
+from .admission import MAX_REFERENCES, admit_references
 from .models import (
     ORIGIN_ONLINE,
     ORIGIN_PLEX,
@@ -104,13 +105,20 @@ NO_REFERENCES = "There are no other episodes of this season to compare with, so 
 NO_USABLE_REFERENCES = "None of the other episodes of this season could be used for the comparison."
 NO_OTHER_EPISODES = "This is the only episode of its season in the library, so there is nothing to compare it with."
 OTHER_EPISODES_NOT_READY = "Other episodes of this season are in the library but none are ready to compare yet. Refresh the library and try again."
-REFERENCE_PICTURE_DIFFERS = (
-    "Another episode of this season has a different picture format, so it can't be compared exactly."
+COPY_PICTURE_DIFFERS = (
+    "This copy of the episode has a different picture format from every other episode of its season, "
+    "so it can't be compared exactly with them and nothing could be confirmed."
 )
-REFERENCE_AUDIO_DIFFERS = (
-    "Another episode of this season has a different audio format, so it can't be compared exactly."
+COPY_AUDIO_DIFFERS = (
+    "This copy of the episode has a different audio format from every other episode of its season, "
+    "so it can't be compared exactly with them and nothing could be confirmed."
 )
-REFERENCE_UNREADABLE = "Another episode of this season could not be read."
+# Why a nearer episode was left out of the comparison (the next nearest takes its place), for one and for several.
+_LEFT_OUT = {
+    "picture": ("has a different picture format", "have a different picture format"),
+    "audio": ("has a different audio format", "have a different audio format"),
+    "unreadable": ("could not be read", "could not be read"),
+}
 COMPARISON_UNAVAILABLE = "A comparison with another episode could not be completed."
 COMPARISON_MISALIGNED = (
     "A comparison with another episode could not be completed because the sound doesn't line up exactly."
@@ -132,6 +140,20 @@ _FALLBACK_NOTES = {
 def _no_repeat_found(count):
     others = "1 other episode" if count == 1 else f"{count} other episodes"
     return f"Compared with {others} of this season, but no repeating intro or credits could be confirmed."
+
+
+def _left_out_notes(left_out):
+    """One note per cause for the episodes the comparison passed over, as ``{cause: how many}``."""
+    notes = []
+    for cause, count in left_out.items():
+        if count:
+            one, many = _LEFT_OUT[cause]
+            notes.append(
+                f"1 other episode of this season {one}, so it was left out of the comparison."
+                if count == 1
+                else f"{count} other episodes of this season {many}, so they were left out of the comparison."
+            )
+    return notes
 
 
 PLEX_SOURCE = "plex"  # CandidateWindow.source of a marker Plex itself detected for this exact file
@@ -568,7 +590,9 @@ def _audio_support(
     target, reference, tracks, ref_tracks, start, end, offset, cancel, pause, threads, *, ffmpeg_path=None
 ):
     """The target times where every mapped track's main channels are the reference's at ``offset``, and which
-    channels of each track that rests on."""
+    channels of each track that rests on. A sound that ends inside the window (the picture often outlasts it by a
+    few frames) is compared up to its end, or the end of the other's if that is earlier: nothing past either end is
+    support, and anything either holds that the other does not is simply not compared."""
     safe = [(start, end)]
     checked = {}
     if not tracks:
@@ -582,7 +606,16 @@ def _audio_support(
         expected = None
         audio_format = None
         with decoder.native_audio_chunks(
-            target, track[1], start, end, cancel, pause, threads, chunk_samples=chunk_samples, ffmpeg_path=ffmpeg_path
+            target,
+            track[1],
+            start,
+            end,
+            cancel,
+            pause,
+            threads,
+            chunk_samples=chunk_samples,
+            ffmpeg_path=ffmpeg_path,
+            to_end=True,
         ) as left:
             with decoder.native_audio_chunks(
                 reference,
@@ -594,10 +627,15 @@ def _audio_support(
                 threads,
                 chunk_samples=chunk_samples,
                 ffmpeg_path=ffmpeg_path,
+                to_end=True,
             ) as right:
-                for a, b in zip(left, right, strict=True):
+                ended = False  # one sound has ended: what is left of the other is read out and dropped
+                for a, b in zip_longest(left, right):
                     if cancel():
                         raise decoder.Cancelled("Analysis cancelled")
+                    if ended or a is None or b is None:
+                        ended = True
+                        continue
                     current = (a.sample_rate, a.channel_layout, a.channel_ids)
                     if (
                         current != (b.sample_rate, b.channel_layout, b.channel_ids)
@@ -606,21 +644,20 @@ def _audio_support(
                     ):
                         raise decoder.DecodeError("Native audio rate or channel layout differs")
                     audio_format = current
-                    if (
-                        a.support_start_ms + offset != b.support_start_ms
-                        or a.support_end_ms + offset != b.support_end_ms
-                    ):
+                    if a.support_start_ms + offset != b.support_start_ms:
                         raise _AlignmentUnsupported("Native audio sample grids do not align")
                     if expected is not None and a.support_start_ms != expected:
                         raise decoder.DecodeError("Native audio chunks are not contiguous")
-                    if a.support_end_ms - a.support_start_ms != Fraction(len(a.data) * 1000, rate):
+                    if any(c.support_end_ms - c.support_start_ms != Fraction(len(c.data) * 1000, rate) for c in (a, b)):
                         raise decoder.DecodeError("Native audio sample support mismatch")
                     if verifier is None:
                         verifier = verify.AudioVerifier(rate, a.support_start_ms)
                         columns = _checked_channels(a.channel_ids)
                         checked[track[0]] = [a.channel_ids[i] for i in columns]
-                    verifier.feed(a.data[:, columns], b.data[:, columns])
+                    size = min(len(a.data), len(b.data))
+                    verifier.feed(a.data[:size, columns], b.data[:size, columns])
                     expected = a.support_end_ms
+                    ended = len(a.data) != len(b.data)
         # Final declaration scope exists only AFTER both fully exhausted contexts
         # exit successfully. Never publish provisional chunks or early matches.
         if left.declarations is None or right.declarations is None or left.declarations != right.declarations:
@@ -648,7 +685,7 @@ def _sound_offset(
     probe_end = min(end, probe_start + 2 * half)
     rate = track[2]
     left = decoder.native_audio_pcm(
-        target, track[1], probe_start, probe_end, cancel, pause, threads, ffmpeg_path=ffmpeg_path
+        target, track[1], probe_start, probe_end, cancel, pause, threads, ffmpeg_path=ffmpeg_path, to_end=True
     )
     right = decoder.native_audio_pcm(
         reference,
@@ -659,6 +696,7 @@ def _sound_offset(
         pause,
         threads,
         ffmpeg_path=ffmpeg_path,
+        to_end=True,
     )
     if (left.sample_rate, left.channel_layout, left.channel_ids) != (
         right.sample_rate,
@@ -726,29 +764,38 @@ def _analyze(
         else:
             video = representation = None
             tracks = _signature_tracks(media)
-        refs = []
-        provenance = {}
+        refs: list[tuple] = []
+        left_out = {"picture": 0, "audio": 0, "unreadable": 0}  # the nearer episodes passed over, and why
         admitted = admit_references(media, references, store)
-        for ref, snapshot in admitted:
-            provenance[ref.id] = snapshot
+        provenance = {ref.id: snapshot for ref, snapshot in admitted}
+        for ref, _ in admitted:
+            if len(refs) == MAX_REFERENCES:
+                break
             try:
                 rv, rt, _ = decoder.probe(ref, cancel, pause, ffmpeg_path=ffmpeg_path)
                 if representation != _representation(ref, rv, cancel, pause, ffmpeg_path=ffmpeg_path):
-                    reasons.append(REFERENCE_PICTURE_DIFFERS)
+                    left_out["picture"] += 1
                 elif len(rt) != len(tracks) or any(a[2:] != b[2:] for a, b in zip(tracks, rt, strict=True)):
-                    reasons.append(REFERENCE_AUDIO_DIFFERS)
+                    left_out["audio"] += 1
                 else:
                     refs.append((ref, rv, rt))
             except decoder.Cancelled:
                 raise
             except (decoder.DecodeError, OSError, ValueError, KeyError, TypeError):
-                reasons.append(REFERENCE_UNREADABLE)
+                left_out["unreadable"] += 1
         if comparison_failure is not None:
             reasons.append(comparison_failure[0])
         elif not admitted:
             reasons.append(NO_REFERENCES)
-        elif not refs:
+        elif refs:
+            reasons.extend(_left_out_notes(left_out))
+        elif left_out["picture"] == len(admitted):
+            reasons.append(COPY_PICTURE_DIFFERS)
+        elif left_out["audio"] == len(admitted):
+            reasons.append(COPY_AUDIO_DIFFERS)
+        else:
             reasons.append(NO_USABLE_REFERENCES)
+            reasons.extend(_left_out_notes(left_out))
         # The bar: each window takes an equal share, the target's scan the first part of it and the searches the rest.
         reported = [-1]
 

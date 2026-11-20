@@ -20,7 +20,7 @@ from loguru import logger
 from ..gpu.ffmpeg_capabilities import ffmpeg_binary
 from ..servers.ownership import apply_path_mappings
 from . import scan_cache
-from .admission import admit_references, pair_provenance
+from .admission import MAX_REFERENCES, admit_references, pair_provenance
 from .identity import currency, media_version
 from .models import SUGGESTION_ORIGINS, AnalysisRefused, CandidateWindow, PlaybackIdentity
 from .policy import eligible_ranges
@@ -1515,17 +1515,21 @@ class RepriseService:
                 cursor = page.get("next_cursor")
                 if not cursor:
                     break
+            # Every other episode of the season that may serve, nearest first: the analysis uses the first few it can
+            # compare exactly (an episode in another picture format is passed over for the next nearest). Only those
+            # nearest are asked about at the online databases, and they alone stand for the inputs in the signature.
             admitted = admit_references(version, references, self.store)
+            nearest = admitted[:MAX_REFERENCES]
             references = [ref for ref, _ in admitted]
             no_comparison_note = OTHER_EPISODES_NOT_READY if other_episodes else NO_OTHER_EPISODES
             owner_keeps = self.store.owner_keep_ranges(mid)
-            online_windows = self._online_windows(lookups, version, bindings, references, job)
+            online_windows = self._online_windows(lookups, version, bindings, [ref for ref, _ in nearest], job)
             signature = hashlib.sha256(
                 (
                     version.stream_signature
                     + json.dumps([asdict(c) for c in candidates], sort_keys=True)
                     + PROFILE_FINGERPRINT
-                    + json.dumps([(ref.id, snapshot) for ref, snapshot in admitted])
+                    + json.dumps([(ref.id, snapshot) for ref, snapshot in nearest])
                     + json.dumps(owner_keeps)
                     + json.dumps({k: [asdict(w) for w in v] for k, v in sorted(online_windows.items())})
                 ).encode()

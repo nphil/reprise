@@ -1338,14 +1338,21 @@ class NativeAudioChunk:
 
 
 class NativeAudioChunkReader:
-    """One-pass bounded PCM stream; successful full context exit commits evidence."""
+    """One-pass bounded PCM stream; successful full context exit commits evidence.
 
-    def __init__(self, media, stream_index, start_ms, end_ms, cancel, pause, threads, chunk_samples, ffmpeg_path):
+    A window must be covered entirely, unless ``to_end`` says it may run past the stream's own end: then it is cut
+    there (``support_end_ms`` of the last chunk is where the sound really ends) once the decode and the audit agree
+    on that end sample for sample. A window that starts at or after the end is never covered."""
+
+    def __init__(
+        self, media, stream_index, start_ms, end_ms, cancel, pause, threads, chunk_samples, ffmpeg_path, to_end=False
+    ):
         if not isinstance(chunk_samples, int) or chunk_samples <= 0 or chunk_samples > MAX_OUTPUT // 8:
             raise DecodeError("Invalid native audio chunk size")
         self.args = (media, stream_index, start_ms, end_ms, cancel, pause, threads)
         self.ffmpeg_path = ffmpeg_path if ffmpeg_path is not None else ffmpeg_binary()
         self.cancel, self.pause = cancel, pause
+        self.to_end = to_end
         self.chunk_samples = chunk_samples
         self.events = queue.Queue(maxsize=2)
         self.stop = threading.Event()
@@ -1469,7 +1476,9 @@ class NativeAudioChunkReader:
                         )
                         if self.stop.is_set():
                             return
-                if total != expected or len(buffer) % (channels * 8):
+                # With ``to_end`` the output may stop short of the window: how short is settled, against the audit,
+                # once the decode is over (_finish_output), never here.
+                if (total != expected and not self.to_end) or len(buffer) % (channels * 8):
                     raise DecodeError("Native audio output does not cover the window")
                 if buffer:
                     samples = np.frombuffer(bytes(buffer), dtype="<f8").reshape(-1, channels)
@@ -1548,20 +1557,41 @@ class NativeAudioChunkReader:
 
 
 def native_audio_chunks(
-    media, stream_index, start_ms, end_ms, cancel_check, pause_check, threads, *, chunk_samples=480000, ffmpeg_path=None
+    media,
+    stream_index,
+    start_ms,
+    end_ms,
+    cancel_check,
+    pause_check,
+    threads,
+    *,
+    chunk_samples=480000,
+    ffmpeg_path=None,
+    to_end=False,
 ):
     return NativeAudioChunkReader(
-        media, stream_index, start_ms, end_ms, cancel_check, pause_check, threads, chunk_samples, ffmpeg_path
+        media, stream_index, start_ms, end_ms, cancel_check, pause_check, threads, chunk_samples, ffmpeg_path, to_end
     )
 
 
-def native_audio_pcm(media, stream_index, start_ms, end_ms, cancel_check, pause_check, threads, *, ffmpeg_path=None):
-    """Collect a bounded native window after complete stream verification."""
+def native_audio_pcm(
+    media, stream_index, start_ms, end_ms, cancel_check, pause_check, threads, *, ffmpeg_path=None, to_end=False
+):
+    """Collect a bounded native window after complete stream verification. With ``to_end`` a window that runs past
+    the end of the sound is cut there (see NativeAudioChunkReader); ``support_end_ms`` says where."""
     import numpy as np
 
     chunks = []
     with native_audio_chunks(
-        media, stream_index, start_ms, end_ms, cancel_check, pause_check, threads, ffmpeg_path=ffmpeg_path
+        media,
+        stream_index,
+        start_ms,
+        end_ms,
+        cancel_check,
+        pause_check,
+        threads,
+        ffmpeg_path=ffmpeg_path,
+        to_end=to_end,
     ) as reader:
         size = 0
         for chunk in reader:
@@ -1843,9 +1873,17 @@ def _native_audio_stream(media, stream_index, start_ms, end_ms, cancel_check, pa
         for _ in audit:
             pass
         probe_stream.finish(processes, cancel_check, pause_check)
-        if not decoded or decoded_samples < last_sample or count < last_sample:
+        covered = last_sample
+        if not decoded:
             raise DecodeError("Native audio decoder did not cover the window")
-        sink._finish_output(expected, channels)
+        if decoded_samples < last_sample or count < last_sample:
+            # The sound ends inside the window. That is a clamp, not a shortfall, only when the window may run to the
+            # end of the sound and the decode and the audit both ran to the very same last sample, past the window's
+            # start: a decoder that stopped short of what the container lists, or an end before the window, still fails.
+            if not (sink.to_end and decoded_samples == count and count > first_sample):
+                raise DecodeError("Native audio decoder did not cover the window")
+            covered = count
+        sink._finish_output((covered - first_sample) * channels * 8, channels)
         declarations = dict(uniform_declarations or {})
         if initial_service is not None:
             if service_count not in (1, decoded):

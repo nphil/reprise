@@ -734,18 +734,26 @@ def test_a_keep_still_vetoes_an_approved_plex_suggestion(lifecycle):
     assert [(r["start_ms"], r["end_ms"]) for r in eligible] == [(1000, 1500), (2000, 3000)]
 
 
-def test_analysis_is_given_only_the_three_nearest_episodes_in_a_stable_order(lifecycle, monkeypatch):
+def test_analysis_gets_every_other_episode_nearest_first_but_only_three_are_asked_online(lifecycle, monkeypatch):
+    """An episode in another picture format is passed over for the next nearest, so the analysis needs the whole list;
+    the online databases are still asked about the three nearest only (each is a request to someone else's server)."""
     from media_preview_generator.reprise import analysis
 
     service, register = lifecycle
     target, _ = register("target", "episode-3")
     siblings = {n: register(f"sibling-{n}", f"episode-{n}")[0] for n in (1, 2, 4, 5, 6)}
-    seen = []
+    seen, asked = [], []
 
     def capture(media, candidates, references, **kwargs):
         seen.append([reference.id for reference in references])
         return AnalysisDraft((), (), "complete", ())
 
+    def ask(lookups, version, bindings, references, job):
+        asked.append([reference.id for reference in references])
+        return {}
+
     monkeypatch.setattr(analysis, "analyze", capture)
+    monkeypatch.setattr(service, "_online_windows", ask)
     queued_analysis(service, target)
-    assert seen == [[siblings[n].id for n in (2, 4, 1)]]
+    assert seen == [[siblings[n].id for n in (2, 4, 1, 5, 6)]]
+    assert asked == [[siblings[n].id for n in (2, 4, 1)]]
