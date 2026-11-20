@@ -11,6 +11,7 @@ from .verification_profile import ADMISSION_REVISION as _ADMISSION_REVISION
 from .verification_profile import PROFILE_SPEC
 
 MAX_REFERENCES = PROFILE_SPEC["candidate"]["max_references"]
+EXTRA_REFERENCES = PROFILE_SPEC["candidate"]["extra_references"]
 
 
 def _episode(bindings):
@@ -61,7 +62,8 @@ def pair_provenance(target, target_bindings, reference, reference_bindings):
 def admit_references(target, references, store):
     """Every other episode that may be a reference, one file per proven episode (the first given), nearest to the
     target first. The comparison uses the first MAX_REFERENCES of them that it can compare exactly with the target, so
-    an episode in another picture format, which can't be, is passed over for the next nearest.
+    an episode in another picture format, which can't be, is passed over for the next nearest. A window the first ones
+    leave less than half confirmed goes on to the next ones, MAX_REFERENCES at a time, up to EXTRA_REFERENCES more.
 
     Nearest is by episode number, the lower number first on a tie, so the same library always yields the same
     references in the same order. Admission needs the same show and season, so every candidate is of the target's season.

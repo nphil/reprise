@@ -31,7 +31,7 @@ from ..gpu.ffmpeg_capabilities import ffmpeg_binary
 from . import acceleration, canonical, container_limits, scan_cache
 from . import media as decoder
 from . import recurrence as verify
-from .admission import MAX_REFERENCES, admit_references
+from .admission import EXTRA_REFERENCES, MAX_REFERENCES, admit_references
 from .models import (
     ORIGIN_ONLINE,
     ORIGIN_PLEX,
@@ -402,6 +402,41 @@ def _confirmed_ms(runs, lo, hi):
         covered += max(0, b - max(a, edge))
         edge = max(edge, b)
     return covered
+
+
+def _select_runs(verified):
+    """The verified runs that stand, in target order: none starts inside the one before it (of two that start
+    together the longer stands) and none takes its reference's own time backwards."""
+    selected = []
+    last_target = -1
+    last_references: dict[str, Fraction] = {}
+    for entry in sorted(verified, key=lambda row: (row[0], -(row[1] - row[0]))):
+        lo, hi, ref, offset, *_, speed, _ = entry
+        if lo < last_target or speed * lo + offset < last_references.get(ref.id, Fraction(-1)):
+            continue
+        selected.append(entry)
+        last_target = hi
+        last_references[ref.id] = speed * hi + offset
+    return selected
+
+
+def _coverage(window, runs, owner_keeps):
+    """What a suggested window's confirmed share is made of: how much of it the runs that stand cover, and the holes
+    between them that would be filled (see ``_bridges``)."""
+    holes = _bridges(window, runs, owner_keeps)
+    covered = sum(max(0, min(b, window.end_ms) - max(a, window.start_ms)) for a, b, *_ in runs)
+    return covered, holes
+
+
+def _share(window, covered, holes):
+    """The share of a suggested window that counts as confirmed: what the runs cover plus the holes filled."""
+    return Fraction(covered + sum(hi - lo for lo, hi, *_ in holes), window.end_ms - window.start_ms)
+
+
+def _window_confirmed(window, verified, owner_keeps):
+    """Whether the runs verified so far would confirm a suggested window as it stands: at least
+    ``PLEX_CONFIRMED_SHARE`` of it, short holes filled."""
+    return _share(window, *_coverage(window, _select_runs(verified), owner_keeps)) >= PLEX_CONFIRMED_SHARE
 
 
 def _hint_range(window, target_online, reference_online, duration):
@@ -846,7 +881,9 @@ def _sound_offset(
     ffmpeg_path=None,
 ):
     """Where one track's sound lines up for a picture proposal, as ``(the sound's clock, level)``, or None when no
-    sound within the search window of the offset ``near`` (ms) lines up well enough.
+    sound within ``SOUND_SEARCH_MS`` of the offset ``near`` (ms) lines up well enough. The window is wide because
+    every release has its own sound/picture sync error: two files of one episode keep their sound up to about
+    400 ms from where their pictures put it (see the profile's calibration).
 
     A bounded probe of the track's canonical sound is cross-correlated with the reference track's, read at the
     proposal's speed (see ``recurrence.sound_lag``): the lag, to a fraction of a sample, is the sound's offset, and
@@ -946,9 +983,10 @@ def _analyze(
         else:
             video = representation = None
             tracks = _signature_tracks(media)
-        # The references: the nearest admitted episodes this file can be compared with, at most MAX_REFERENCES at a
-        # time. One that cannot be used is passed over for the next nearest, whether that shows when it is first looked
-        # at or only when reading it fails: a reference's failure never costs the target its analysis.
+        # The references: the nearest admitted episodes this file can be compared with, MAX_REFERENCES of them to begin
+        # with (``spare`` below holds the ones a suggested window goes on to when these leave it less than half
+        # confirmed). One that cannot be used is passed over for the next nearest, whether that shows when it is first
+        # looked at or only when reading it fails: a reference's failure never costs the target its analysis.
         refs: list[tuple] = []  # (reference, its video stream, its track for each of the target's, its picture format)
         left_out = {"picture": 0, "audio": 0, "unreadable": 0}  # the nearer episodes passed over, and why
         compared: set[str] = set()  # the references a search of which ran to its end
@@ -980,6 +1018,15 @@ def _analyze(
             if found is None:
                 break
             refs.append(found)
+        # The episodes after those, read as far as a window needs them: the next nearest, in the same order.
+        spare: list[tuple] = []
+
+        def more_references(start, count):
+            """``count`` of the episodes after the nearest ones, from the ``start``-th on, as far as there are any."""
+            while len(spare) < start + count and (entry := next_reference()) is not None:
+                spare.append(entry)
+            return spare[start : start + count]
+
         # The bar: each window takes an equal share, the target's scan the first part of it and the searches the rest.
         reported = [-1]
 
@@ -1314,6 +1361,36 @@ def _analyze(
                     f"The online times for the {window.kind} showed where to look in another episode, and comparing "
                     "there confirmed it."
                 )
+            # Episodes further off. The nearest may simply not carry what this window holds (a special's own title
+            # sequence, a variant of it that only two episodes share), and a window Plex or an online database suggests
+            # is worth a wider look: while it is still less than half confirmed, the next episodes in order are
+            # searched, MAX_REFERENCES at a time, up to EXTRA_REFERENCES more, each around the window's own position
+            # only (the online databases are asked about the nearest alone). What they confirm is confirmed exactly as
+            # for the nearest: nothing is guessed.
+            used = 0  # how many of ``spare`` this window has searched
+            while (
+                window.source in SUGGESTED_SOURCES
+                and used < EXTRA_REFERENCES
+                and not _window_confirmed(window, verified, owner_keeps)
+            ):
+                batch = more_references(used, min(MAX_REFERENCES, EXTRA_REFERENCES - used))
+                if not batch:
+                    break
+                logger.info(
+                    "Reprise searches {} more episode(s) for the {}: the nearest leave it less than half confirmed",
+                    len(batch),
+                    window.kind,
+                )
+                first = len(searches)
+                for entry in batch:
+                    searches.append((*entry, *neighbourhood(entry), False))
+                    progress.append(0.0)
+                used += len(batch)
+                for position, cause in run(list(range(first, len(searches)))):
+                    # One that cannot be used is left out from here on, in every window, and the next takes its place.
+                    spare[:] = [entry for entry in spare if entry[0].id != searches[position][0].id]
+                    left_out[cause] += 1
+                    used -= 1
         decoder.check_current(media)
         # The headline: why nothing could be compared, or which nearer episodes were passed over. It leads the notes.
         if comparison_failure is not None:
@@ -1329,18 +1406,9 @@ def _analyze(
         else:
             headline = [NO_USABLE_REFERENCES, *_left_out_notes(left_out)]
         reasons[:0] = headline
-        selected = []
-        last_target = -1
-        last_references: dict[str, Fraction] = {}
-        for entry in sorted(verified, key=lambda row: (row[0], -(row[1] - row[0]))):
-            lo, hi, ref, offset, *_, speed, _ = entry
-            decoder.check_current(ref)
-            if lo < last_target or speed * lo + offset < last_references.get(ref.id, Fraction(-1)):
-                continue
-            selected.append(entry)
-            last_target = hi
-            last_references[ref.id] = speed * hi + offset
-        verified = selected
+        for entry in verified:
+            decoder.check_current(entry[2])
+        verified = _select_runs(verified)
         # A suggested window (Plex's marker, or an online database's times) is the comparison's to propose only when at
         # least half of it was confirmed; otherwise it is not a keep but a suggestion that skips nothing until the owner
         # approves it, and the smaller confirmed fragments inside it are dropped (a one-second skip in the middle of an
@@ -1352,9 +1420,8 @@ def _analyze(
         for w in windows:
             if w.source not in SUGGESTED_SOURCES:
                 continue
-            holes = _bridges(w, verified, owner_keeps)
-            covered = sum(max(0, min(b, w.end_ms) - max(a, w.start_ms)) for a, b, *_ in verified)
-            if Fraction(covered + sum(hi - lo for lo, hi, *_ in holes), w.end_ms - w.start_ms) < PLEX_CONFIRMED_SHARE:
+            covered, holes = _coverage(w, verified, owner_keeps)
+            if _share(w, covered, holes) < PLEX_CONFIRMED_SHARE:
                 suggested.append(w)
                 if covered:
                     fragments[w] = covered

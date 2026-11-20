@@ -608,7 +608,15 @@ def matches(result):
 
 @pytest.mark.parametrize(
     "delayed,shift_ms,confirmed",
-    [("target", 162, True), ("reference", 162, True), ("target", 400, False)],
+    [
+        ("target", 162, True),
+        ("reference", 162, True),
+        # measured on Community S03: the sound of two identical episodes sat up to 413 ms from where their pictures
+        # put it (E13 against E16), and 20% of the pairs were more than 250 ms off (E09 against E06: 268 ms)
+        ("target", 268, True),
+        ("reference", 413, True),
+        ("target", 1200, False),  # beyond the one second searched
+    ],
 )
 def test_sound_out_of_step_with_the_picture_is_found_within_the_search_window_and_refused_beyond_it(
     tmp_path, catalog, delayed, shift_ms, confirmed

@@ -9,7 +9,7 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-PROFILE_ID = "native-signal-review-first-v8"
+PROFILE_ID = "native-signal-review-first-v9"
 PROFILE_SPEC: dict[str, Any] = {
     "id": PROFILE_ID,
     "admission_revision": "episode-provenance-1",
@@ -54,8 +54,9 @@ PROFILE_SPEC: dict[str, Any] = {
     "candidate": {
         "max_ms": 180000,
         "max_references": 3,
+        "extra_references": 6,
         "plex_confirmed_share": "1/2",
-        "reference_order": "nearest episode number to the target first, the lower number on a tie; one file per episode; same show and season only",
+        "reference_order": "nearest episode number to the target first, the lower number on a tie; one file per episode; same show and season only. The first max_references that can be compared are searched; when a window that Plex's marker or an online time suggests is then still less than plex_confirmed_share confirmed, the next ones follow, max_references at a time, up to extra_references more (an intro that only some episodes carry, such as a special's own title sequence or a variant two episodes share, is often not among the nearest few). Windows nothing suggests (the opening and ending fallbacks) are searched against the first max_references only",
         "reference_radius_ms": 30000,
         "context_ms": 2000,
         "maximum_scan_frames": 40000,
@@ -144,7 +145,7 @@ PROFILE_SPEC: dict[str, Any] = {
         "extent": "ceil first window start to floor(last window start+20ms); trim40ms both ends; no padding; retain audio pieces>=500ms",
     },
     "sound_offset": {
-        "search_ms": 250,
+        "search_ms": 1000,
         "probe_ms": 12000,
         "block_ms": 1000,
         "correlation": 0.5,
@@ -155,6 +156,7 @@ PROFILE_SPEC: dict[str, Any] = {
         "search": "both canonical sounds, the reference read at the proposal's speed; the probe in blocks of block_ms (a shorter last block dropped unless it is the only one); per block, normalised cross-correlation (float64 FFT) over every whole-sample lag within search_ms that the reference contains; the block with the highest peak decides, among its scores within tie of the peak the lag nearest the expected one wins, and a parabola through it and its two neighbours places it between samples (kept to 1/64 sample)",
         "level": "the least-squares factor that brings the reference's sound to the target's at the chosen lag (two releases are rarely mastered at one loudness); outside 1/gain_limit..gain_limit drops the proposal",
         "gate": "a deciding peak below correlation drops the proposal; lag and level are a proposal only: strict sound identity on the sound's clock and picture identity on the picture's must both hold over the same target time",
+        "calibration": "the sound's offset between two files against the picture's offset between them, measured on the 104 pairs whose sounds correlate at 0.95 or better among 18 episodes of one season (17 Blu-ray encodes and one web release): from -413 to +372 ms, 21 pairs by more than 250 ms and 46 by more than 150 ms (one sync error per file, the earliest and the latest 415 ms apart, explains every pair to 24 ms rms; the picture offset itself is only known to a frame, about 42 ms). search_ms leaves room for more than twice that spread; a wider search only finds a lag, it never confirms anything",
     },
     "support": {
         "guard_ms": 250,
