@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 import time
+from dataclasses import replace
 from datetime import UTC, datetime
 
 from loguru import logger
@@ -99,9 +100,23 @@ def clock(ms):
 
 
 def _confirmed(ranges):
-    return [
-        r for r in ranges if r.action == "skip" and r.origin not in SUGGESTION_ORIGINS and r.review_status != "rejected"
-    ]
+    """Reprise's confirmed skips, with pieces of one kind that touch exactly joined into one run (as they are sent to
+    Plex), so a marker is compared with the whole confirmed intro or credits, not its first piece."""
+    pieces = sorted(
+        (
+            r
+            for r in ranges
+            if r.action == "skip" and r.origin not in SUGGESTION_ORIGINS and r.review_status != "rejected"
+        ),
+        key=lambda r: (r.kind, r.start_ms, r.end_ms),
+    )
+    joined = []
+    for r in pieces:
+        if joined and joined[-1].kind == r.kind and joined[-1].end_ms == r.start_ms:
+            joined[-1] = replace(joined[-1], end_ms=r.end_ms, terminal=r.terminal)
+        else:
+            joined.append(r)
+    return joined
 
 
 def _suggested(ranges):

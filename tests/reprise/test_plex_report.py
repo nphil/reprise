@@ -69,6 +69,11 @@ def test_a_plex_skip_that_matches_reprise_raises_no_flag():
     assert flags_of(plex=[marker("intro", 100_000, 130_000)], ranges=(skip,)) == {}
 
 
+def test_confirmed_pieces_that_touch_are_compared_as_one_run():
+    pieces = (rng("intro", 100_000, 105_000), rng("intro", 105_000, 106_000), rng("intro", 106_000, 130_000))
+    assert flags_of(plex=[marker("intro", 100_000, 130_000)], ranges=pieces) == {}
+
+
 def test_rounding_inside_the_tolerance_is_not_flagged_but_one_second_more_is():
     skip = rng("intro", 100_000, 130_000)
     inside = marker("intro", 100_000 - TOLERANCE_MS, 130_000 + TOLERANCE_MS)
