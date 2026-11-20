@@ -10,6 +10,8 @@ Detection proposes ranges; it does not approve them. Inspect the evidence and or
 
 The [playback API](docs/reprise-api.md) serves saved results using the exact Plex playback identity, including the selected audio stream. Missing, stale, ambiguous or unapproved results yield no eligible skips. Named client credentials are scoped, and only their hashes are stored. The direct integration API is available for a future Marquee client, but this repository does not provide that client or deploy anything to a TV. Exact range ends and the explicit terminal flag must be respected.
 
+The **Plex report** (the Library's "Plex report" button, or `GET /api/reprise/report`) lines Plex's current skip markers up against what Reprise found for a show or season and flags where they differ, for example Plex skipping 52 seconds of story before the credits. It only reads: nothing is written to Plex.
+
 ## Detection evidence and limits
 
 Synthetic checks exercise detection and preservation using reproducible generated media. Results are proposals, and ranking scores are not calibrated probabilities.

@@ -526,6 +526,24 @@ class ReprisePublisher:
             ]
         return [self._public(self._load(i)) for i in ids]
 
+    def published_versions(self, media_version_ids):
+        """``{media_version_id: revision}`` for each version whose latest settled change in the journal is an applied
+        one (a later undo clears it). One read of the journal: the Plex report asks for a whole season at once."""
+        ids = list(dict.fromkeys(media_version_ids))
+        latest = {}
+        with self.store.marker_store._reading() as conn:
+            for start in range(0, len(ids), 400):
+                chunk = ids[start : start + 400]
+                rows = conn.execute(
+                    "SELECT media_version_id,state,json_extract(payload,'$.revision') AS revision "
+                    "FROM reprise_publication_changes WHERE state IN ('applied','undone') "
+                    f"AND media_version_id IN ({','.join('?' for _ in chunk)}) ORDER BY created_at,rowid",
+                    chunk,
+                ).fetchall()
+                for row in rows:
+                    latest[row["media_version_id"]] = (row["state"], row["revision"])
+        return {version: revision for version, (state, revision) in latest.items() if state == "applied"}
+
     def _set_state(self, change_id, state, actor):
         with self._journal() as conn:
             conn.execute(

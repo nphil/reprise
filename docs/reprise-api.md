@@ -31,6 +31,21 @@ Each step has `id`, `number`, `title`, `required`, `state` (`done`, `todo`, `blo
 
 Owner `POST /api/reprise/setup-guide` accepts `{"state":"dismissed"}` (stop opening the guide by itself) or `{"state":"completed"}`, saves it in the owner account file and returns `{"state":"<saved state>"}`. Any other body is `400`; if the config folder cannot be written the answer is `500` with a plain `error`. Both routes are owner only: a client key gets `403`.
 
+## Plex report
+
+Owner `GET /api/reprise/report?show=<title>&season=<n>&format=json|text` compares, for each episode of one show or season, the markers Plex has now with what Reprise found, so one read answers "where do Plex's skips differ from Reprise's?". `show` is required (an exact title in any case, else a title that exactly one show contains; several matches, an unknown show or a season with no episodes is `400` with a plain `error`). `season` is optional, `format` defaults to `json`, and each may be given once. A client key gets `403`. It is read only: it reads Plex's markers in batches of 40 (`/library/metadata/<keys>?includeMarkers=1`, markers of type intro and credits only), reads the saved results and the publication journal, decodes nothing and writes nothing. If Plex cannot be reached the report still answers, `plex.status` says `unavailable` (or `partly`) and no Plex flag is raised.
+
+The JSON body is `{schema_version, show, season, generated_at, tolerance_ms, plex: {status, message}, summary, episodes}`. `summary` has `episodes`, `analyzed`, `counts` (episodes per flag), `phrases` (one plain phrase per flag that occurred), `headline` (for example "3 episodes where Plex skips into a scene Reprise protects; 1 episode where the analysis failed"), `differs` and `needs_attention`. Each episode is one row: `id` (the media version id), `label` (`S3E06`), `title`, `verdict` (`ok`, `differs`, `needs_attention` or `pending`), `summary` (one plain sentence), `flags`, `analysis` (`status`, `freshness`, `stale`, plain `reasons`), `plex` (`status`, `markers: [{kind, start_ms, end_ms}]`, `unknown_kinds`), `reprise` (`skips` Reprise confirmed, `suggestions` it could not confirm, `keeps` it protects, `to_review`, `approved`), `published` and `published_revision`. A flag is `{code, severity, kind, seconds, text}`:
+
+- `plex_cuts_into_keep`: Plex's skip overlaps a keep range by `seconds`.
+- `plex_starts_early` / `plex_ends_late`: Plex's skip starts, or ends, `seconds` outside Reprise's skip. Plex ending at the end of the file is clamped to the file's length, and a Reprise skip that runs to the end is never "late".
+- `plex_missing`: Reprise found an intro or credits skip and Plex has none (not raised for a kind the library hides from Plex).
+- `unconfirmed`: Reprise has only suggestions (Plex's or online), nothing it confirmed.
+- `not_analyzed`, `failed`, `stale`: there is no usable result, so nothing is compared with Plex; `analysis.reasons` gives the failure in plain words.
+- `published`: the latest applied change for this episode in the publication journal is still in force (`published_revision`).
+
+Differences of 1 second or less are not flagged. Plex flags are only raised for a complete, current analysis. `format=text` returns `text/plain`, under 4 KB however big the season: a season is one line per episode (`S3E02 P i1:40-2:10 c20:00-21:40 | R i1:40-2:10 c20:00-21:20 | K 20:36-20:50 | CUTS_KEEP(c 14s) LATE(c 20s)`, with `P` Plex, `R` Reprise, `K` protected scenes), cut with a note if it would not fit; a whole show is one line per season. The Library's **Plex report** button opens the same report as a page (`/reprise/report`).
+
 ## Reanalysis and job controls
 
 Recurrence references must be actively registered in the Reprise store and belong to a different, numbered Plex episode on the same Plex machine, in the same known show and season. Alternate files or audio bindings of the same episode do not count, even if they have a different rating key. Missing, ambiguous, conflicting or changed binding metadata cannot establish an independent reference and is rejected rather than guessed. Without an admissible reference, recurrence cannot support a skip proposal; review and publication remain separate steps.

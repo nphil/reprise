@@ -11,7 +11,8 @@ from loguru import logger
 from ...reprise import acceleration
 from ...reprise import setup_guide as guide
 from ...reprise.api_auth import DEFAULT_SCOPES, SCOPES, bearer_secret, require_client
-from ...reprise.models import AnalysisRefused, PlaybackIdentity, ReviewRefused
+from ...reprise.models import AnalysisRefused, PlaybackIdentity, ReportRefused, ReviewRefused
+from ...reprise.report import render_text
 from ..auth import (
     SETUP_GUIDE_COMPLETED,
     SETUP_GUIDE_DISMISSED,
@@ -185,6 +186,10 @@ def create_reprise_blueprint(service):
     def review_refused(error):
         return jsonify(error=str(error)), 400
 
+    @bp.errorhandler(ReportRefused)
+    def report_refused(error):
+        return jsonify(error=str(error)), 400
+
     @bp.errorhandler(ValueError)
     def invalid(_error):
         return jsonify(error="Invalid request or operation"), 400
@@ -262,6 +267,26 @@ def create_reprise_blueprint(service):
                 )
             )
         )
+
+    @bp.get("/api/reprise/report")
+    @owner
+    def report():
+        """Plex's markers against Reprise's results for one show or season, computed here so one read answers it."""
+        args = request.args
+        if set(args) - {"show", "season", "format"} or any(len(args.getlist(k)) != 1 for k in args):
+            raise ReportRefused("Use show, season and format, each at most once.")
+        show = args.get("show", "").strip()
+        if not show or len(show) > 200:
+            raise ReportRefused("Say which show to report on (show=<title>).")
+        season = args.get("season", "").strip()
+        if season and not re.fullmatch(r"\d{1,4}", season):
+            raise ReportRefused("The season must be a number.")
+        if args.get("format", "json") not in ("json", "text"):
+            raise ReportRefused("The format must be json or text.")
+        data = service.report(show, int(season) if season else None)
+        if args.get("format") == "text":
+            return Response(render_text(data), mimetype="text/plain")
+        return jsonify(data)
 
     @bp.post("/api/reprise/refresh")
     @owner

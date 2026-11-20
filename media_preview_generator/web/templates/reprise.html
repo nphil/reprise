@@ -13,7 +13,7 @@
         <p class="rp-note" id="rpOnlineHelp">Reprise asks these public databases where an episode's intro and credits are (it sends the show's id, season, episode and the file's length, nothing else). Their times only tell it where to look and are offered as suggestions you must approve; they are never applied on their own.</p>
       </div>
     </div>
-    <div class="rp-actions"><button type="button" class="rp-btn" id="rpRefresh"><i class="bi bi-arrow-repeat" aria-hidden="true"></i>Refresh library</button></div>
+    <div class="rp-actions"><a class="rp-btn" id="rpReportLink" href="{{ url_for('main.reprise_report_page') }}"><i class="bi bi-clipboard-data" aria-hidden="true"></i>Plex report</a><button type="button" class="rp-btn" id="rpRefresh"><i class="bi bi-arrow-repeat" aria-hidden="true"></i>Refresh library</button></div>
   </header>
   <div id="rpMessage" class="rp-message rp-toast" role="status" aria-live="polite" hidden><span id="rpMessageText"></span><button type="button" class="rp-btn quiet" id="rpMessageClose" aria-label="Dismiss this message"><i class="bi bi-x-lg" aria-hidden="true"></i></button></div>
   <form id="rpRefreshForm" class="rp-message" hidden>

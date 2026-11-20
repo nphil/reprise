@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Plex report · Reprise{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ url_for('static', filename='css/reprise.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/pages/report.css') }}">{% endblock %}
+{% block content %}
+<div class="reprise" id="repriseReport">
+  <header class="rp-header">
+    <div>
+      <a class="rp-btn quiet rp-report-back" href="{{ url_for('main.reprise_page') }}"><i class="bi bi-arrow-left" aria-hidden="true"></i>Library</a>
+      <h1>Plex report</h1>
+      <p>Where the skip buttons Plex already has differ from what Reprise found. This only reads: nothing here changes Plex.</p>
+    </div>
+    <div class="rp-actions"><button type="button" class="rp-btn" id="rpReportAgain" disabled><i class="bi bi-arrow-repeat" aria-hidden="true"></i>Check again</button></div>
+  </header>
+  <div id="rpMessage" class="rp-message error" role="status" aria-live="polite" hidden></div>
+
+  <section class="rp-panel rp-report-pick" aria-label="Choose what to check">
+    <div class="rp-filter-row">
+      <label>Show<select id="rpReportShow"><option value="">Choose a show</option></select></label>
+      <label>Season<select id="rpReportSeason" disabled><option value="">All seasons</option></select></label>
+    </div>
+  </section>
+
+  <section class="rp-panel rp-report-summary" id="rpReportSummary" aria-labelledby="rpReportHeadline" aria-live="polite" hidden>
+    <h2 id="rpReportHeadline"></h2>
+    <p class="rp-note" id="rpReportSub"></p>
+    <div class="rp-report-filters" id="rpReportFilters" role="group" aria-label="Show only episodes with"></div>
+  </section>
+
+  <div id="rpReportState" class="rp-state" role="status" aria-live="polite">Choose a show to compare Plex with Reprise.</div>
+
+  <section class="rp-panel rp-report-results" id="rpReportResults" aria-label="Episodes" hidden>
+    <ol class="rp-report-list" id="rpReportList"></ol>
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='js/reprise-report.js') }}" defer></script>{% endblock %}

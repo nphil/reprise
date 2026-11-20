@@ -68,6 +68,13 @@ def reprise_page():
     return render_template("reprise.html")
 
 
+@main.route("/reprise/report")
+@login_required
+def reprise_report_page():
+    """Plex's skip markers next to what Reprise found, for one show or season. Opened from the Library."""
+    return render_template("reprise_report.html")
+
+
 @main.route("/reprise/sharing")
 @login_required
 def reprise_sharing_page():

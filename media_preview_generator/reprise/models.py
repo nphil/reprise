@@ -133,3 +133,8 @@ class AnalysisRefused(ValueError):
 
 class ReviewRefused(ValueError):
     """A review the client can put right; the message is a plain sentence that is safe to show as is."""
+
+
+class ReportRefused(ValueError):
+    """A report request the client can put right (no such show, several shows match); the message is a plain
+    sentence that is safe to show as is."""

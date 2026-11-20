@@ -1,0 +1,47 @@
+/* Plex report page. Loaded after reprise.css; only what the report needs beyond the shared Library styles (buttons, chips, panels, fields). */
+#repriseReport .rp-report-back { margin: -8px 0 6px -12px; min-height: 40px; padding: 4px 12px; }
+#repriseReport .rp-report-pick .rp-filter-row { margin: 0; align-items: flex-end; }
+#repriseReport .rp-report-pick label select { margin-top: 5px; }
+#repriseReport .rp-report-pick label { max-width: 360px; }
+
+#repriseReport .rp-report-summary { display: grid; gap: 6px; }
+#repriseReport .rp-report-summary h2 { font-size: 22px; line-height: 1.25; max-width: 62ch; text-wrap: balance; }
+#repriseReport .rp-report-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+#repriseReport .rp-report-filters[hidden] { display: none; }
+#repriseReport .rp-report-filter { min-height: 40px; padding: 6px 14px; font: inherit; font-size: 13.5px; font-weight: 650; cursor: pointer; background: transparent; }
+#repriseReport .rp-report-filter b { font-variant-numeric: tabular-nums; font-weight: 750; }
+#repriseReport .rp-report-filter:hover { background: var(--lu-hover-wash); }
+#repriseReport .rp-report-filter[aria-pressed="true"] { background: color-mix(in srgb, currentColor 14%, transparent); border-color: currentColor; }
+#repriseReport .rp-report-filters .rp-btn { min-height: 40px; padding: 4px 12px; }
+
+#repriseReport .rp-report-results { padding: 8px 12px; }
+#repriseReport .rp-report-list { list-style: none; margin: 0; padding: 0; }
+#repriseReport .rp-report-list > li { border-top: 1px solid var(--lu-edge-soft); }
+#repriseReport .rp-report-list > li:first-child { border-top: 0; }
+#repriseReport .rp-report-row {
+    display: grid; grid-template-columns: minmax(0, 1fr) 20px; grid-template-areas: "main chevron" "times times";
+    gap: 10px 12px; align-items: start; min-height: 60px; padding: 14px 8px; border-radius: var(--lu-radius-row);
+    color: var(--lu-ink); text-decoration: none;
+}
+#repriseReport .rp-report-row:hover { background: var(--lu-hover-wash); }
+#repriseReport .rp-report-main { grid-area: main; display: grid; gap: 4px; min-width: 0; }
+#repriseReport .rp-report-main .rp-episode-name { font-weight: 700; overflow-wrap: anywhere; }
+#repriseReport .rp-report-sentence { color: var(--lu-ink-2); font-size: 14px; line-height: 1.45; }
+#repriseReport .rp-report-flags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+#repriseReport .rp-report-flags .rp-chip { white-space: normal; }
+#repriseReport .rp-report-times { grid-area: times; display: grid; gap: 3px; min-width: 0; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+#repriseReport .rp-report-times > div { display: grid; grid-template-columns: 5.5rem minmax(0, 1fr); gap: 8px; }
+#repriseReport .rp-report-times dt { color: var(--lu-ink-3); font-weight: 650; }
+#repriseReport .rp-report-times dd { margin: 0; color: var(--lu-ink); overflow-wrap: anywhere; }
+#repriseReport .rp-report-times dd.rp-muted { color: var(--lu-ink-3); }
+#repriseReport .rp-report-row > i { grid-area: chevron; align-self: center; color: var(--lu-ink-3); }
+
+@media (min-width: 1180px) {
+    #repriseReport .rp-report-row { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 20px; grid-template-areas: "main times chevron"; gap: 24px; padding: 14px 12px; }
+}
+@media (max-width: 520px) {
+    #repriseReport .rp-report-pick .rp-filter-row { flex-direction: column; align-items: stretch; }
+    #repriseReport .rp-report-pick label { max-width: none; }
+    #repriseReport .rp-report-summary h2 { font-size: 19px; }
+    #repriseReport .rp-report-results { padding: 4px 8px; }
+}

@@ -143,6 +143,14 @@
     function applyFilters(result) {
         if (Array.isArray(result.shows)) selectOptions($('rpShow'), result.shows, 'All shows');
         if (Array.isArray(result.seasons)) selectOptions($('rpSeason'), result.seasons, 'All seasons', v => `Season ${v}`);
+        syncReportLink();
+    }
+    /* "Plex report" opens the report for the show and season picked here. */
+    function syncReportLink() {
+        const a = $('rpReportLink'), q = new URLSearchParams();
+        if ($('rpShow').value) q.set('show', $('rpShow').value);
+        if ($('rpShow').value && $('rpSeason').value) q.set('season', $('rpSeason').value);
+        a.href = a.pathname + (q.size ? '?' + q : '');
     }
     async function loadLibrary(append = false) {
         const seq = ++state.request;
@@ -756,7 +764,17 @@
 
     api('/api/reprise/settings').then(settings => { state.settings = settings; renderSettings(); if (state.result) { renderPublication(); loadHistory(state.item.id, reviewRequest); } }).catch(() => { /* the shell chip reports it */ });
     const initialSearch = new URLSearchParams(location.search).get('search'); if (initialSearch) $('rpSearch').value = initialSearch.slice(0, 200);
-    loadLibrary(); loadQueue();
+    /* The Plex report links here as /reprise?show=…&season=…&open=<episode id>: show that season, then open that episode's review. */
+    const link = new URLSearchParams(location.search), linkedOpen = (link.get('open') || '').slice(0, 100);
+    function seedFilter(select, value, label) { if (value) { select.append(option(value, label)); select.value = value; } }
+    seedFilter($('rpShow'), (link.get('show') || '').slice(0, 200), (link.get('show') || '').slice(0, 200));
+    seedFilter($('rpSeason'), /^\d{1,4}$/.test(link.get('season') || '') ? link.get('season') : '', `Season ${link.get('season')}`);
+    loadLibrary().then(() => {
+        if (!linkedOpen) return;
+        const item = state.items.find(i => i.id === linkedOpen);
+        if (item) openItem(item); else message('That episode is not in the library list any more.', true);
+    });
+    loadQueue();
     /* The Setup guide's "Refresh the library" button links to /reprise?refresh=1: behave as if Refresh library was pressed, once, then drop the parameter. */
     const launch = new URLSearchParams(location.search);
     if (launch.get('refresh') === '1') {

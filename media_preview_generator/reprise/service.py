@@ -843,6 +843,12 @@ class RepriseService:
             "seasons": seasons,
         }
 
+    def report(self, show, season=None):
+        """The Plex-versus-Reprise report for one show or season (see ``reprise.report``); read-only."""
+        from .report import build_report
+
+        return build_report(self, show, season)
+
     def get_result(self, media_version_id):
         bindings = self._bindings(media_version_id)
         if not bindings:
