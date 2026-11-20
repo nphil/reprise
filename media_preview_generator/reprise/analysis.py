@@ -1244,7 +1244,7 @@ def _analyze(
                                     if window.source == ONLINE_SOURCE
                                     else ONLINE_HINT_FAILED.format(kind=window.kind)
                                 )
-                            elif isinstance(exc, (_ReferenceFailed, _PairUnsupported)):
+                            elif isinstance(exc, _ReferenceFailed | _PairUnsupported):
                                 # The other episode's failure, not this one's: it is left out, the analysis goes on.
                                 logger.warning(
                                     "Reprise left {} out of the comparison: {}",
