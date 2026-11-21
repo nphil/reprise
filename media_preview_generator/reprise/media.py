@@ -18,6 +18,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from fractions import Fraction
@@ -26,7 +27,7 @@ from loguru import logger
 
 from ..gpu.ffmpeg_capabilities import ffmpeg_binary
 from ..markers.probe import ffprobe_path_for
-from . import acceleration
+from . import acceleration, canonical, reduction
 from .identity import is_current
 from .verification_profile import PROFILE_SPEC
 
@@ -341,6 +342,9 @@ class NativeFrame:
     sample_aspect_ratio: Fraction
     interpretation_flags: tuple[str, ...]
     chroma_provenance: str = "audited-window-constant"
+    # A frame the GPU reduced to its canonical grid before it was downloaded (``reduction``) carries those cells and
+    # no planes; ``canonical.picture`` reads either.
+    cells: canonical.Cells | None = None
 
 
 _NATIVE_FORMATS = {
@@ -643,7 +647,9 @@ class NativeFrameReader:
     iterator leaves termination unset and kills/reaps the decoder on exit.
     """
 
-    def __init__(self, media, stream, start, end, cancel, pause, threads, ffmpeg_path, accel=None, audit=None):
+    def __init__(
+        self, media, stream, start, end, cancel, pause, threads, ffmpeg_path, accel=None, audit=None, reduce=None
+    ):
         if not (0 <= start < end) or threads < 1:
             raise DecodeError("Invalid native frame window")
         self.media, self.stream = media, stream
@@ -672,6 +678,13 @@ class NativeFrameReader:
         self.showinfo = {"0": "0", "2": "2"}  # FFmpeg's showinfo instance numbers -> the reader's pre/post labels
         self.audit = audit  # _native_audit's answer when a wrapper already ran it: its repeats must not run it again
         self._owns_audit = audit is None  # whoever ran the audit closes it
+        # With a CUDA GPU decode the GPU can also take each frame to the canonical grid before it is downloaded
+        # (``reduction``): True reduces the whole frame, a ``canonical.Region`` that one region, and only a stream and
+        # region the reduction suits is. ``plan`` is set when this reader does; ``wire`` is what FFmpeg then reports.
+        self.reduce = reduce
+        self.plan = None
+        self.wire = None  # the pixel format and size showinfo must report for every frame
+        self.wire_planes = 3  # and how many planes it checksums
 
     def __enter__(self):
         try:
@@ -712,15 +725,35 @@ class NativeFrameReader:
         self.codec, self.profile = codec, profile
         graph = f"showinfo,trim=end={cap:.3f},showinfo"
         hardware = []
+        self.wire = (self.pix, self.width, self.height)
         if self.accel is not None and acceleration.eligible(
             self.accel, self.ffmpeg_path, codec, profile, self.pix, self.width, self.height
         ):
-            # Same command, GPU decoder: FFmpeg downloads each surface and the native-format conversion runs ahead of
-            # both showinfo taps (they number 1 and 3 then), so every GPU frame meets the CPU frame's checks.
             self.accelerated = True
             hardware = list(self.accel.args)
-            graph = f"format={self.pix},{graph}"
-            self.showinfo = {"1": "0", "3": "2"}
+            plan = None
+            if self.reduce:
+                region = None if self.reduce is True else self.reduce
+                plan = acceleration.reduction_plan(
+                    self.accel, self.ffmpeg_path, codec, profile, self.pix, self.width, self.height, self.sar, region
+                )
+            if plan is None:
+                # Same command, GPU decoder: FFmpeg downloads each surface and the native-format conversion runs
+                # ahead of both showinfo taps (they number 1 and 3 then), so every GPU frame meets the CPU frame's
+                # checks.
+                graph = f"format={self.pix},{graph}"
+                self.showinfo = {"1": "0", "3": "2"}
+            else:
+                # The surface never leaves the GPU until it is the canonical grid's cells: the taps follow the plan's
+                # filters (numbered from 0), and what is checked and read is the reduced frame, two planes of it.
+                self.plan = plan
+                hardware += ["-hwaccel_output_format", "cuda"]
+                count = len(plan.filters)
+                graph = ",".join(plan.filters) + f",{graph}"
+                self.showinfo = {str(count): "0", str(count + 2): "2"}
+                self.wire = (plan.pix, plan.region.columns, plan.region.rows)
+                self.wire_planes = 2
+                self.size = plan.size
         command = [
             self.ffmpeg_path,
             "-nostdin",
@@ -753,7 +786,7 @@ class NativeFrameReader:
             "-enc_time_base",
             f"{self.time_base.numerator}:{self.time_base.denominator}",
             "-pix_fmt",
-            self.pix,
+            self.wire[0],
             # The output side too: the "-threads" above limits only the decoder. A bare output defaults to one
             # rawvideo encoder thread per CPU of the host, which made one decode 37 threads (55 on the GPU, 16 CPUs)
             # and a container capped at 128 processes could not start the threads of decodes running together.
@@ -936,8 +969,6 @@ class NativeFrameReader:
         return self
 
     def __next__(self):
-        import zlib
-
         if self.termination is not None:
             raise StopIteration
         stalled_since = None
@@ -972,9 +1003,9 @@ class NativeFrameReader:
                 )
                 raise StopIteration
             (pts, pix, width, height, checks), color = event
-            if (pix, width, height) != (self.pix, self.width, self.height):
+            if (pix, width, height) != self.wire:
                 raise DecodeError("Dynamic or unsupported native video format")
-            if len(checks) != 3 or (self.previous is not None and pts <= self.previous):
+            if len(checks) != self.wire_planes or (self.previous is not None and pts <= self.previous):
                 raise DecodeError("Missing, unaudited or non-monotonic native frame timestamp")
             if self.color is not None and color != self.color:
                 raise DecodeError("Dynamic native video color metadata")
@@ -982,21 +1013,10 @@ class NativeFrameReader:
             self.previous = pts
             self.seen_pts.add(pts)
             data = self._read_frame()
-            sizes = (
-                self.width * self.height * self.sample,
-                self.cw * self.ch * self.sample,
-                self.cw * self.ch * self.sample,
-            )
-            planes = []
-            offset = 0
-            for size, width, height, checksum in zip(
-                sizes, (self.width, self.cw, self.cw), (self.height, self.ch, self.ch), checks, strict=True
-            ):
-                view = memoryview(data)[offset : offset + size]
-                if zlib.adler32(view, 0) != int(checksum, 16):
-                    raise DecodeError("Native frame payload and metadata do not match")
-                planes.append(NativePlane(view, width, height, width * self.sample, self.sample))
-                offset += size
+            if self.plan is None:
+                planes, cells = self._native_planes(data, checks), None
+            else:
+                planes, cells = (), self._reduced_cells(data, checks, color)
             if self.reached:
                 continue
             if pts >= self.request_end_ms:
@@ -1004,7 +1024,7 @@ class NativeFrameReader:
                 self.observed_end = pts
             return NativeFrame(
                 pts,
-                tuple(planes),
+                planes,
                 self.width,
                 self.height,
                 self.pix,
@@ -1013,7 +1033,39 @@ class NativeFrameReader:
                 self.chroma,
                 self.sar,
                 self.interpretation_flags,
+                cells=cells,
             )
+
+    def _native_planes(self, data, checks):
+        """The three planes of a frame decoded whole, each held to the checksum FFmpeg reported for it."""
+        sizes = (
+            self.width * self.height * self.sample,
+            self.cw * self.ch * self.sample,
+            self.cw * self.ch * self.sample,
+        )
+        planes = []
+        offset = 0
+        for size, width, height, checksum in zip(
+            sizes, (self.width, self.cw, self.cw), (self.height, self.ch, self.ch), checks, strict=True
+        ):
+            view = memoryview(data)[offset : offset + size]
+            if zlib.adler32(view, 0) != int(checksum, 16):
+                raise DecodeError("Native frame payload and metadata do not match")
+            planes.append(NativePlane(view, width, height, width * self.sample, self.sample))
+            offset += size
+        return tuple(planes)
+
+    def _reduced_cells(self, data, checks, color):
+        """The cells of a frame the GPU reduced: its bytes must be what FFmpeg's checksums say it wrote, and every sum
+        one the reduction makes exactly (``reduction.frame_cells``), or the window is decoded again on the CPU."""
+        luma = 2 * self.plan.region.rows * self.plan.region.columns
+        view = memoryview(data)
+        if (zlib.adler32(view[:luma], 0), zlib.adler32(view[luma:], 0)) != tuple(int(c, 16) for c in checks):
+            raise DecodeError("Native frame payload and metadata do not match")
+        try:
+            return reduction.frame_cells(data, self.plan, canonical.full_range(color[0]))
+        except ValueError as exc:
+            raise DecodeError(f"GPU reduced frame rejected: {exc}") from exc
 
     def _audit_result(self):
         """Raise the audit's own error if it failed (the timestamps come from ffprobe, possibly still running)."""
@@ -1045,6 +1097,18 @@ class NativeFrameReader:
                 _close_audit(self.audit)
 
 
+def _signature(frame, plan):
+    """What a repeat of a window must reproduce of a frame already delivered: its timestamp and the checksums of what
+    it carries. A reduced frame carries cells; a whole frame, replayed against one that was reduced under ``plan``, is
+    reduced the same way (in numpy) first."""
+    if frame.cells is not None:
+        return frame.pts_ms, reduction.fingerprint(frame.cells)
+    if plan is not None:
+        arrays = tuple(canonical.plane_array(plane) for plane in frame.planes)
+        return frame.pts_ms, reduction.fingerprint(reduction.reduce_planes(arrays, plan))
+    return frame.pts_ms, tuple(zlib.adler32(plane.data) for plane in frame.planes)
+
+
 class _FallbackFrames:
     """The native frame reader on the first usable GPU, with the CPU as the repeat.
 
@@ -1054,16 +1118,21 @@ class _FallbackFrames:
     delivered twice: the repeat's first frames must equal them (timestamp and plane checksums) and are skipped, so the
     consumer sees one decode whichever decoder finished it. A repeat that disagrees fails the analysis, stops using
     the device involved for that codec, and leaves the CPU to decode the next window.
+
+    When the consumer asks for reduced frames (``reduce``) the first decode is the GPU's with the reduction. If it
+    fails the window is repeated by the same GPU without the reduction, and then by the CPU: the frames delivered
+    reduced are matched by reducing the repeat's whole frames the same way.
     """
 
-    def __init__(self, media, stream, start_ms, end_ms, cancel, pause, threads, ffmpeg_path, attempts):
+    def __init__(self, media, stream, start_ms, end_ms, cancel, pause, threads, ffmpeg_path, attempts, reduce=None):
         self._args = (media, stream, start_ms, end_ms, cancel, pause, threads, ffmpeg_path)
-        self._attempts = [*attempts, None]
+        self._attempts = [*attempts, None]  # the devices to choose from; once entered, the (device, reduce) decodes
+        self._reduce = reduce
         self._step = 0
         self._reader = None
-        self._delivered = []  # (timestamp, plane checksums) of every frame already handed on
+        self._delivered = []  # (reduction plan or None, (timestamp, checksums)) of every frame already handed on
         self._replay = 0  # delivered frames the current reader must still reproduce
-        self._failed = []  # (device, reason) of the GPU decodes that did not finish this window
+        self._failed = []  # (device, reason, was reducing) of the GPU decodes that did not finish this window
         self._audit = None
         self._closed = False
 
@@ -1075,7 +1144,8 @@ class _FallbackFrames:
         return getattr(reader, name)
 
     def _open(self):
-        reader = NativeFrameReader(*self._args, accel=self._attempts[self._step], audit=self._audit)
+        device, reduce = self._attempts[self._step]
+        reader = NativeFrameReader(*self._args, accel=device, audit=self._audit, reduce=reduce)
         reader.__enter__()  # a failure here is the file's (spawn) and would be the CPU's too
         self._reader = reader
 
@@ -1084,14 +1154,25 @@ class _FallbackFrames:
         # so only a device verified for that codec is tried, the best one first.
         audit = self._audit = _native_audit(*self._args)
         try:
-            pix, width, height, codec, profile = audit[0], audit[1], audit[2], audit[12], audit[13]
+            pix, width, height, sar, codec, profile = audit[0], audit[1], audit[2], audit[8], audit[12], audit[13]
             ffmpeg = self._args[7]
             usable = [
                 a
                 for a in self._attempts
                 if a is not None and acceleration.eligible(a, ffmpeg, codec, profile, pix, width, height)
             ]
-            self._attempts = [*usable[:1], None]
+            device = usable[0] if usable else None
+            region = None if self._reduce is True else self._reduce
+            reducing = (
+                bool(self._reduce)
+                and device is not None
+                and acceleration.reduction_plan(device, ffmpeg, codec, profile, pix, width, height, sar, region)
+            )
+            self._attempts = [
+                *([(device, self._reduce)] if reducing else []),
+                *([(device, None)] if device is not None else []),
+                (None, None),
+            ]
             self._open()
         except BaseException:
             _close_audit(audit)
@@ -1103,28 +1184,40 @@ class _FallbackFrames:
 
     def _disagree(self, why):
         reader = self._reader
+        ffmpeg = self._args[7]
         family = acceleration.family_of(reader.codec, reader.profile, reader.pix, reader.width, reader.height)
-        for accel in [a for a, _ in self._failed] + ([reader.accel] if reader.accelerated else []):
-            acceleration.withdraw(accel, self._args[7], family, why)
+        reducing = (
+            reader.plan is not None
+            or any(plan is not None for plan, _ in self._delivered)
+            or any(was for _, _, was in self._failed)
+        )
+        for accel in [a for a, _, _ in self._failed] + ([reader.accel] if reader.accelerated else []):
+            if reducing:
+                acceleration.withdraw_reduced(accel, ffmpeg, family, why)
+            # The CPU is the reference: its repeat of reduced frames implicates only the reduction.
+            if not reducing or reader.accelerated:
+                acceleration.withdraw(accel, ffmpeg, family, why)
         raise DecodeError("GPU and CPU decodes of the same window disagree: " + why)
 
     def _retry(self, exc):
         # A decode that ended on the audit's own failure is not the GPU's: repeating it would only reach the same end.
         _raise_failed_audit(self._audit)
-        failed = self._attempts[self._step]
-        self._failed.append((failed, str(exc)))
+        failed = self._attempts[self._step][0]
         reader, self._reader = self._reader, None
+        self._failed.append((failed, str(exc), reader.plan is not None))
         reader.__exit__(type(exc), exc, exc.__traceback__)  # kills and reaps the failed decoder
-        self._step += 1  # the one GPU is followed by the CPU
+        self._step += 1  # the reducing GPU decode is followed by the plain one, the plain one by the CPU
         logger.warning(
-            "Reprise decode on {} failed ({}); repeating the window on the CPU", failed.label, str(exc)[:200]
+            "Reprise {} on {} failed ({}); repeating the window {}",
+            "GPU reduction" if reader.plan is not None else "decode",
+            failed.label,
+            str(exc)[:200],
+            "without the reduction" if self._attempts[self._step][0] is not None else "on the CPU",
         )
         self._replay = len(self._delivered)
         self._open()
 
     def __next__(self):
-        import zlib
-
         while True:
             try:
                 frame = next(self._reader)
@@ -1139,13 +1232,14 @@ class _FallbackFrames:
                     raise
                 self._retry(exc)
                 continue
-            seen = (frame.pts_ms, tuple(zlib.adler32(plane.data) for plane in frame.planes))
             if self._replay:
-                if seen != self._delivered[len(self._delivered) - self._replay]:
+                plan, expected = self._delivered[len(self._delivered) - self._replay]
+                if _signature(frame, plan) != expected:
                     self._disagree("a repeated frame differs from the one already delivered")
                 self._replay -= 1
                 continue
-            self._delivered.append(seen)
+            plan = self._reader.plan if frame.cells is not None else None
+            self._delivered.append((plan, _signature(frame, plan)))
             return frame
 
     def __exit__(self, exc_type, exc, traceback):
@@ -1157,27 +1251,35 @@ class _FallbackFrames:
             result = reader.__exit__(exc_type, exc, traceback)
             if exc_type is None:
                 # Finished and exhausted. Whoever completed it, the devices that failed first are at fault, not the file.
+                family = acceleration.family_of(reader.codec, reader.profile, reader.pix, reader.width, reader.height)
                 if reader.accelerated:
-                    acceleration.record_gpu(
-                        reader.accel,
-                        acceleration.family_of(reader.codec, reader.profile, reader.pix, reader.width, reader.height),
-                    )
+                    acceleration.record_gpu(reader.accel, family, reduced=reader.plan is not None)
                 else:
                     acceleration.record_cpu()
-                for accel, reason in self._failed:
-                    acceleration.record_fallback(accel, reason)
+                for accel, reason, reducing in self._failed:
+                    if reducing:
+                        acceleration.record_reduction_failure(accel, self._args[7], family, reason)
+                    else:
+                        acceleration.record_fallback(accel, reason)
             return result
         finally:
             _close_audit(self._audit)
 
 
-def native_frames(media, stream, start_ms, end_ms, cancel_check, pause_check, threads, *, ffmpeg_path=None):
+def native_frames(
+    media, stream, start_ms, end_ms, cancel_check, pause_check, threads, *, ffmpeg_path=None, reduce=None
+):
+    """The window's frames as an iterator. ``reduce`` (True: whole frames; or one ``canonical.Region``) lets a CUDA GPU
+    decode deliver them already reduced to the canonical grid (``NativeFrame.cells``, no planes); any frame it cannot
+    reduce, and every CPU decode, comes whole, and ``canonical.picture`` reads either."""
     selected = ffmpeg_path if ffmpeg_path is not None else ffmpeg_binary()
     attempts = acceleration.order(acceleration.plan(selected))
     if not attempts:
         acceleration.record_cpu()
         return NativeFrameReader(media, stream, start_ms, end_ms, cancel_check, pause_check, threads, selected)
-    return _FallbackFrames(media, stream, start_ms, end_ms, cancel_check, pause_check, threads, selected, attempts)
+    return _FallbackFrames(
+        media, stream, start_ms, end_ms, cancel_check, pause_check, threads, selected, attempts, reduce
+    )
 
 
 @dataclass(frozen=True)

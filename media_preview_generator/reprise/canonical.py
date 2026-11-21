@@ -51,6 +51,19 @@ class Region(NamedTuple):
     columns: int
 
 
+class Cells(NamedTuple):
+    """A frame the GPU has already reduced to its canonical grid (see ``reduction``): the exact mean of every cell of
+    ``region`` as an unsigned 16-bit count of 1/256ths on the 8-bit scale (``blue`` and ``red`` at half ``luma``'s
+    size), the outer margin not yet left out. A whole cell of at most 8 x 8 native samples has a mean that is a whole
+    number of 256ths, so nothing is rounded and ``picture`` gives the same bytes from these cells as from the native
+    planes they are the means of."""
+
+    luma: np.ndarray
+    blue: np.ndarray
+    red: np.ndarray
+    region: Region
+
+
 def declaration(value, field):
     """A colour declaration as the profile names it: ``unspecified`` for an absent one, the token for a known one, and
     ValueError for a reserved or malformed one (never guessed to be unspecified)."""
@@ -59,6 +72,12 @@ def declaration(value, field):
     if value not in METADATA[field.removeprefix("color_")]:
         raise ValueError("Unsupported native " + field + " declaration")
     return value
+
+
+def full_range(color_range):
+    """Whether a frame's ``color_range`` declaration says its code values span the full range (ValueError for a
+    reserved or malformed declaration, as ``declaration``)."""
+    return declaration(color_range, "color_range") in METADATA["full_range_tokens"]
 
 
 def colour_class(transfer, matrix, width, height):
@@ -291,16 +310,36 @@ def _cells(region, sizes):
     return tuple(cells)
 
 
+def _reduced_picture(cells, full, region):
+    """``picture`` of a frame that arrived as ``Cells``: the same exact means, the same code-value mapping."""
+    if region != cells.region:
+        raise ValueError("Invalid canonical picture region")
+    margin = PICTURE["margin"] if min(region.rows, region.columns) >= PICTURE["margin_from"] else 0
+    planes = []
+    for number, plane in enumerate((cells.luma, cells.blue, cells.red)):
+        leave = margin if number == 0 else (margin + 1) // 2
+        rows, columns = plane.shape
+        values = plane[leave : rows - leave, leave : columns - leave] / 256.0
+        if full:
+            values = 16 + values * (219 / 255) if number == 0 else 128 + (values - 128) * (224 / 255)
+        planes.append(values.astype(np.float32))
+    return Picture(*planes)
+
+
 def picture(frame, region=None):
     """The canonical picture of one decoded frame (see ``Picture``), from ``region`` of it (default: all of it).
 
     Luma cell (r, c) is the exact mean of the native luma samples its rectangle covers; a colour cell covers two by
     two luma cells. Code values go to the 8-bit scale by a power of two (10-bit 940 is 235), and a full-range frame
     is mapped onto the limited scale. Chroma siting (half a native pixel) is ignored: it is an eighth of a cell.
-    The outermost ``margin`` luma cells are left out: encodes differ in a pixel or two of black at the frame's edge."""
-    if len(frame.planes) != 3 or frame.interpretation_flags:
+    The outermost ``margin`` luma cells are left out: encodes differ in a pixel or two of black at the frame's edge.
+    A frame whose GPU already reduced it to its cells (``Cells``) gives the same picture without its planes."""
+    reduced = getattr(frame, "cells", None)
+    if frame.interpretation_flags or (reduced is None and len(frame.planes) != 3):
         raise ValueError("Unsupported native picture layout")
-    full = declaration(frame.color_range, "color_range") in METADATA["full_range_tokens"]
+    full = full_range(frame.color_range)
+    if reduced is not None:
+        return _reduced_picture(reduced, full, region or whole(frame))
     scale = 2.0 ** (8 - frame.bit_depth)
     cells = _cells(region or whole(frame), tuple((plane.width, plane.height) for plane in frame.planes))
     planes = []

@@ -28,7 +28,7 @@ import numpy as np
 from loguru import logger
 
 from ..gpu.ffmpeg_capabilities import ffmpeg_binary
-from . import acceleration, canonical, container_limits, scan_cache
+from . import acceleration, canonical, container_limits, gpu_pairs, scan_cache
 from . import media as decoder
 from . import recurrence as verify
 from .admission import EXTRA_REFERENCES, MAX_REFERENCES, admit_references
@@ -626,7 +626,9 @@ def _scan(item, stream, start, end, cancel, pause, threads, *, ffmpeg_path=None,
                 on_progress(1.0)
             return found
     hints, declarations, unspecified, region = [], None, [], None
-    with decoder.native_frames(item, stream, start, end, cancel, pause, threads, ffmpeg_path=ffmpeg_path) as frames:
+    with decoder.native_frames(
+        item, stream, start, end, cancel, pause, threads, ffmpeg_path=ffmpeg_path, reduce=True
+    ) as frames:
         for frame in frames:
             if cancel():
                 raise decoder.Cancelled("Analysis cancelled")
@@ -688,8 +690,28 @@ def _video_support(
     ratios: list[float | None] = []  # and how far each is from its best reference frame (None: it has none)
     # The reference frames: [pts, the frame and its canonical pictures by region while in reach, best ratio].
     others: list[list] = []
+
+    def settle(index, entry, excess):
+        """A pair's ratio counts for its target frame (``index``) and, when it is the best so far, for its reference
+        frame (``entry``)."""
+        ratios[index] = excess if ratios[index] is None else min(ratios[index], excess)
+        entry[3] = excess if entry[3] is None else min(entry[3], excess)
+
+    # A GPU decode delivers the frames already reduced to their canonical cells; pairs of those are measured in batches
+    # on the GPU (``gpu_pairs``) and the CPU measures any pair it cannot. A measured framing moves the regions per
+    # pair, which needs the whole frames, so nothing is reduced then.
+    reduced = not framing.measured
+    pairs = gpu_pairs.GpuPairs(framing, settle) if reduced else None
     with decoder.native_frames(
-        target, video, math.floor(start), math.ceil(end), cancel, pause, threads, ffmpeg_path=ffmpeg_path
+        target,
+        video,
+        math.floor(start),
+        math.ceil(end),
+        cancel,
+        pause,
+        threads,
+        ffmpeg_path=ffmpeg_path,
+        reduce=framing.target if reduced else None,
     ) as left:
         with _Reference(
             decoder.native_frames(
@@ -701,6 +723,7 @@ def _video_support(
                 pause,
                 threads,
                 ffmpeg_path=ffmpeg_path,
+                reduce=framing.reference if reduced else None,
             )
         ) as right:
             # Container timestamps are whole ticks (a Matroska file's are milliseconds), so two files' frames of the
@@ -732,19 +755,21 @@ def _video_support(
                         others[-1][1:3] = b, {}
                         near.append(others[-1])
                     b = next(right, None)
-                best = None
+                times.append(a.pts_ms)
+                ratios.append(None)
+                index = len(ratios) - 1
                 pictures: dict = {}  # this frame's canonical picture, by the region it is compared in
                 for entry in near:
+                    if pairs is not None and pairs.offer(index, entry, a, entry[1]):
+                        continue
                     region, other_region = canonical.registered(framing, a, entry[1])
                     if region not in pictures:
                         pictures[region] = canonical.picture(a, region)
                     if other_region not in entry[2]:
                         entry[2][other_region] = canonical.picture(entry[1], other_region)
-                    excess = verify.picture_excess(pictures[region], entry[2][other_region])
-                    best = excess if best is None else min(best, excess)
-                    entry[3] = excess if entry[3] is None else min(entry[3], excess)
-                times.append(a.pts_ms)
-                ratios.append(best)
+                    settle(index, entry, verify.picture_excess(pictures[region], entry[2][other_region]))
+            if pairs is not None:
+                pairs.flush()
             while b is not None:
                 b = next(right, None)
     decoder.check_current(target)
@@ -1672,11 +1697,12 @@ def analyze(
         "owner_keeps": owner_keeps,
         "online": online,
     }
-    draft = _analyze(media, candidates, references, **options)
-    if draft.status != "failed" or not (
-        any(window.source == PLEX_SOURCE for window in candidates) or (online or {}).get(media.id)
-    ):
-        return draft
-    headline = COMPARISON_FAILED if draft.reasons[:1] == (UNCOMPARABLE_MEDIA,) else COMPARISON_UNREADABLE
-    retry = _analyze(media, candidates, [], comparison_failure=(headline, *draft.reasons[1:]), **options)
-    return retry if retry.status in ("complete", "cancelled") else draft
+    with acceleration.compare_lease():
+        draft = _analyze(media, candidates, references, **options)
+        if draft.status != "failed" or not (
+            any(window.source == PLEX_SOURCE for window in candidates) or (online or {}).get(media.id)
+        ):
+            return draft
+        headline = COMPARISON_FAILED if draft.reasons[:1] == (UNCOMPARABLE_MEDIA,) else COMPARISON_UNREADABLE
+        retry = _analyze(media, candidates, [], comparison_failure=(headline, *draft.reasons[1:]), **options)
+        return retry if retry.status in ("complete", "cancelled") else draft

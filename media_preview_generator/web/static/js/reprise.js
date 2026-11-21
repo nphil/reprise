@@ -756,6 +756,20 @@
         try { state.settings = await api('/api/reprise/settings', { method: 'PATCH', body: { gpu_decode: !current.enabled } }); renderHardware(); message(current.enabled ? 'Analysis will use the CPU only.' : 'Analysis will use a GPU when one is available.'); }
         catch (error) { fail(error); }
     });
+    /* The most video memory the GPU comparison may hold at once (the card is shared, so Reprise also leaves 1 GB of it free). */
+    function renderVram() {
+        const s = state.settings, c = s && s.acceleration && s.acceleration.compare, wrap = $('rpVramWrap'), select = $('rpVram');
+        wrap.hidden = !(c && c.enabled && s.acceleration.enabled); if (wrap.hidden) return;
+        const sizes = [512, 1024, 2048, 4096, 8192]; if (!sizes.includes(s.gpu_vram_cap_mb)) sizes.push(s.gpu_vram_cap_mb);
+        select.replaceChildren(...sizes.sort((a, b) => a - b).map(mb => option(String(mb), mb >= 1024 ? (mb / 1024) + ' GB' : mb + ' MB')));
+        select.value = String(s.gpu_vram_cap_mb);
+    }
+    $('rpVram').addEventListener('change', async event => {
+        const select = event.target; select.disabled = true;
+        try { state.settings = await api('/api/reprise/settings', { method: 'PATCH', body: { gpu_vram_cap_mb: Number(select.value) } }); message('Comparisons may use up to ' + select.selectedOptions[0].textContent + ' of the GPU\'s memory.'); }
+        catch (error) { fail(error); }
+        finally { select.disabled = false; renderVram(); }
+    });
     /* Whether analysis may ask public databases (IntroDB, SkipDB) where an episode's intro and credits are. */
     function renderOnline() {
         const on = state.settings && state.settings.online_lookups, box = $('rpOnline'); box.hidden = typeof on !== 'boolean'; if (box.hidden) return;
@@ -767,7 +781,7 @@
         catch (error) { fail(error); }
         finally { toggle.disabled = false; renderOnline(); }
     });
-    const renderSettings = () => { renderHardware(); renderOnline(); };
+    const renderSettings = () => { renderHardware(); renderVram(); renderOnline(); };
     window.addEventListener('rp:settings', event => { state.settings = event.detail; renderSettings(); if (state.result) renderPublication(); });
 
     api('/api/reprise/settings').then(settings => { state.settings = settings; renderSettings(); if (state.result) { renderPublication(); loadHistory(state.item.id, reviewRequest); } }).catch(() => { /* the shell chip reports it */ });

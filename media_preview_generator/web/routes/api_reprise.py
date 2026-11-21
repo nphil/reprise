@@ -400,8 +400,14 @@ def create_reprise_blueprint(service):
     @owner
     def settings():
         if request.method == "PATCH":
-            data = _body({"writes_enabled", "gpu_decode", "online_lookups"})
-            if not data or any(type(value) is not bool for value in data.values()):
+            data = _body({"writes_enabled", "gpu_decode", "online_lookups", "gpu_vram_cap_mb"})
+            asked_cap = "gpu_vram_cap_mb" in data
+            cap = data.pop("gpu_vram_cap_mb", None)
+            # The memory cap is a whole number of MiB inside the range the setting allows; the switches are booleans.
+            low, high = acceleration.VRAM_CAP_RANGE_MB
+            if not (data or asked_cap) or any(type(value) is not bool for value in data.values()):
+                raise ValueError("Invalid setting")
+            if asked_cap and (type(cap) is not int or not low <= cap <= high):
                 raise ValueError("Invalid setting")
             if "writes_enabled" in data:
                 try:
@@ -414,12 +420,16 @@ def create_reprise_blueprint(service):
                 acceleration.set_enabled(data["gpu_decode"])
             if "online_lookups" in data:
                 service.set_online_lookups_enabled(data["online_lookups"])
+            if asked_cap:
+                acceleration.set_vram_cap_mb(cap)
         publisher = service.publisher
         return jsonify(
             publication_available=publisher is not None,
             writes_enabled=bool(getattr(publisher, "writes_enabled", False)),
             # What decodes analysis frames now: label (for display), active, per-device state and counters.
             acceleration=acceleration.status(),
+            # The most video memory (MiB) the GPU comparison may hold at once; it also always leaves 1 GiB of the card free.
+            gpu_vram_cap_mb=acceleration.vram_cap_mb(),
             # The owner's switch for asking public databases where an episode's intro and credits are.
             online_lookups=service.online_lookups_enabled(),
         )

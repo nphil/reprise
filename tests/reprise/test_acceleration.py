@@ -7,9 +7,10 @@ import time
 from fractions import Fraction
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
-from media_preview_generator.reprise import acceleration, media, preview
+from media_preview_generator.reprise import acceleration, canonical, media, preview, reduction
 from media_preview_generator.reprise.acceleration import Accelerator, Verdict
 from media_preview_generator.reprise.identity import media_version
 
@@ -29,6 +30,7 @@ REAL_ENABLED = acceleration.enabled
 def fresh_state(monkeypatch):
     acceleration.reset()
     monkeypatch.setattr(acceleration, "enabled", lambda: True)
+    monkeypatch.setenv("REPRISE_GPU_REDUCE", "0")  # these tests are about decoding; the reduction has its own file
     yield
     acceleration.reset()
 
@@ -413,26 +415,31 @@ def test_native_frames_with_a_verified_device_decodes_through_the_gpu_command(tm
         assert reader.accelerated and reader.termination == "boundary" and reader.proc.args
     expected = read_all(item, ffmpeg)[1]
     assert [f.pts_ms for f in frames] == [f.pts_ms for f in expected]
-    assert acceleration.status()["windows"] == {"gpu": 1, "cpu": 0, "gpu_fallbacks": 0}
+    assert acceleration.status()["windows"] == {"gpu": 1, "cpu": 0, "gpu_fallbacks": 0, "reduced": 0}
 
 
 # --- fallback, with scripted readers -------------------------------------------------------------------------------
 
 
 def frame(i, tag=b"x"):
-    return SimpleNamespace(pts_ms=Fraction(40 * i), planes=(SimpleNamespace(data=memoryview(tag + bytes([i]))),))
+    return SimpleNamespace(
+        pts_ms=Fraction(40 * i), planes=(SimpleNamespace(data=memoryview(tag + bytes([i]))),), cells=None
+    )
 
 
 class Script:
     """Fake reader: what each device (None = CPU) yields, an Exception raising where it sits in the list."""
 
-    def __init__(self, monkeypatch, scripts, codec="h264", profile="High", pix="yuv420p", size=(1920, 1080)):
-        self.scripts, self.opened, self.exits, self.audits = scripts, [], [], 0
+    def __init__(self, monkeypatch, scripts, codec="h264", profile="High", pix="yuv420p", size=(1920, 1080), plan=None):
+        self.scripts, self.opened, self.exits, self.audits, self.reducing = scripts, [], [], 0, []
         outer = self
 
         class Reader:
-            def __init__(self, item, stream, start, end, cancel, pause, threads, ffmpeg_path, accel=None, audit=None):
+            def __init__(
+                self, item, stream, start, end, cancel, pause, threads, ffmpeg_path, accel=None, audit=None, reduce=None
+            ):
                 self.accel, self.audit = accel, audit
+                self.plan = plan if accel is not None and reduce is not None else None  # the reduction it was asked for
                 self.codec, self.profile, self.pix = codec, profile, pix
                 self.width, self.height = size
                 self.accelerated = accel is not None
@@ -440,7 +447,11 @@ class Script:
 
             def __enter__(self):
                 outer.opened.append(self.accel)
-                self.events = iter(outer.scripts[self.accel])
+                outer.reducing.append(self.plan is not None)
+                key = (
+                    (self.accel, True) if self.plan is not None and (self.accel, True) in outer.scripts else self.accel
+                )
+                self.events = iter(outer.scripts[key])
                 return self
 
             def __next__(self):
@@ -466,8 +477,8 @@ class Script:
         monkeypatch.setattr(media, "NativeFrameReader", Reader)
         monkeypatch.setattr(media, "_native_audit", audit)
 
-    def frames(self, attempts, ffmpeg="ffmpeg"):
-        reader = media._FallbackFrames("item", 0, 0, 1000, lambda: False, lambda: False, 1, ffmpeg, attempts)
+    def frames(self, attempts, ffmpeg="ffmpeg", reduce=None):
+        reader = media._FallbackFrames("item", 0, 0, 1000, lambda: False, lambda: False, 1, ffmpeg, attempts, reduce)
         with reader as frames:
             return reader, list(frames)
 
@@ -481,7 +492,7 @@ def test_a_gpu_decode_that_fails_at_the_start_is_repeated_on_the_cpu(monkeypatch
     assert [f.pts_ms for f in delivered] == [0, 40, 80, 120]
     assert script.opened == [NVIDIA, None] and script.audits == 1
     status = acceleration.status()
-    assert status["windows"] == {"gpu": 0, "cpu": 1, "gpu_fallbacks": 1}
+    assert status["windows"] == {"gpu": 0, "cpu": 1, "gpu_fallbacks": 1, "reduced": 0}
     assert "CUDA_ERROR_OUT_OF_MEMORY" in status["last_problem"]
 
 
@@ -492,7 +503,7 @@ def test_a_gpu_decode_that_fails_half_way_is_repeated_without_repeating_frames(m
     reader, delivered = script.frames([NVIDIA])
     assert [f.pts_ms for f in delivered] == [0, 40, 80, 120, 160, 200]
     assert script.opened == [NVIDIA, None] and script.audits == 1
-    assert acceleration.status()["windows"] == {"gpu": 0, "cpu": 1, "gpu_fallbacks": 1}
+    assert acceleration.status()["windows"] == {"gpu": 0, "cpu": 1, "gpu_fallbacks": 1, "reduced": 0}
     assert reader.termination == "eof"  # the reader's own attributes pass through
 
 
@@ -504,7 +515,7 @@ def test_a_failed_decode_goes_to_the_cpu_not_to_a_second_gpu(monkeypatch):
     script = Script(monkeypatch, {NVIDIA: [media.DecodeError("busy")], INTEL: full, None: full})
     _, delivered = script.frames([NVIDIA, INTEL])
     assert len(delivered) == 3 and script.opened == [NVIDIA, None]
-    assert acceleration.status()["windows"] == {"gpu": 0, "cpu": 1, "gpu_fallbacks": 1}
+    assert acceleration.status()["windows"] == {"gpu": 0, "cpu": 1, "gpu_fallbacks": 1, "reduced": 0}
 
 
 def test_a_repeat_that_disagrees_fails_and_withdraws_the_device_for_the_codec(monkeypatch):
@@ -559,7 +570,7 @@ def test_gpu_success_is_counted_and_logged_once(monkeypatch):
     script = Script(monkeypatch, {NVIDIA: [frame(0), frame(1)]})
     script.frames([NVIDIA])
     script.frames([NVIDIA])
-    assert acceleration.status()["windows"] == {"gpu": 2, "cpu": 0, "gpu_fallbacks": 0}
+    assert acceleration.status()["windows"] == {"gpu": 2, "cpu": 0, "gpu_fallbacks": 0, "reduced": 0}
 
 
 def test_abandoning_a_gpu_reader_is_not_a_success(monkeypatch):
@@ -570,6 +581,105 @@ def test_abandoning_a_gpu_reader_is_not_a_success(monkeypatch):
         with reader as frames:
             next(frames)
     assert acceleration.status()["windows"]["gpu"] == 0
+
+
+# --- reduced frames: the GPU's canonical cells, and the repeats that must reproduce them ------------------------------
+
+REDUCTION = reduction.plan_for("yuv420p", 1920, 1080, 1)
+SHAPE = ((1080, 1920), (540, 960), (540, 960))
+KEY = (NVIDIA, "ffmpeg", "h264", "High", "yuv420p", 1920, 1080)
+
+
+def whole_frame(i, seed=0):
+    """A 1080p frame as the CPU decodes it, and its three planes."""
+    rng = np.random.default_rng(1000 * seed + i)
+    arrays = [rng.integers(0, 256, shape, dtype=np.uint8) for shape in SHAPE]
+    planes = tuple(media.NativePlane(memoryview(a.tobytes()), a.shape[1], a.shape[0], a.shape[1], 1) for a in arrays)
+    return SimpleNamespace(pts_ms=Fraction(40 * i), planes=planes, cells=None), arrays
+
+
+def reduced_frame(i, seed=0):
+    """The same frame as the GPU delivers it reduced: its cells and no planes."""
+    whole, arrays = whole_frame(i, seed)
+    return SimpleNamespace(pts_ms=whole.pts_ms, planes=(), cells=reduction.reduce_planes(arrays, REDUCTION))
+
+
+@pytest.fixture
+def reducing(monkeypatch):
+    monkeypatch.setenv("REPRISE_GPU_REDUCE", "1")
+    acceleration._verdicts[("ffmpeg", NVIDIA.device)] = Verdict(ALL, "", time.monotonic(), reduced=ALL)
+
+
+def test_a_reduced_decode_that_finishes_is_counted_as_reduced(reducing, monkeypatch):
+    script = Script(monkeypatch, {(NVIDIA, True): [reduced_frame(i) for i in range(3)]}, plan=REDUCTION)
+    _, delivered = script.frames([NVIDIA], reduce=True)
+    assert [f.cells is not None for f in delivered] == [True] * 3
+    assert script.opened == [NVIDIA] and script.reducing == [True]
+    assert acceleration.status()["windows"] == {"gpu": 1, "cpu": 0, "gpu_fallbacks": 0, "reduced": 1}
+
+
+def test_a_reduction_that_fails_half_way_is_repeated_whole_by_the_same_gpu_without_repeating_frames(
+    reducing, monkeypatch
+):
+    wholes = [whole_frame(i)[0] for i in range(5)]
+    failing = [reduced_frame(0), reduced_frame(1), media.DecodeError("scale_cuda failed")]
+    script = Script(monkeypatch, {(NVIDIA, True): failing, NVIDIA: wholes}, plan=REDUCTION)
+    _, delivered = script.frames([NVIDIA], reduce=True)
+    assert [f.pts_ms for f in delivered] == [0, 40, 80, 120, 160]
+    assert [f.cells is not None for f in delivered] == [True, True, False, False, False]
+    assert script.opened == [NVIDIA, NVIDIA] and script.reducing == [True, False]
+    status = acceleration.status()
+    assert status["windows"] == {"gpu": 1, "cpu": 0, "gpu_fallbacks": 0, "reduced": 0}  # the decode itself was fine
+    assert "GPU reduction failed" in status["last_problem"] and "scale_cuda failed" in status["last_problem"]
+
+
+def test_three_failed_reductions_in_a_row_withdraw_the_reduction_and_keep_the_decode(reducing, monkeypatch):
+    for _ in range(acceleration.REDUCTION_FAILURES_BEFORE_WITHDRAW):
+        scripts = {(NVIDIA, True): [media.DecodeError("boom")], NVIDIA: [whole_frame(0)[0]]}
+        Script(monkeypatch, scripts, plan=REDUCTION).frames([NVIDIA], reduce=True)
+    assert acceleration.reduction_plan(*KEY, 1) is None and acceleration.eligible(*KEY)
+    script = Script(monkeypatch, {NVIDIA: [whole_frame(0)[0]]}, plan=REDUCTION)
+    script.frames([NVIDIA], reduce=True)
+    assert script.reducing == [False]  # a withdrawn reduction is not asked for again
+
+
+def test_a_finished_reduction_ends_the_run_of_failures(reducing, monkeypatch):
+    for outcome in ("fail", "fail", "ok", "fail", "fail"):
+        reduced_script = [media.DecodeError("boom")] if outcome == "fail" else [reduced_frame(0)]
+        scripts = {(NVIDIA, True): reduced_script, NVIDIA: [whole_frame(0)[0]]}
+        Script(monkeypatch, scripts, plan=REDUCTION).frames([NVIDIA], reduce=True)
+    assert acceleration.reduction_plan(*KEY, 1) is not None
+
+
+def test_a_cpu_repeat_that_disagrees_with_reduced_frames_stops_the_reduction_not_the_decode(reducing, monkeypatch):
+    scripts = {
+        (NVIDIA, True): [reduced_frame(0), reduced_frame(1), media.DecodeError("x")],
+        NVIDIA: [media.DecodeError("busy")],
+        None: [whole_frame(0)[0], whole_frame(1, seed=7)[0]],
+    }
+    Script(monkeypatch, scripts, plan=REDUCTION)
+    reader = media._FallbackFrames("item", 0, 0, 1000, lambda: False, lambda: False, 1, "ffmpeg", [NVIDIA], True)
+    with pytest.raises(media.DecodeError, match="disagree"):
+        with reader as frames:
+            list(frames)
+    assert acceleration.reduction_plan(*KEY, 1) is None and acceleration.eligible(*KEY)
+
+
+def test_the_reduction_is_asked_for_only_where_it_is_exact_verified_and_switched_on(reducing, monkeypatch):
+    def asked(reduce=True, size=(1920, 1080)):
+        script = Script(monkeypatch, {NVIDIA: [whole_frame(0)[0]]}, size=size, plan=REDUCTION)
+        script.frames([NVIDIA], reduce=reduce)
+        return script.reducing == [True]
+
+    assert asked()
+    assert not asked(size=(1280, 720))  # not a grid whose cells are 2, 4 or 8 samples
+    assert not asked(reduce=canonical.Region(2, 2, 1916, 1076, 269, 479))  # a part of the frame, not the whole
+    assert not asked(reduce=None)
+    monkeypatch.setenv("REPRISE_GPU_REDUCE", "0")
+    assert not asked()
+    monkeypatch.setenv("REPRISE_GPU_REDUCE", "1")
+    acceleration._verdicts[("ffmpeg", NVIDIA.device)] = Verdict(ALL, "", time.monotonic())  # no passed reduction check
+    assert not asked()
 
 
 def preview_source(tmp_path):
@@ -673,6 +783,13 @@ def test_owner_endpoint_reports_acceleration_and_toggles_it(tmp_path, monkeypatc
         assert manager.get("reprise_gpu_decode") is False
         on = client.patch("/api/reprise/settings", json={"gpu_decode": True})
         assert on.get_json()["acceleration"]["enabled"] is True
+        assert body["gpu_vram_cap_mb"] == acceleration.DEFAULT_VRAM_CAP_MB
+        capped = client.patch("/api/reprise/settings", json={"gpu_vram_cap_mb": 4096})
+        assert capped.status_code == 200 and capped.get_json()["gpu_vram_cap_mb"] == 4096
+        assert manager.get("reprise_gpu_vram_cap_mb") == 4096 and acceleration.vram_cap_mb() == 4096
+        for bad_cap in (None, True, "2048", 2048.5, 100, 1_000_000):
+            assert client.patch("/api/reprise/settings", json={"gpu_vram_cap_mb": bad_cap}).status_code == 400
+        assert acceleration.vram_cap_mb() == 4096
         for bad in ({}, {"gpu_decode": "no"}, {"gpu_decode": 1}, {"other": True}, {"gpu_decode": True, "other": 1}):
             assert client.patch("/api/reprise/settings", json=bad).status_code == 400
     finally:

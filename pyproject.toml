@@ -118,6 +118,9 @@ include = ["media_preview_generator*"]
 "media_preview_generator.markers.credits" = ["reference_clips/*.mkv"]
 # The GPU detection smoke-test clip (gpu/detect.py), same reason.
 "media_preview_generator.gpu" = ["assets/test_video.mp4"]
+# The Reprise GPU comparison's kernels (reprise/cuda_compare.py): the .cu source and the PTX built from it, in the
+# wheel for the same reason. The PTX is rebuilt with tools/build_reprise_ptx.py.
+"media_preview_generator.reprise" = ["cuda_kernels/*.cu", "cuda_kernels/*.ptx"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
