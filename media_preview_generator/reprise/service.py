@@ -13,13 +13,15 @@ import tempfile
 import threading
 import time
 from dataclasses import asdict, replace
+from datetime import UTC, datetime
 from urllib.parse import urlsplit
 
 from loguru import logger
 
 from ..gpu.ffmpeg_capabilities import ffmpeg_binary
 from ..servers.ownership import apply_path_mappings
-from . import scan_cache
+from ..shutdown import is_shutting_down
+from . import recovery, scan_cache
 from .admission import MAX_REFERENCES, admit_references, pair_provenance
 from .identity import currency, media_version
 from .models import SUGGESTION_ORIGINS, AnalysisRefused, CandidateWindow, PlaybackIdentity
@@ -162,6 +164,39 @@ def _analysis_summary(ranges, reasons):
             f"by comparing episodes. Review {it} before approving."
         )
     return "nothing_found", reasons[0] if reasons else "Nothing was found to skip."
+
+
+def _unfinished_warning(counts):
+    """The warning a finished analysis carries for the episodes it did not analyze (None when none were left out)."""
+    parts = []
+    files, refused, set_aside = counts[recovery.FILE_LEFT_OUT], counts[recovery.REFUSED], counts[recovery.SET_ASIDE]
+    if files:
+        one = files == 1
+        parts.append(
+            f"{files} {'episode was' if one else 'episodes were'} not analyzed because "
+            f"{'its' if one else 'their'} file is missing, changed or unavailable. "
+            f"Refresh the library, then analyze {'it' if one else 'them'} again."
+        )
+    if refused:
+        parts.append(
+            f"{refused} {'episode' if refused == 1 else 'episodes'} could not be analyzed (open each to see why)."
+        )
+    if set_aside:
+        one = set_aside == 1
+        parts.append(
+            f"{set_aside} {'episode was' if one else 'episodes were'} set aside after {recovery.MAX_ATTEMPTS} "
+            f"interrupted attempts. Analyze {'it' if one else 'them'} again to retry."
+        )
+    return " ".join(parts) or None
+
+
+def _has_files(folder):
+    """Whether a media folder is there with something in it: storage that is not mounted yet shows as missing or empty."""
+    try:
+        with os.scandir(folder) as entries:
+            return next(entries, None) is not None
+    except OSError:
+        return False
 
 
 def set_service(service):
@@ -331,6 +366,7 @@ class RepriseService:
         self._enqueue_lock = threading.Lock()
         self._refresh_locks = {}
         self._show_ids = {}
+        self._resume_stop = threading.Event()
 
     def set_writes_enabled(self, enabled):
         if type(enabled) is not bool or self.publisher is None:
@@ -1103,6 +1139,9 @@ class RepriseService:
             data["refresh"] = config["refresh_result"]
         if config.get("media_version_ids"):
             data["media_version_ids"] = list(config["media_version_ids"])
+        note = recovery.describe(config.get(recovery.QUEUE_KEY) or {})
+        if note:
+            data["recovery"] = note
         outcome = self._analysis_outcome(job)
         if outcome:
             data["outcome"] = outcome
@@ -1144,18 +1183,34 @@ class RepriseService:
         found = [entry for entry in per_media if entry["state"] == "found"]
         suggested = [entry for entry in per_media if entry["state"] == "suggested"]
         failed = [entry for entry in per_media if entry["state"] == "failed"]
+        set_aside = [entry for entry in per_media if entry["state"] == "set_aside"]
         many = len(per_media) > 1
-        # A finished job only has failed entries for episodes whose file went missing or changed: the rest ran.
-        left_out = (
-            f" {len(failed)} {'episode' if len(failed) == 1 else 'episodes'} could not be analyzed "
-            "(file missing, changed or unavailable)."
-            if many and failed
-            else ""
-        )
-        if many and len(failed) == len(per_media):
+        if set_aside and not many:
+            return {"state": "failed", "message": set_aside[0]["message"], "per_media": per_media}
+        # A finished job only has failed entries for episodes it could not analyze (the file went missing or changed, or
+        # Reprise refuses the media) and set-aside ones for episodes a stop cut off too often: the rest ran.
+        left_out = ""
+        if many and failed:
+            left_out += (
+                f" {len(failed)} {'episode' if len(failed) == 1 else 'episodes'} could not be analyzed "
+                "(open each to see why)."
+            )
+        if many and set_aside:
+            one = len(set_aside) == 1
+            left_out += (
+                f" {len(set_aside)} {'episode was' if one else 'episodes were'} set aside after "
+                f"{recovery.MAX_ATTEMPTS} interrupted attempts; analyze {'it' if one else 'them'} again to retry."
+            )
+        if many and not set_aside and len(failed) == len(per_media):
             return {
                 "state": "failed",
                 "message": "No episode could be analyzed because its file is missing, changed or unavailable.",
+                "per_media": per_media,
+            }
+        if many and len(failed) + len(set_aside) == len(per_media):
+            return {
+                "state": "failed",
+                "message": "No episode could be analyzed. Open each one to see why.",
                 "per_media": per_media,
             }
         if found:
@@ -1172,7 +1227,8 @@ class RepriseService:
                 else suggested[0]["message"]
             )
             return {"state": "suggested", "message": message + left_out, "per_media": per_media}
-        message = f"Nothing found in {len(per_media) - len(failed)} episodes." if many else per_media[0]["message"]
+        analyzed = len(per_media) - len(failed) - len(set_aside)
+        message = f"Nothing found in {analyzed} episodes." if many else per_media[0]["message"]
         return {"state": "nothing_found", "message": message + left_out, "per_media": per_media}
 
     def get_job(self, job_id, principal=None):
@@ -1201,8 +1257,223 @@ class RepriseService:
         if action == "resume" and changed:
             from ..web.routes.job_runner import _start_job_async
 
+            # The owner takes over a job that waited or paused after a restart: the loop guard starts afresh.
+            self._queue_set(job_id, recovery.owner_resumed)
             _start_job_async(job_id)
         return self.get_job(job_id)
+
+    # ── restart recovery: a job keeps its place (see ``recovery``), so a restart is not a failure ──────────────────
+
+    def _queue(self, job_id):
+        """The job's saved place: what is done, what was cut off, what is left (``recovery``)."""
+        job = self.job_manager.get_job(job_id)
+        return recovery.queue_of(job.config if job else None)
+
+    def _queue_set(self, job_id, update):
+        """Change a job's saved queue with ``update(queue) -> queue`` and save it, under the one lock every writer of a
+        queue takes. Nothing is written when ``update`` changed nothing."""
+        with recovery.LOCK:
+            before = self._queue(job_id)
+            after = update(before)
+            if after != before:
+                self.job_manager.merge_job_config(job_id, {recovery.QUEUE_KEY: after})
+            return after
+
+    def _setting(self, key, default):
+        settings = getattr(self.registry, "settings", None)
+        return default if settings is None else settings.get(key, default)
+
+    def _auto_resume(self):
+        """Whether a restart carries unfinished analyses on by itself (the setting ``reprise_auto_resume``)."""
+        raw = self._setting("reprise_auto_resume", True)
+        return raw if isinstance(raw, bool) else str(raw).strip().lower() in ("true", "1", "yes")
+
+    def _resume_delay(self):
+        """Seconds the first resume waits after a start (``reprise_resume_delay_seconds``), so storage and Plex settle."""
+        try:
+            seconds = int(self._setting("reprise_resume_delay_seconds", recovery.DEFAULT_DELAY_SECONDS))
+        except (TypeError, ValueError):
+            return recovery.DEFAULT_DELAY_SECONDS
+        return max(0, min(recovery.MAX_DELAY_SECONDS, seconds))
+
+    def _processing_paused(self):
+        return bool(getattr(getattr(self.registry, "settings", None), "processing_paused", False))
+
+    def recover_after_restart(self, now=None):
+        """Settle the Reprise jobs the last stop left unfinished; returns the ids of those that will resume by themselves.
+
+        A restart no longer fails a running job (``JobManager.consume_interrupted_reprise_jobs``): it waits, with its
+        queue, for ``resume_after_restart``. An episode still marked running was cut off without warning and keeps the
+        attempt that was counted when it began. A preview is no queue: it is given up, to be created again.
+        """
+        now = now or datetime.now(UTC)
+        automatic = self._auto_resume()
+        waiting = []
+        for job in self.job_manager.consume_interrupted_reprise_jobs():
+            try:
+                if (job.config or {}).get("preview_request"):
+                    self.job_manager.complete_job(job.id, error=recovery.PREVIEW_INTERRUPTED)
+                    continue
+                held = self.job_manager.is_pause_requested(job.id)
+                self._queue_set(job.id, lambda queue, held=held: recovery.note_restart(queue, now, wait=not held))
+                if held:
+                    continue  # the owner (or a schedule) holds it: whoever resumes it, it carries on from its queue
+                if automatic:
+                    waiting.append(job.id)
+                else:
+                    self._pause_for_owner(job.id, "switched_off")
+            except Exception:
+                logger.exception("Reprise job {} could not be prepared to resume after the restart", job.id)
+                self._pause_for_owner(job.id, "resume_failed")
+        if waiting:
+            logger.info(
+                "{} Reprise job(s) stopped by the restart will resume in about {} seconds",
+                len(waiting),
+                self._resume_delay(),
+            )
+        return waiting
+
+    def _pause_for_owner(self, job_id, reason):
+        """Stop resuming a job by itself and give it to its owner: held like any paused job, with a plain notice."""
+        message = recovery.PAUSED_MESSAGES[reason]
+        try:
+            with recovery.LOCK:
+                self.job_manager.request_pause(job_id)
+                self._queue_set(job_id, lambda queue: recovery.pause(queue, reason))
+            self.job_manager.update_progress(job_id, current_item="")
+            self.job_manager.add_log(job_id, f"WARNING - {message}")
+        except Exception:
+            logger.exception("Reprise job {} could not be paused for its owner", job_id)
+        logger.warning("Reprise job {} is waiting for its owner: {}", job_id[:8], message)
+
+    def resume_after_restart(self, now=None):
+        """One pass over the jobs waiting to carry on after a restart: start those that may run, hand to their owner
+        those that must not run by themselves, leave the rest waiting. Returns ``(started, still_waiting)`` job ids.
+
+        Nothing starts while the media folders or Plex are unreachable (that wait is not an attempt and not a resume),
+        and a job that keeps stopping without finishing an episode is paused rather than started once more.
+        """
+        from ..web.routes.job_runner import _start_job_async
+
+        now = now or datetime.now(UTC)
+        started, waiting = [], []
+        for job in self.job_manager.get_all_jobs():
+            queue = recovery.queue_of(job.config)
+            if job.kind != "reprise" or job.status.value != "pending" or queue.get("recovery") != "waiting":
+                continue
+            try:
+                outcome = self._resume_one(job, queue, now, _start_job_async)
+            except Exception:
+                logger.exception("Reprise job {} could not be resumed", job.id)
+                self._pause_for_owner(job.id, "resume_failed")
+                continue
+            if outcome == "started":
+                started.append(job.id)
+            elif outcome == "waiting":
+                waiting.append(job.id)
+        return started, waiting
+
+    def _resume_one(self, job, queue, now, start):
+        """``"started"``, ``"waiting"`` (look again later) or None (no longer waiting for the resume pass)."""
+        if self.job_manager.is_pause_requested(job.id):
+            self._queue_set(job.id, recovery.release)  # taken by its owner: they resume it when they choose
+            return None
+        if self._processing_paused():
+            return "waiting"
+        blocked = self._resume_blocker(job)
+        if blocked:
+            if recovery.waited_too_long(queue, now):
+                self._pause_for_owner(job.id, "media_unavailable")
+                return None
+            if queue.get("blocked") != blocked:
+                self._queue_set(job.id, lambda current: recovery.block(current, blocked))
+            return "waiting"
+        reason = recovery.verdict(queue, job.config, now)
+        if reason:
+            self._pause_for_owner(job.id, reason)
+            return None
+        self._queue_set(job.id, lambda current: recovery.record_resume(current, now))
+        start(job.id)
+        return "started"
+
+    def _resume_libraries(self, job):
+        """The ``(server, library)`` pairs the job reads next: its library, or the libraries of its next episodes."""
+        config = job.config or {}
+        request = config.get("library_analysis_request") or config.get("refresh_request")
+        if request:
+            return {(request["server_id"], str(request["library_id"]))}
+        return {
+            (server_id, str(meta.get("library_id")))
+            for media_id in recovery.todo(config, recovery.CHECK_EPISODES)
+            for _, server_id, meta in self._bindings(media_id)
+        }
+
+    def _resume_blocker(self, job):
+        """``"plex"`` or ``"folders"`` while the media this job reads cannot be reached yet, else None."""
+        for server_id, library_id in sorted(self._resume_libraries(job)):
+            cfg, server = self.registry.get_config(server_id), self.registry.get(server_id)
+            if not cfg or not server:
+                continue  # the server is gone or off: the run says so, episode by episode
+            try:
+                reachable = server.test_connection().ok
+            except Exception:
+                reachable = False
+            if not reachable:
+                return "plex"
+            library = next((lib for lib in cfg.libraries if str(lib.id) == library_id), None)
+            roots = self._library_roots(cfg, library) if library else []
+            if roots and not any(_has_files(root) for root in roots):
+                return "folders"
+        return None
+
+    def start_resume_timer(self, delay_seconds=None):
+        """Resume the waiting jobs after the start-up delay, then look at them every few seconds until none waits."""
+        delay = self._resume_delay() if delay_seconds is None else delay_seconds
+        thread = threading.Thread(target=self._resume_when_ready, args=(delay,), name="reprise-resume", daemon=True)
+        thread.start()
+        return thread
+
+    def _resume_when_ready(self, delay):
+        stop = self._resume_stop
+        if stop.wait(delay):
+            return
+        try:
+            while True:
+                _, waiting = self.resume_after_restart()
+                if not waiting or stop.wait(recovery.POLL_SECONDS):
+                    return
+        except Exception:
+            logger.exception("Reprise could not resume the jobs the restart stopped")
+
+    def checkpoint_for_shutdown(self):
+        """The app was told to stop: leave every running analysis ready to be resumed, in the few seconds a stop allows.
+
+        The episode being analyzed is cut off by the stop, not by anything wrong with it: its attempt is given back, so a
+        deploy never counts toward setting an episode aside. One quick write per running job; the job itself stays
+        running, and the next start resumes it (a job is only failed or completed by what happened to its episodes).
+        """
+        self._resume_stop.set()
+        for job in self.job_manager.get_all_jobs():
+            running = recovery.queue_of(job.config).get("running")
+            if job.kind != "reprise" or job.status.value != "running" or not running:
+                continue
+            try:
+                self._queue_set(job.id, lambda queue, running=running: recovery.give_back(queue, running))
+            except Exception:
+                logger.opt(exception=True).warning("Could not checkpoint Reprise job {} for the stop", job.id[:8])
+
+    def _mark_set_aside(self, job_id, media_id):
+        """Say, on the episode itself, why it was not analyzed (the job's own notes carry the reason too)."""
+        try:
+            run = self.store.begin_analysis(media_id, job_id, "set-aside")
+        except Exception:
+            return
+        try:
+            self.store.fail_analysis(run, "cancelled", recovery.SET_ASIDE_REASON)
+        except Exception:
+            logger.opt(exception=True).debug("Could not record why episode {} was set aside", media_id)
+        finally:
+            self.store.release_analysis(run)
 
     def _run_refresh(self, job_id, request, pause_check, *, for_analysis=False, ffmpeg_path=None):
         from ..markers.freeze import Freeze
@@ -1432,13 +1703,17 @@ class RepriseService:
             return
         library_request = job.config.get("library_analysis_request")
         if library_request:
-            ids = self._run_refresh(job_id, library_request, paused, for_analysis=True, ffmpeg_path=ffmpeg_path)
+            # A library read before a restart is not read again: its episodes are in the job's saved queue.
+            ids = recovery.queue_of(job.config).get("ids")
             if ids is None:
-                return
-            if not ids:
-                if not self.job_manager.commit_if_active(job_id, lambda: None, complete=True):
-                    self.job_manager.cancel_job(job_id)
-                return
+                ids = self._run_refresh(job_id, library_request, paused, for_analysis=True, ffmpeg_path=ffmpeg_path)
+                if ids is None:
+                    return
+                if not ids:
+                    if not self.job_manager.commit_if_active(job_id, lambda: None, complete=True):
+                        self.job_manager.cancel_job(job_id)
+                    return
+                self._queue_set(job_id, lambda current: {**current, "ids": list(ids)})
         if job.config.get("preview_request"):
             from .preview import build_preview
 
@@ -1483,12 +1758,18 @@ class RepriseService:
         if not library_request:
             ids = job.config["media_version_ids"]
         lookups = self._online_lookups()
-        left_out = {"skipped": 0, "skipped_items": []}
+        queue = recovery.queue_of(job.config)
+        saved = job.config.get("analysis_result") or {}
+        # What the job left out before a restart stays in its notes, so they carry on rather than start again.
+        left_out = {"skipped": int(saved.get("skipped") or 0), "skipped_items": list(saved.get("skipped_items") or [])}
         finished = False
 
-        def leave_out(media_id, code, bindings):
-            """One episode whose file is gone, changed or unreachable: say so on it and on the job, and go on."""
-            stale = _stale(code)
+        def settle(index, media_id, outcome):
+            """Episode ``index`` is dealt with, however it ended: the job's saved place moves past it."""
+            self._queue_set(job_id, lambda current: recovery.settle(current, index, media_id, outcome))
+
+        def note_skipped(media_id, bindings, reason):
+            """Name an episode this job did not analyze, and why, in the job's notes."""
             meta = bindings[0][2] if bindings else {}
             info = {
                 "grandparentTitle": meta.get("show_title"),
@@ -1497,49 +1778,86 @@ class RepriseService:
                 "index": meta.get("episode"),
                 "ratingKey": media_id,
             }
-            self._record_outcome(job_id, media_id, "failed", f"{stale['message']} {stale['next']}")
             left_out["skipped"] += 1
             if len(left_out["skipped_items"]) < _SKIPPED_ITEMS_KEPT:
-                left_out["skipped_items"].append(
-                    {"episode": _episode_label(info), "reason": stale["message"].rstrip(".")}
-                )
+                left_out["skipped_items"].append({"episode": _episode_label(info), "reason": reason.rstrip(".")})
             self.job_manager.merge_job_config(
                 job_id, {"analysis_result": {**left_out, "skipped_items": list(left_out["skipped_items"])}}
             )
+
+        def leave_out(index, media_id, code, bindings):
+            """One episode whose file is gone, changed or unreachable: say so on it and on the job, and go on."""
+            stale = _stale(code)
+            self._record_outcome(job_id, media_id, "failed", f"{stale['message']} {stale['next']}")
+            note_skipped(media_id, bindings, stale["message"])
+            settle(index, media_id, recovery.FILE_LEFT_OUT)
             logger.warning("Analysis left out episode {}: {}", media_id, code)
 
+        def refuse(index, media_id, bindings, reason):
+            """An episode Reprise cannot analyze (media it will not compare, a format it cannot read): the reason is
+            recorded once, on the episode and on the job. It is not tried again by itself, and the others go on."""
+            self._record_outcome(job_id, media_id, "failed", reason)
+            note_skipped(media_id, bindings, reason)
+            settle(index, media_id, recovery.REFUSED)
+            logger.warning("Analysis refused episode {}: {}", media_id, reason)
+
+        def set_aside(index, media_id, bindings):
+            """An episode whose analysis was cut off as often as a job allows: it is left alone, with the reason said, so
+            one episode that keeps stopping the app never holds up the rest."""
+            self._record_outcome(job_id, media_id, "set_aside", recovery.SET_ASIDE_REASON)
+            note_skipped(media_id, bindings, recovery.SET_ASIDE_REASON)
+            self._mark_set_aside(job_id, media_id)
+            settle(index, media_id, recovery.SET_ASIDE)
+            logger.warning(
+                "Analysis set aside episode {} after {} interrupted attempts", media_id, recovery.MAX_ATTEMPTS
+            )
+
+        def stop_here(analysis_id, media_id):
+            """The app is stopping and cut this episode off. That is not a failure: its run ends as interrupted (the way
+            the startup cleanup ends one), the attempt is given back, and the job stays running for the next start."""
+            try:
+                self.store.fail_analysis(analysis_id, "cancelled", recovery.INTERRUPTED_REASON)
+            except Exception:
+                logger.opt(exception=True).debug("The stopped run of episode {} had already ended", media_id)
+            self._queue_set(job_id, lambda current: recovery.give_back(current, media_id))
+
         def finish(commit, last):
-            """Commit one result atomically with the cancellation check; after the last episode the job completes, with
-            a warning when episodes were left out."""
+            """Commit one result atomically with the cancellation check; after the last episode the job completes: with a
+            warning when episodes were left out, and as failed when every episode that ran was refused."""
             nonlocal finished
-            if not last:
-                return self.job_manager.commit_if_active(job_id, commit)
+            # The queue's lock is taken before the job manager's, which ``commit_if_active`` holds while it commits.
+            with recovery.LOCK:
+                if not last:
+                    return self.job_manager.commit_if_active(job_id, commit)
 
-            def done():
-                commit()
-                count = left_out["skipped"]
-                one = count == 1
-                self.job_manager.complete_job(
-                    job_id,
-                    warning=(
-                        f"{count} {'episode was' if one else 'episodes were'} not analyzed because "
-                        f"{'its' if one else 'their'} file is missing, changed or unavailable. "
-                        f"Refresh the library, then analyze {'it' if one else 'them'} again."
-                    )
-                    if count
-                    else None,
-                )
+                def done():
+                    commit()
+                    counts = recovery.counts_of(self._queue(job_id))
+                    if counts[recovery.REFUSED] and not counts[recovery.RESULT]:
+                        self.job_manager.complete_job(job_id, error="Analysis did not complete")
+                    else:
+                        self.job_manager.complete_job(job_id, warning=_unfinished_warning(counts))
 
-            finished = self.job_manager.commit_if_active(job_id, done)
-            return finished
+                finished = self.job_manager.commit_if_active(job_id, done)
+                return finished
 
-        for index, mid in enumerate(ids):
+        # Episodes finished before a restart are not done again: the job's queue says where it stood, and the store knows
+        # the one whose result was saved just before the stop.
+        resumed = any(queue.get(key) for key in ("next", "attempts", "running", "recovery"))
+        saved_before = self.store.finished_in_job(job_id) if resumed else frozenset()
+        for index in range(min(recovery.position(queue), len(ids)), len(ids)):
+            mid = ids[index]
             from ..markers.freeze import Freeze
 
             Freeze.of(paused).hold(cancel_check=lambda: self.job_manager.is_cancellation_requested(job_id))
             if self.job_manager.is_cancellation_requested(job_id):
                 self.job_manager.cancel_job(job_id)
                 return
+            if is_shutting_down():
+                return  # no new episode starts while the app stops; the next start carries on from here
+            if mid in saved_before:
+                settle(index, mid, recovery.RESULT)
+                continue
             version = self.store.get_media(mid)
             bindings = all_bindings = self._bindings(mid)
             if library_request:
@@ -1557,7 +1875,10 @@ class RepriseService:
                     if bindings
                     else (self._unavailable_code(version, all_bindings) or "library_changed")
                 )
-                leave_out(mid, code, all_bindings)
+                leave_out(index, mid, code, all_bindings)
+                continue
+            if recovery.exhausted(self._queue(job_id), mid):
+                set_aside(index, mid, all_bindings)
                 continue
             meta = bindings[0][2]
             candidates = [CandidateWindow(**c) for c in meta.get("candidates", [])]
@@ -1618,7 +1939,11 @@ class RepriseService:
                     + json.dumps({k: [asdict(w) for w in v] for k, v in sorted(online_windows.items())})
                 ).encode()
             ).hexdigest()
-            aid = self.store.begin_analysis(mid, job_id, signature)
+            with recovery.LOCK:
+                if is_shutting_down():
+                    return  # the stop came while this episode was prepared: nothing was started, nothing to undo
+                self._queue_set(job_id, lambda current, mid=mid: recovery.begin(current, mid))
+                aid = self.store.begin_analysis(mid, job_id, signature)
             recorded_failure = False
             try:
                 draft = analyze(
@@ -1636,6 +1961,11 @@ class RepriseService:
                     owner_keeps=owner_keeps,
                     online=online_windows,
                 )
+                if is_shutting_down():
+                    # The stop killed ffmpeg along with the app, so this draft may be cut short, whatever its status: it
+                    # is not saved, and the episode is done again at the next start.
+                    stop_here(aid, mid)
+                    return
                 if draft.status != "complete":
                     why = draft.reasons or (
                         {
@@ -1649,16 +1979,23 @@ class RepriseService:
                     if draft.status == "cancelled":
                         self.job_manager.cancel_job(job_id)
                         return
-                    self._record_outcome(job_id, mid, "failed", why[0])
-                    raise RuntimeError("Analysis did not complete")
+                    # A file that went missing or changed while it was read is this episode's problem, not the job's;
+                    # so is media Reprise will not compare. Either is recorded once, and the others go on.
+                    code = self._unavailable_code(version, bindings)
+                    if code is None:
+                        refuse(index, mid, bindings, why[0])
+                    else:
+                        leave_out(index, mid, code, bindings)
+                    continue
                 elif not any(self._valid_binding(version, *b) for b in bindings):
                     raise ValueError("Media changed during analysis")
                 else:
                     reasons = [no_comparison_note if reason == NO_REFERENCES else reason for reason in draft.reasons]
 
-                    def commit(aid=aid, draft=draft, version=version, reasons=reasons):
+                    def commit(aid=aid, draft=draft, version=version, reasons=reasons, index=index):
                         self.store.finish_analysis(aid, draft.evidence, draft.ranges, version.id, reasons)
                         self._record_outcome(job_id, version.id, *_analysis_summary(draft.ranges, reasons))
+                        settle(index, version.id, recovery.RESULT)
 
                     committed = finish(commit, index == len(ids) - 1)
                     if not committed:
@@ -1667,6 +2004,9 @@ class RepriseService:
                         self.job_manager.cancel_job(job_id)
                         return
             except Exception:
+                if is_shutting_down():
+                    stop_here(aid, mid)
+                    return
                 if not recorded_failure:
                     self.store.fail_analysis(aid, "failed", "Analysis failed or media changed")
                     self._record_outcome(job_id, mid, "failed", "Analysis failed or media changed")
@@ -1674,7 +2014,7 @@ class RepriseService:
                 code = self._unavailable_code(version, bindings)
                 if code is None:
                     raise
-                leave_out(mid, code, bindings)
+                leave_out(index, mid, code, bindings)
                 continue
             finally:
                 self.store.release_analysis(aid)

@@ -24,6 +24,7 @@ from .models import (
     PlaybackIdentity,
     ReviewRefused,
 )
+from .recovery import INTERRUPTED_REASON
 from .uniqueness import COMPARISON_KEY
 from .verification_profile import POLICY_VERSION, is_current_profile
 
@@ -611,11 +612,23 @@ class RepriseStore:
         ended = 0
         for run in stale:
             try:
-                self.fail_analysis(run, "cancelled", "Analysis was interrupted before it finished")
+                self.fail_analysis(run, "cancelled", INTERRUPTED_REASON)
             except RevisionConflict:
                 continue  # it finished, or another read ended it, since the rows were read
             ended += 1
         return ended
+
+    def finished_in_job(self, job_id):
+        """The episodes this job already analyzed to a result (not cut off, not refused): a job that carries on after
+        a restart does not analyze them again."""
+        with self.marker_store._reading(snapshot=True) as c:
+            return {
+                row["version_id"]
+                for row in c.execute(
+                    "SELECT DISTINCT version_id FROM reprise_analysis_runs WHERE job_id=? AND status=?",
+                    (job_id, "complete"),
+                )
+            }
 
     def finish_analysis(self, analysis_id, evidence, ranges, expected_media_version, reasons=()):
         evidence, ranges, reasons = tuple(evidence), tuple(ranges), list(reasons)

@@ -283,7 +283,7 @@ def test_pending_scheduled_analysis_deduplicates_redacts_and_can_be_cancelled(sc
     assert fixture.service.control_job(first["id"], "cancel")["status"] == "cancelled"
 
 
-def test_scheduled_work_persists_private_paths_and_fails_closed_after_started_restart(tmp_path, monkeypatch):
+def test_scheduled_work_persists_private_paths_and_is_handed_to_reprise_after_a_restart(tmp_path, monkeypatch):
     monkeypatch.setattr(jobs.JobManager, "_start_activity_timer", lambda self: None)
     manager = jobs.JobManager(str(tmp_path))
     request = {"server_id": "server", "library_id": "1", "candidate_paths": ["/private/episode.mkv"]}
@@ -298,11 +298,14 @@ def test_scheduled_work_persists_private_paths_and_fails_closed_after_started_re
         loaded = reopened.get_job(started.id)
         assert loaded.config["library_analysis_request"]["candidate_paths"] == ["/private/episode.mkv"]
         assert "/private/episode.mkv" not in json.dumps(loaded.to_dict())
-        revived = reopened.requeue_interrupted_jobs(max_age_minutes=60)
-        assert [job.id for job in revived] == [waiting.id]
+        # A restart neither fails the job that was running nor revives either one blindly: Reprise takes both over
+        # and resumes them from what each saved.
+        assert reopened.requeue_interrupted_jobs(max_age_minutes=60) == []
         reopened.fail_unrevived_interrupted_jobs("reprise")
-        assert reopened.get_job(started.id).status is jobs.JobStatus.FAILED
+        assert reopened.get_job(started.id).status is jobs.JobStatus.PENDING
         assert reopened.get_job(waiting.id).status is jobs.JobStatus.PENDING
+        assert {job.id for job in reopened.consume_interrupted_reprise_jobs()} == {started.id, waiting.id}
+        assert reopened.consume_interrupted_reprise_jobs() == []
     finally:
         reopened.close()
 

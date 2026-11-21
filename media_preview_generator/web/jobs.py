@@ -27,7 +27,7 @@ from typing import Any, Optional, cast
 
 from loguru import logger
 
-from ..job_kinds import JOB_KIND_LOUDNESS, JOB_KIND_PREVIEWS, parse_job_kind
+from ..job_kinds import JOB_KIND_LOUDNESS, JOB_KIND_PREVIEWS, JOB_KIND_REPRISE, parse_job_kind
 from ..shutdown import is_shutting_down
 from ..sqlite_maintenance import ensure_incremental_autovacuum, reclaim_space
 from ..utils import redact_secrets
@@ -542,11 +542,16 @@ class Job:
     def to_dict(self) -> dict:
         """Serialize to dictionary."""
         config = self.config
-        if self.kind == "reprise" and (config or {}).get("library_analysis_request"):
+        if self.kind == JOB_KIND_REPRISE and config:
             config = dict(config)
-            request = dict(config["library_analysis_request"])
-            request.pop("candidate_paths", None)
-            config["library_analysis_request"] = request
+            if config.get("library_analysis_request"):
+                request = dict(config["library_analysis_request"])
+                request.pop("candidate_paths", None)
+                config["library_analysis_request"] = request
+            queue = config.get("reprise_queue")
+            if isinstance(queue, dict) and "ids" in queue:
+                # A whole library's episode list is long, and nothing that reads a job needs it.
+                config["reprise_queue"] = {key: value for key, value in queue.items() if key != "ids"}
         return {
             "id": self.id,
             "status": self.status.value,
@@ -902,6 +907,10 @@ class JobManager:
         # remaining "chain head with no living child" cases. Surfaced
         # via ``interrupted_retry_chains()``.
         self._interrupted_retry_chains: list[Job] = []
+        # Reprise jobs that were pending or running at load time. Reprise keeps its own place in a job (its saved
+        # queue) and carries it on itself, so these are handed over through ``consume_interrupted_reprise_jobs``
+        # instead of being revived or failed with the generic jobs.
+        self._interrupted_reprise_jobs: list[Job] = []
 
         # Set when the saved jobs could not be read: an empty job list then says nothing about which logs are orphans.
         self._jobs_load_failed = False
@@ -1041,6 +1050,16 @@ class JobManager:
                 job.completed_at = datetime.now(UTC).isoformat()
                 needs_resave.append(job)
                 retry_interrupted_count += 1
+                self._jobs[job.id] = job
+                continue
+            # A Reprise job that was running when the app stopped is not failed: it goes back to waiting and Reprise
+            # resumes it from its saved queue (see ``consume_interrupted_reprise_jobs``).
+            if job.kind == JOB_KIND_REPRISE and job.status in (JobStatus.PENDING, JobStatus.RUNNING):
+                if job.status == JobStatus.RUNNING:
+                    job.status = JobStatus.PENDING
+                    job.progress.current_item = ""
+                    needs_resave.append(job)
+                self._interrupted_reprise_jobs.append(job)
                 self._jobs[job.id] = job
                 continue
             # Mark any "running" jobs as failed on startup (interrupted by
@@ -1621,10 +1640,6 @@ class JobManager:
         not_revived: list[Job] = []
 
         for job in self._interrupted_jobs:
-            if job.kind == "reprise" and (job.config or {}).get("library_analysis_request") and job.started_at:
-                # A discovery/analysis run interrupted mid-flight must not restart itself.
-                not_revived.append(job)
-                continue
             # Check age — skip stale jobs.  Use started_at (when
             # available) so long-running jobs aren't wrongly considered
             # "too old" based on their creation timestamp.
@@ -1808,6 +1823,16 @@ class JobManager:
         chains = list(self._interrupted_retry_chains)
         self._interrupted_retry_chains = []
         return chains
+
+    def consume_interrupted_reprise_jobs(self) -> list[Job]:
+        """Pop the Reprise jobs that were pending or running when the app last stopped, once per boot.
+
+        They are PENDING again (a running one is no longer marked failed). Reprise decides, from the queue each one
+        saved, what carries on and when; nothing else starts them.
+        """
+        jobs = list(self._interrupted_reprise_jobs)
+        self._interrupted_reprise_jobs = []
+        return jobs
 
     def get_job(self, job_id: str) -> Job | None:
         """Get a job by ID."""

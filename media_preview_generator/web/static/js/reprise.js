@@ -339,7 +339,8 @@
         analyzeBtn.classList.toggle('primary', !r || r.analysis_status !== 'complete' || !!stale);
         if (job) {
             const pct = typeof job.progress?.percent === 'number' ? Math.max(0, Math.min(100, job.progress.percent)) : null;
-            return setOutcome(job.status === 'running' ? 'running' : 'queued', job.status === 'running' ? 'Analyzing this episode…' : 'Waiting for its turn to be analyzed…',
+            const held = job.recovery && job.recovery.state !== 'resumed' ? job.recovery.message : '';
+            return setOutcome(job.status === 'running' ? 'running' : 'queued', job.status === 'running' ? 'Analyzing this episode…' : held || 'Waiting for its turn to be analyzed…',
                 'A season with many episodes can take several minutes. You can leave this page; the results will be here when it finishes.', box => {
                     if (pct != null && job.status === 'running') { const bar = el('div', null, 'rp-bar'); bar.append(el('span')); bar.firstChild.style.width = pct + '%'; bar.setAttribute('role', 'progressbar'); bar.setAttribute('aria-valuenow', String(Math.round(pct))); box.append(bar); }
                     if (job.progress?.current_item) box.append(el('p', job.progress.current_item));
@@ -624,12 +625,15 @@
     }
     function renderJobRow(job) {
         const terminal = terminalJob(job.status), { title, detail, notes = [] } = describeJob(job);
+        /* After a restart a job waits, carries on or pauses by itself, and its own sentence says which: a restart never reads as a failure. */
+        const recovery = job.recovery && typeof job.recovery === 'object' ? job.recovery : null, held = recovery && recovery.state !== 'resumed';
+        if (terminal && recovery && recovery.state === 'resumed') notes.unshift(recovery.message + '.');
         const row = el('div', null, 'rp-job'), main = el('div', null, 'rp-job-main'); row.dataset.status = job.status;
         main.append(el('strong', title));
         const pct = typeof job.progress?.percent === 'number' ? Math.max(0, Math.min(100, job.progress.percent)) : null;
         const when = job.created_at ? new Date(job.created_at) : null, ago = when && !Number.isNaN(+when) ? when.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : '';
         const status = terminal ? (detail || (job.status === 'completed' ? 'Finished.' : job.status)) :
-            [job.status === 'running' ? 'Running' : 'Waiting', job.pause_requested ? 'pause requested' : '', pct != null && job.status === 'running' ? Math.round(pct) + '%' : '', job.progress?.current_item || ''].filter(Boolean).join(' · ');
+            [held ? recovery.message : job.status === 'running' ? 'Running' : 'Waiting', !held && job.pause_requested ? 'pause requested' : '', recovery && !held ? recovery.message : '', pct != null && job.status === 'running' ? Math.round(pct) + '%' : '', job.progress?.current_item || ''].filter(Boolean).join(' · ');
         main.append(el('span', status + (terminal && ago ? ` (${ago})` : ''), 'rp-note'));
         if (terminal && notes.length) { const list = el('ul', null, 'rp-job-warn rp-note'); notes.forEach(note => list.append(el('li', note))); main.append(list); }
         if (!terminal && pct != null && job.status === 'running') { const bar = el('div', null, 'rp-bar'); const fill = el('span'); fill.style.width = pct + '%'; bar.append(fill); bar.setAttribute('role', 'progressbar'); bar.setAttribute('aria-valuenow', String(Math.round(pct))); bar.setAttribute('aria-label', title); main.append(bar); }

@@ -19,7 +19,7 @@ from flask_wtf.csrf import CSRFProtect
 from loguru import logger
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from ..job_kinds import JOB_KIND_INTRO_CREDITS, JOB_KIND_LOUDNESS, JOB_KIND_PREVIEWS, JOB_KIND_REPRISE
+from ..job_kinds import JOB_KIND_INTRO_CREDITS, JOB_KIND_LOUDNESS, JOB_KIND_PREVIEWS
 from ..nodes.protocol import APP_INSTANCE_HEADER
 from ..shutdown import on_shutdown
 from .auth import initialize_auth, install_auth_hooks
@@ -507,10 +507,6 @@ def _fail_unrevived_own_runner_jobs() -> None:
             type(exc).__name__,
             exc,
         )
-    try:
-        get_job_manager().fail_unrevived_interrupted_jobs(JOB_KIND_REPRISE)
-    except Exception as exc:
-        logger.warning("Couldn't settle interrupted Reprise jobs ({}: {})", type(exc).__name__, exc)
 
 
 def _end_interrupted_reprise_analyses(store) -> None:
@@ -526,6 +522,26 @@ def _end_interrupted_reprise_analyses(store) -> None:
         return
     if ended:
         logger.info("Ended {} Reprise analysis run(s) the restart interrupted; analyze those episodes again", ended)
+
+
+def _resume_reprise_after_restart(service) -> None:
+    """Carry on the Reprise jobs the restart left unfinished, and have them checkpointed again when the app stops.
+
+    Reprise jobs keep their place, so a restart is not a failure: they wait a moment for the media folders and Plex to
+    come back, then resume (``RepriseService.resume_after_restart``). Its own failure is logged and never stops the
+    app from starting.
+    """
+    on_shutdown(service.checkpoint_for_shutdown, name="reprise")
+    try:
+        if service.recover_after_restart():
+            service.start_resume_timer()
+    except Exception as exc:
+        logger.warning(
+            "Couldn't prepare the Reprise jobs the restart interrupted for resuming ({}: {}). They stay waiting in "
+            "Library, Activity; cancel them there and analyze again if they don't start",
+            type(exc).__name__,
+            exc,
+        )
 
 
 def _fail_unrevived_preview_jobs() -> None:
@@ -923,6 +939,7 @@ def create_app(config_dir: str | None = None) -> Flask:
     set_service(reprise_service)
     app.extensions["reprise"] = reprise_service
     app.register_blueprint(create_reprise_blueprint(reprise_service))
+    _resume_reprise_after_restart(reprise_service)
 
     @app.context_processor
     def _inject_navbar_version() -> dict:

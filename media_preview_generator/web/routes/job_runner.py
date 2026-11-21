@@ -14,10 +14,11 @@ from datetime import UTC, datetime, timedelta
 
 from loguru import logger
 
-from ...job_kinds import JOB_KIND_INTRO_CREDITS, JOB_KIND_LOUDNESS, JOB_KIND_PREVIEWS
+from ...job_kinds import JOB_KIND_INTRO_CREDITS, JOB_KIND_LOUDNESS, JOB_KIND_PREVIEWS, JOB_KIND_REPRISE
 from ...jobs.orchestrator import SUCCESS_OUTCOME_KEYS, count_successes
 from ...jobs.parking import JobParked
 from ...processing.retry_queue import scaled_backoff_delay
+from ...reprise.recovery import holds_start
 from ...scan_filters import FILTER_CONFIG_KEYS
 from ..job_gate import format_wait_message, release_slot
 from ..jobs import (
@@ -612,6 +613,10 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
     # A retry head summarizes its children; its original scope must never run again.
     # Check identity, not last_outcome, which changes while a child finishes.
     if (queued.config or {}).get("is_retry_chain"):
+        return
+    # A Reprise job waiting to resume after a restart starts only from its own resume pass, once the media is there
+    # and the restart is not a loop: a drain of the pending queue or a Resume all must not start it earlier.
+    if queued.kind == JOB_KIND_REPRISE and holds_start(queued.config):
         return
     if queued.kind == JOB_KIND_INTRO_CREDITS:
         from ...markers.job_runner import start_intro_credits_job_async

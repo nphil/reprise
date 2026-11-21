@@ -242,6 +242,8 @@ These are the top-level keys `POST /api/settings` accepts, besides `frame_reuse`
 | `webhook_retry_delay` | Processing → Retry policy → Initial retry delay | `30` | Base delay in seconds (the page allows 10–300). At 30, retries wait 1 min, 2 min, 5 min, 15 min, then 1 h. |
 | `auto_requeue_on_restart` | Processing → Restart recovery | `true` | Re-queue jobs a restart interrupted. |
 | `requeue_max_age_minutes` | Processing → Restart recovery → Max requeue age | `720` | Interrupted jobs older than this are marked failed instead. The page allows 5–1440. |
+| `reprise_auto_resume` | Not on a settings page | `true` | Reprise only. Carry on an analysis or library refresh a restart interrupted, by itself, once Plex and the media folders can be reached. `false` leaves it paused ("Analysis was stopped by a restart. Resume when ready.") until the owner presses Resume. Independent of `auto_requeue_on_restart`. |
+| `reprise_resume_delay_seconds` | Not on a settings page | `120` | Reprise only. How long after start-up an interrupted analysis waits before it resumes by itself, so Plex and the media folders are up first. `0`–`3600`. |
 | `scan_workers` | Processing → Library scanning → Files checked at once | `0` (Auto) | Full scans only: how many files are checked in parallel for an existing preview. Checking is light disk I/O and adds no FFmpeg or GPU load. `0` = Auto (`max(32, workers)`). Otherwise 1–256. Lower it on a single spinning disk. |
 | `thumbnail_interval` | Processing → Thumbnails | `10` | Seconds between preview images. The page allows 1–60. |
 | `thumbnail_quality` | Processing → Thumbnails | `4` | Preview quality 1–10, lower = better quality (2 = highest) |
@@ -1410,6 +1412,8 @@ the separate master hold.
 Persisted pending capacity waits and their saved checkpoints are restored independently of
 `auto_requeue_on_restart`. Pending dependency followers also retain their waiting state. This does not clear manual,
 schedule or global holds. Ordinary interrupted running jobs continue to follow the automatic crash-requeue setting.
+Reprise analysis and refresh jobs are the exception: they are recovered on their own (see `reprise_auto_resume`) and
+ignore both `auto_requeue_on_restart` and `requeue_max_age_minutes`.
 
 ### Nodes Endpoints
 

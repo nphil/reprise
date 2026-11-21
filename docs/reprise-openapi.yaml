@@ -441,6 +441,14 @@ components:
         created_at: {type: string}
         message: {type: string, nullable: true, description: A plain sentence when the job failed or was cancelled}
         media_version_ids: {type: array, items: {type: string}, description: The episodes an analysis job was asked to analyze}
+        recovery:
+          type: object
+          nullable: true
+          description: Present when a restart interrupted the job. waiting = it resumes by itself once the start-up delay has passed and the media can be reached; resumed = it was resumed (the note stays on the job); paused = it waits for its owner (POST .../resume)
+          properties:
+            state: {type: string, enum: [waiting, resumed, paused]}
+            reason: {type: string, enum: [kept_stopping, media_unavailable, switched_off, resume_failed], description: Only when paused}
+            message: {type: string}
         outcome:
           type: object
           nullable: true
@@ -454,7 +462,7 @@ components:
                 type: object
                 properties:
                   id: {type: string}
-                  state: {type: string, enum: [found, suggested, nothing_found, failed, cancelled]}
+                  state: {type: string, enum: [found, suggested, nothing_found, failed, cancelled, set_aside]}
                   message: {type: string}
     ClientCreate:
       type: object
