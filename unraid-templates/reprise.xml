@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>Reprise</Name>
-  <Repository>ghcr.io/nphil/reprise@sha256:6d9de136792d1b7036d9356641fcc264344a103f3a34e20772a92942753e1602</Repository>
+  <Repository>ghcr.io/nphil/reprise@sha256:007c22cadcb59d8a6b37db021af6c56f5f322c5817c953a711e937e7c1f77813</Repository>
   <Registry>https://github.com/nphil/reprise/pkgs/container/reprise</Registry>
   <Network>bridge</Network>
   <Privileged>false</Privileged>
