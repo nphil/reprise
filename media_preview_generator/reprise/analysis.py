@@ -1618,8 +1618,8 @@ def _analyze(
                 why = NOT_CONFIRMED
             reasons.append(_suggestion_note(window, suggested_by[window], why))
         for kind, found in facts.items():
-            of_kind = [r for r in ranges if r.kind == kind]
-            if not any(r.action == "skip" and r.origin == "detector" for r in of_kind) and is_one_of_a_kind(
+            kind_ranges = [r for r in ranges if r.kind == kind]
+            if not any(r.action == "skip" and r.origin == "detector" for r in kind_ranges) and is_one_of_a_kind(
                 found, sum(w.end_ms - w.start_ms for w in suggested if w.kind == kind)
             ):
                 reasons.append(_one_of_a_kind_note(kind, found))
