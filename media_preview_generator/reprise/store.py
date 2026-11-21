@@ -10,6 +10,8 @@ import uuid
 from dataclasses import asdict, replace
 from datetime import datetime
 
+from loguru import logger
+
 from .admission import pair_provenance
 from .identity import is_current
 from .models import (
@@ -22,7 +24,11 @@ from .models import (
     PlaybackIdentity,
     ReviewRefused,
 )
+from .uniqueness import COMPARISON_KEY
 from .verification_profile import POLICY_VERSION, is_current_profile
+
+# The one-time repair of results that overlap an owner's lock (see ``RepriseStore._repair_locked_overlaps``).
+LOCK_REPAIR = "locked-overlap-1"
 
 DEFAULT_SCOPES = ("results:read", "jobs:read")
 ALLOWED_SCOPES = frozenset((*DEFAULT_SCOPES, "analysis:request"))
@@ -88,6 +94,46 @@ def _validate_range(r, duration):
         raise ValueError("invalid decision range")
 
 
+def _merged(spans):
+    """Overlapping or touching ``(start, end)`` spans as one, in order."""
+    merged = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _cut_back_to_locks(ranges, locks):
+    """``ranges`` with what overlaps a locked skip of the same kind cut away: the owner's lock wins, so a new run's
+    pieces never overlap it. A range wholly inside a lock goes; one it overlaps keeps the rest (a lock in its middle
+    leaves two, the second with ``<id>~1``); a cut approval falls back to proposed, since the range changed."""
+    locked = {
+        kind: _merged((r.start_ms, r.end_ms) for r in locks if r.kind == kind) for kind in {r.kind for r in locks}
+    }
+    cut = []
+    for r in ranges:
+        pieces = [(r.start_ms, r.end_ms)]
+        for lo, hi in locked.get(r.kind, ()):
+            pieces = [p for a, b in pieces for p in ((a, min(b, lo)), (max(a, hi), b)) if p[0] < p[1]]
+        if pieces == [(r.start_ms, r.end_ms)]:
+            cut.append(r)
+            continue
+        for number, (start, end) in enumerate(pieces):
+            cut.append(
+                replace(
+                    r,
+                    id=r.id if number == 0 else f"{r.id}~{number}",
+                    start_ms=start,
+                    end_ms=end,
+                    terminal=r.terminal and end == r.end_ms,
+                    review_status="proposed" if r.review_status == "approved" else r.review_status,
+                )
+            )
+    return cut
+
+
 class RepriseStore:
     def __init__(self, existing_marker_store):
         self.marker_store = existing_marker_store
@@ -107,11 +153,54 @@ class RepriseStore:
                 "CREATE TABLE IF NOT EXISTS reprise_manual_overrides (version_id TEXT NOT NULL, range_id TEXT NOT NULL, data TEXT NOT NULL, actor TEXT NOT NULL, quarantined INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(version_id,range_id))",
                 "CREATE TABLE IF NOT EXISTS reprise_api_clients (id TEXT PRIMARY KEY, name TEXT NOT NULL, scopes TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, revoked INTEGER NOT NULL DEFAULT 0)",
                 "CREATE TABLE IF NOT EXISTS reprise_online_answers (source TEXT NOT NULL, lookup_key TEXT NOT NULL, status TEXT NOT NULL, candidates TEXT NOT NULL, parser_version INTEGER NOT NULL, fetched_at TEXT NOT NULL, PRIMARY KEY(source,lookup_key))",
+                "CREATE TABLE IF NOT EXISTS reprise_repairs (name TEXT PRIMARY KEY)",
             ):
                 c.execute(sql)
             # Every status lookup asks for one version's bindings. Without this the answer was a scan of every binding
             # (about 40 ms at 4,000 episodes), which made a 100-row Library page cost seconds once rows had results.
             c.execute("CREATE INDEX IF NOT EXISTS reprise_bindings_version ON reprise_bindings(version_id, active)")
+
+        self._repair_locked_overlaps()
+
+    def _repair_locked_overlaps(self):
+        """Once, cut back what an earlier re-analysis left overlapping an owner's lock: it kept the locked range and
+        added the new run's pieces of the same kind beside it. Only ranges the owner did not decide are cut (an
+        approval of a range that has to change falls back to proposed); locks, manual ranges, overrides and keeps the
+        owner reviewed are untouched. A result that changes gets a new revision."""
+        try:
+            with self.transaction() as c:
+                if c.execute("SELECT 1 FROM reprise_repairs WHERE name=?", (LOCK_REPAIR,)).fetchone():
+                    return
+                c.execute("INSERT INTO reprise_repairs VALUES (?)", (LOCK_REPAIR,))
+                repaired = 0
+                for row in c.execute(
+                    "SELECT DISTINCT version_id FROM reprise_ranges WHERE data LIKE '%\"locked\":true%'"
+                ).fetchall():
+                    version_id = row["version_id"]
+                    stored = [
+                        _range(json.loads(x["data"]))
+                        for x in c.execute("SELECT data FROM reprise_ranges WHERE version_id=?", (version_id,))
+                    ]
+                    locks = [r for r in stored if r.locked and r.action == "skip"]
+                    overrides = self._override_ids(c, version_id)
+                    loose = [r for r in stored if not _owner_decided(r, overrides)]
+                    cut = _cut_back_to_locks(loose, locks)
+                    if cut == loose:
+                        continue
+                    for r in loose:
+                        c.execute("DELETE FROM reprise_ranges WHERE version_id=? AND id=?", (version_id, r.id))
+                    for r in cut:
+                        c.execute("INSERT INTO reprise_ranges VALUES (?,?,?)", (version_id, r.id, _json(asdict(r))))
+                    c.execute(
+                        "UPDATE reprise_decision_results SET revision=revision+1 WHERE version_id=?", (version_id,)
+                    )
+                    repaired += 1
+                if repaired:
+                    logger.info(
+                        "Reprise cut back the overlapping new pieces beside an owner's lock in {} results", repaired
+                    )
+        except Exception as exc:
+            logger.warning("Reprise could not repair results that overlap an owner's lock: {}", exc)
 
     def transaction(self):
         return self.marker_store._tx()
@@ -566,7 +655,14 @@ class RepriseStore:
                 raise RevisionConflict("analysis superseded")
 
             def semantic_evidence(items):
-                return sorted(_json({k: v for k, v in asdict(e).items() if k != "id"}) for e in items)
+                def meaning(e):
+                    data = asdict(e)
+                    del data["id"]
+                    # Facts about what the comparison found, kept for the report: not what the evidence says.
+                    data["metrics"] = {k: v for k, v in data["metrics"].items() if k != COMPARISON_KEY}
+                    return _json(data)
+
+                return sorted(meaning(e) for e in items)
 
             def semantic_ranges(items):
                 return sorted(
@@ -601,12 +697,25 @@ class RepriseStore:
                     "UPDATE reprise_decision_results SET status=?,analysis_id=?,reasons=? WHERE version_id=?",
                     ("complete", analysis_id, _json(reasons), expected_media_version),
                 )
+                # What the comparison found about each kind is no reason to start over (approvals stay), but the
+                # stored evidence is refreshed with it.
+                fresh = {e.id: e for e in evidence}
+                for old in previous.evidence:
+                    new = fresh.get(old.id)
+                    if new is not None and new != old:
+                        c.execute(
+                            "UPDATE reprise_evidence_windows SET data=? WHERE version_id=? AND id=?",
+                            (_json(asdict(new)), expected_media_version, old.id),
+                        )
             else:
                 override_ids = self._override_ids(c, expected_media_version)
                 preserved = [r for r in (previous.ranges if previous else ()) if _owner_decided(r, override_ids)]
                 preserved = [replace(r, review_status="proposed") if r.action == "skip" else r for r in preserved]
                 ids = {r.id for r in preserved}
-                combined = preserved + [r for r in ranges if r.id not in ids]
+                # A locked skip is the owner's decision and wins: the new run's pieces of its kind are cut back to
+                # what lies outside it, so the result holds one consistent set and never two overlapping versions.
+                locks = [r for r in preserved if r.locked and r.action == "skip"]
+                combined = preserved + _cut_back_to_locks([r for r in ranges if r.id not in ids], locks)
                 c.execute("DELETE FROM reprise_evidence_windows WHERE version_id=?", (expected_media_version,))
                 c.execute("DELETE FROM reprise_ranges WHERE version_id=?", (expected_media_version,))
                 c.execute("DELETE FROM reprise_analysis_proposals WHERE version_id=?", (expected_media_version,))

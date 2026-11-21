@@ -18,6 +18,7 @@ from loguru import logger
 
 from .models import SUGGESTION_ORIGINS, ReportRefused
 from .service import _stale
+from .uniqueness import COMPARISON_KEY, is_one_of_a_kind, sentence
 
 # Plex stores markers to the millisecond and Reprise works on its own clock, so differences under a second are
 # rounding, not disagreement.
@@ -30,13 +31,20 @@ PLEX_BATCH = 40
 PLEX_KINDS = ("intro", "credits")
 
 # code -> (severity, short token for the plain text, how the summary counts it). ``problem`` is Plex skipping story or
-# a failed run, ``attention`` is something to look at or finish, ``good`` is done. Order is the order they are shown.
+# a failed run, ``attention`` is something to look at or finish, ``info`` is worth knowing and needs nothing,
+# ``good`` is done. Order is the order they are shown.
 FLAGS = {
-    "plex_cuts_into_keep": ("problem", "CUTS_KEEP", "where Plex skips into a scene Reprise protects"),
+    "plex_cuts_into_keep": ("problem", "CUTS_KEEP", "where Plex skips into a scene you protected"),
     "plex_starts_early": ("problem", "EARLY", "where Plex's skip starts too early"),
     "plex_ends_late": ("problem", "LATE", "where Plex's skip ends too late"),
     "plex_missing": ("attention", "NO_PLEX", "where Plex has no skip Reprise found"),
+    "plex_covers_unconfirmed": (
+        "info",
+        "COVERS_UNCONFIRMED",
+        "where Plex's skip covers something Reprise could not confirm",
+    ),
     "unconfirmed": ("attention", "UNCONFIRMED", "with only unconfirmed suggestions"),
+    "one_of_a_kind": ("info", "UNIQUE", "where the intro or credits is one of a kind, so is not skipped"),
     "failed": ("problem", "FAILED", "where the analysis failed"),
     "stale": ("attention", "STALE", "with an out-of-date analysis"),
     "not_analyzed": ("attention", "NOT_ANALYZED", "not analyzed yet"),
@@ -129,6 +137,47 @@ def _keeps(ranges):
     return [r for r in ranges if r.action == "keep" and r.review_status != "rejected"]
 
 
+def _protected(r):
+    """Whether a keep is the owner's own decision (added, locked or reviewed by them). Only those are a scene to
+    protect: a keep the analysis made (reason code ``native_signal_unknown``) says only that comparing episodes could
+    not confirm that stretch. The analysis never records that content differs, so no keep is a proven-unique scene."""
+    return r.origin == "manual" or r.locked or r.review_status != "proposed"
+
+
+# What an analysis from before the per-kind facts said when no episode shared anything (analysis.py ``_no_repeat_found``).
+_NOTHING_REPEATED = re.compile(
+    r"^Compared with (\d+) other episodes? of this season, but no repeating intro or credits"
+)
+
+
+def _comparisons(result):
+    """``{kind: facts}``: what the analysis recorded about each kind's comparison with other episodes. A result from
+    before the facts were kept has only the note saying nothing repeated, which holds for both kinds."""
+    if result is None:
+        return {}
+    found = {}
+    for e in result.evidence:
+        facts = e.metrics.get(COMPARISON_KEY)
+        if isinstance(facts, dict) and "kind" in facts:
+            found.setdefault(facts["kind"], facts)
+    if found:
+        return found
+    for reason in result.reasons:
+        match = _NOTHING_REPEATED.match(reason)
+        if match:
+            return {
+                kind: {
+                    "kind": kind,
+                    "episodes_searched": int(match.group(1)),
+                    "sound_matched": 0,
+                    "picture_matched": 0,
+                    "confirmed_ms": 0,
+                }
+                for kind in PLEX_KINDS
+            }
+    return {}
+
+
 def _overlap(start, end, spans):
     """Milliseconds of ``[start, end)`` that fall inside any of ``spans``, counted once where spans overlap."""
     total, edge = 0, start
@@ -156,12 +205,16 @@ def _nearest(marker, confirmed):
     )
 
 
-def classify(*, status, freshness, stale, plex, ranges, duration_ms, published, unknown_kinds=frozenset()):
+def classify(
+    *, status, freshness, stale, plex, ranges, duration_ms, published, unknown_kinds=frozenset(), comparisons=None
+):
     """Every flag one episode earns, worst first. A flag is ``{code, severity, kind, seconds, text}``.
 
     ``plex`` is the markers Plex serves (``{kind, start_ms, end_ms}`` each) or None when Plex could not be read;
     ``unknown_kinds`` are the kinds Plex hides in this library, whose absence says nothing. Reprise's ranges are only
-    compared with Plex's when the analysis is complete and current."""
+    compared with Plex's when the analysis is complete and current. ``comparisons`` is what the analysis found about
+    each kind (see ``_comparisons``): a kind shared by none of the episodes compared is flagged ``one_of_a_kind``."""
+    comparisons = comparisons or {}
     found = {}
 
     def add(code, text, kind=None, seconds_ms=None):
@@ -185,21 +238,42 @@ def classify(*, status, freshness, stale, plex, ranges, duration_ms, published, 
         add("stale", (stale or {}).get("label") or "File changed")
     if status == "complete" and freshness == "current":
         confirmed, suggested, keeps = _confirmed(ranges), _suggested(ranges), _keeps(ranges)
-        if suggested and not confirmed:
-            names = " and ".join(sorted({r.kind for r in suggested}))
+        alone = set()  # the kinds shared by none of the episodes compared: not skipped, and nothing left to confirm
+        for kind in PLEX_KINDS:
+            facts = comparisons.get(kind)
+            if (
+                facts is not None
+                and not any(r.kind == kind for r in confirmed)
+                and any(r.kind == kind for r in (*suggested, *keeps))
+                and is_one_of_a_kind(facts, sum(r.end_ms - r.start_ms for r in suggested if r.kind == kind))
+            ):
+                alone.add(kind)
+                add("one_of_a_kind", sentence(kind, facts), kind)
+        pending = [r for r in suggested if r.kind not in alone]
+        if pending and not confirmed:
+            names = " and ".join(sorted({r.kind for r in pending}))
             add("unconfirmed", f"Reprise could not confirm the {names}")
         if plex is not None:
-            spans = [(r.start_ms, r.end_ms) for r in keeps]
+            owned = [(r.start_ms, r.end_ms) for r in keeps if _protected(r)]
+            unsure = [(r.start_ms, r.end_ms) for r in keeps if not _protected(r)]
             for marker in plex:
                 kind = marker["kind"]
                 end = min(marker["end_ms"], duration_ms) if duration_ms else marker["end_ms"]
-                lost = _overlap(marker["start_ms"], end, spans)
+                lost = _overlap(marker["start_ms"], end, owned)
                 if lost > TOLERANCE_MS:
                     add(
                         "plex_cuts_into_keep",
-                        f"Plex's {kind} skip cuts {seconds_text(lost)} out of a protected scene",
+                        f"Plex's {kind} skip cuts {seconds_text(lost)} out of a scene you protected",
                         kind,
                         lost,
+                    )
+                uncertain = _overlap(marker["start_ms"], end, unsure)
+                if uncertain > TOLERANCE_MS:
+                    add(
+                        "plex_covers_unconfirmed",
+                        f"Plex's {kind} skip covers {seconds_text(uncertain)} Reprise could not confirm",
+                        kind,
+                        uncertain,
                     )
                 ref = _nearest(marker, confirmed)
                 if ref is None:
@@ -280,6 +354,7 @@ def episode_row(item, result, current, why, plex, unknown_kinds, published_revis
         duration_ms=item["duration_ms"],
         published=published,
         unknown_kinds=unknown_kinds,
+        comparisons=_comparisons(result),
     )
     confirmed = _confirmed(ranges)
     season, episode = item["season"], item["episode"]
@@ -311,7 +386,7 @@ def episode_row(item, result, current, why, plex, unknown_kinds, published_revis
         "reprise": {
             "skips": [_range_json(r) for r in _by_time(confirmed)],
             "suggestions": [_range_json(r) for r in _by_time(_suggested(ranges))],
-            "keeps": [_range_json(r) for r in _by_time(_keeps(ranges))],
+            "keeps": [{**_range_json(r), "protected": _protected(r)} for r in _by_time(_keeps(ranges))],
             "to_review": sum(1 for r in confirmed if r.review_status == "proposed"),
             "approved": sum(1 for r in confirmed if r.review_status == "approved"),
         },
@@ -565,17 +640,27 @@ def _flag_token(flag):
     return f"{token}({detail})" if detail else token
 
 
+def _keep_spans(row, protected):
+    """``0:30-0:45 1:00-1:10``: the kept ranges the owner protected (or, not ``protected``, those Reprise could not
+    confirm), touching ones as one."""
+    return " ".join(
+        f"{clock(s)}-{clock(e)}"
+        for s, e in _union((r["start_ms"], r["end_ms"]) for r in row["reprise"]["keeps"] if r["protected"] is protected)
+    )
+
+
 def _row_line(row):
     plex = "?" if row["plex"]["status"] == "unavailable" else _spans(row["plex"]["markers"])
     mine = _spans(row["reprise"]["skips"] or row["reprise"]["suggestions"])
-    keeps = " ".join(
-        f"{clock(s)}-{clock(e)}" for s, e in _union((r["start_ms"], r["end_ms"]) for r in row["reprise"]["keeps"])
-    )
+    keeps = _keep_spans(row, True)
+    unsure = _keep_spans(row, False)
     flags = " ".join(_flag_token(f) for f in row["flags"]) or "OK"
     state = "" if row["analysis"]["status"] in ("complete", "missing") else f"[{row['analysis']['status']}] "
     parts = [f"{row['label'] or '?'} {state}P {plex}", f"R {mine}"]
     if keeps:
         parts.append(f"K {keeps}")
+    if unsure:
+        parts.append(f"U {unsure}")
     return " | ".join(parts) + " | " + flags
 
 
@@ -597,7 +682,10 @@ def render_text(report):
             lines.append(f"S{number}: {_plural(len(rows), 'episode')}; " + (", ".join(bad) if bad else "OK"))
         lines.append("Add season=N for one line per episode.")
     else:
-        lines.append("m:ss. P Plex, R Reprise (i intro, c credits), K protected scene. Under 1 s is not flagged.")
+        lines.append(
+            "m:ss. P Plex, R Reprise (i intro, c credits), K scene you protected, U range Reprise could not confirm. "
+            "Under 1 s is not flagged."
+        )
         if report["plex"]["status"] != "read":
             lines.append("Plex: " + (report["plex"]["message"] or "not all episodes could be read") + ".")
         budget = TEXT_LIMIT - sum(len(x.encode()) + 1 for x in lines) - 80

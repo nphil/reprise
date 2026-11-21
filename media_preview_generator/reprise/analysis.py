@@ -44,6 +44,7 @@ from .models import (
     MediaVersion,
     OnlineWindow,
 )
+from .uniqueness import COMPARISON_KEY, is_one_of_a_kind, sentence
 from .verification_profile import PROFILE_FINGERPRINT, PROFILE_ID, PROFILE_SPEC
 
 # A verified run: target start and end, the reference, its picture offset, the unspecified colour fields, the native
@@ -146,6 +147,11 @@ _FALLBACK_NOTES = {
 def _no_repeat_found(count):
     others = "1 other episode" if count == 1 else f"{count} other episodes"
     return f"Compared with {others} of this season, but no repeating intro or credits could be confirmed."
+
+
+def _one_of_a_kind_note(kind, facts):
+    """The note for an intro or credits that other episodes do not share (see ``uniqueness``)."""
+    return f"{sentence(kind, facts)}."
 
 
 def _left_out_notes(left_out):
@@ -402,6 +408,17 @@ def _confirmed_ms(runs, lo, hi):
         covered += max(0, b - max(a, edge))
         edge = max(edge, b)
     return covered
+
+
+def _merged(spans):
+    """Overlapping or touching ``(start, end)`` spans as one, in order."""
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
 
 
 def _select_runs(verified):
@@ -1036,6 +1053,9 @@ def _analyze(
                 reported[0] = percent
                 progress_callback(percent, message)
 
+        outcomes: dict[
+            CandidateWindow, tuple[set[str], set[str]]
+        ] = {}  # per window: references searched, sound matched
         for number, window in enumerate(windows):
             # A Plex marker too long to compare is not an error: it cannot be confirmed, so it is only a suggestion.
             too_long = window.end_ms - window.start_ms > MAX_CANDIDATE_MS
@@ -1047,6 +1067,11 @@ def _analyze(
                 raise decoder.DecodeError("Invalid or oversized candidate window")
             if not refs or too_long:
                 continue
+            # What this window's searches found, for the verdict on the kind (see ``uniqueness``): the references whose
+            # search ran to its end, and those whose sound lines up somewhere in it.
+            searched: set[str] = set()
+            sound: set[str] = set()
+            outcomes[window] = (searched, sound)
             report(number, 0.0, "Verifying native audiovisual recurrence")
             ts, te = max(0, window.start_ms - CONTEXT_MS), min(media.duration_ms, window.end_ms + CONTEXT_MS)
             try:
@@ -1104,6 +1129,8 @@ def _analyze(
                 progress=progress,
                 failed_from=failed_from,
                 searches=searches,
+                searched=searched,
+                sound=sound,
             ):
                 """One reference's search of one window: the runs it verified and the notes it leaves. It runs on a
                 worker thread beside the other searches and only reads what they share; whoever calls it merges the
@@ -1192,6 +1219,7 @@ def _analyze(
                         )
                         picture = []
                         if audio:
+                            sound.add(ref.id)
                             plo, phi = _picture_span(hints, lo, hi, audio)
                             picture = _video_support(
                                 media,
@@ -1228,6 +1256,7 @@ def _analyze(
                                         levels,
                                     )
                                 )
+                    searched.add(ref.id)
                     with _of_reference():
                         decoder.check_current(ref)
                 except decoder.Cancelled:
@@ -1408,6 +1437,22 @@ def _analyze(
         reasons[:0] = headline
         for entry in verified:
             decoder.check_current(entry[2])
+        # What the searches found, one kind at a time (the windows of a kind share it), kept with the evidence so the
+        # report can say an intro is one of a kind. Nothing below decides on it.
+        facts: dict[str, dict] = {}
+        for kind in sorted({w.kind for w in outcomes}):
+            of_kind = [w for w in outcomes if w.kind == kind]
+            spans = _merged([(w.start_ms, w.end_ms) for w in of_kind])
+            inside = [run for run in verified if any(run[0] < hi and run[1] > lo for lo, hi in spans)]
+            searched_here = set().union(*(outcomes[w][0] for w in of_kind))
+            if searched_here:
+                facts[kind] = {
+                    "kind": kind,
+                    "episodes_searched": len(searched_here),
+                    "sound_matched": len(set().union(*(outcomes[w][1] for w in of_kind))),
+                    "picture_matched": len({run[2].id for run in inside}),
+                    "confirmed_ms": sum(_confirmed_ms(inside, lo, hi) for lo, hi in spans),
+                }
         verified = _select_runs(verified)
         # A suggested window (Plex's marker, or an online database's times) is the comparison's to propose only when at
         # least half of it was confirmed; otherwise it is not a keep but a suggestion that skips nothing until the owner
@@ -1507,6 +1552,8 @@ def _analyze(
                 "bridge_end_ms": hi if bridge else None,
                 "bridge_length_ms": hi - lo if bridge else None,
             }
+            if window.kind in facts:
+                metrics[COMPARISON_KEY] = facts[window.kind]
             evidence.append(
                 Evidence(
                     eid,
@@ -1545,6 +1592,10 @@ def _analyze(
             )
         for window in suggested:
             suggestion_evidence, suggestion_range = _suggestion(media, window, suggested_by[window], tracks)
+            if window.kind in facts:
+                suggestion_evidence = replace(
+                    suggestion_evidence, metrics={**suggestion_evidence.metrics, COMPARISON_KEY: facts[window.kind]}
+                )
             evidence.append(suggestion_evidence)
             ranges.append(suggestion_range)
         if refs or compared:
@@ -1566,6 +1617,12 @@ def _analyze(
             else:
                 why = NOT_CONFIRMED
             reasons.append(_suggestion_note(window, suggested_by[window], why))
+        for kind, found in facts.items():
+            of_kind = [r for r in ranges if r.kind == kind]
+            if not any(r.action == "skip" and r.origin == "detector" for r in of_kind) and is_one_of_a_kind(
+                found, sum(w.end_ms - w.start_ms for w in suggested if w.kind == kind)
+            ):
+                reasons.append(_one_of_a_kind_note(kind, found))
         reasons.extend(hint_notes)
         reasons.extend(online_notes)
         if comparison_failure is not None:

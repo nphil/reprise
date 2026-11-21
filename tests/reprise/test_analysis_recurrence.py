@@ -16,6 +16,7 @@ from media_preview_generator.reprise.analysis import (
 from media_preview_generator.reprise.identity import media_version
 from media_preview_generator.reprise.models import CandidateWindow, PlaybackIdentity
 from media_preview_generator.reprise.store import RepriseStore
+from media_preview_generator.reprise.uniqueness import COMPARISON_KEY, is_one_of_a_kind
 
 CHIRP = "0.3*sin(2*PI*(200*t+13*t*t))"  # aperiodic, so its sound lines up at exactly one lag
 
@@ -731,3 +732,47 @@ def test_a_plex_marker_stays_a_suggestion_unless_half_of_it_is_confirmed(tmp_pat
         assert overlaps(3000, 4000, skips(result)), result.reasons
         assert [r.kind for r in result.ranges if r.action == "keep"]  # the unconfirmed ends stay protected
         assert not any("Plex suggested" in reason for reason in result.reasons)
+
+
+def comparison_facts(result):
+    return {
+        e.metrics[COMPARISON_KEY]["kind"]: e.metrics[COMPARISON_KEY]
+        for e in result.evidence
+        if COMPARISON_KEY in e.metrics
+    }
+
+
+def test_an_intro_none_of_three_other_episodes_shares_is_recorded_as_one_of_a_kind(tmp_path, catalog):
+    references = [make_video(tmp_path / f"reference{n}.mkv", sound=chirp()) for n in range(3)]
+    target = make_video(tmp_path / "target.mkv", sound=chirp("0.3*sin(2*PI*(300*t+9*t*t))"))
+    result = analyze_windows(target, [CandidateWindow("intro", 1000, 6000, "plex")], catalog, references)
+    assert result.status == "complete", result.reasons
+    facts = comparison_facts(result)["intro"]
+    assert facts == {
+        "kind": "intro",
+        "episodes_searched": 3,
+        "sound_matched": 0,
+        "picture_matched": 0,
+        "confirmed_ms": 0,
+    }
+    assert is_one_of_a_kind(facts)
+    assert "The intro is one of a kind: it matched none of 3 other episodes, so nothing is skipped." in result.reasons
+    assert not [r for r in skips(result) if r.origin != "plex"]  # the suggestion stays one; nothing is decided
+
+
+def test_an_intro_other_episodes_share_is_not_one_of_a_kind(tmp_path, catalog):
+    references = [make_video(tmp_path / f"reference{n}.mkv", sound=chirp()) for n in range(3)]
+    target = make_video(tmp_path / "target.mkv", sound=chirp())
+    result = analyze_windows(target, [CandidateWindow("intro", 1000, 6000, "plex")], catalog, references)
+    assert result.status == "complete", result.reasons
+    assert skips(result), result.reasons
+    assert not any("one of a kind" in reason for reason in result.reasons)
+    assert not is_one_of_a_kind(comparison_facts(result).get("intro", {}), 5000)
+
+
+def test_one_other_episode_is_too_few_to_call_an_intro_one_of_a_kind(tmp_path, catalog):
+    reference = make_video(tmp_path / "reference.mkv", sound=chirp())
+    target = make_video(tmp_path / "target.mkv", sound=chirp("0.3*sin(2*PI*(300*t+9*t*t))"))
+    result = analyze_windows(target, [CandidateWindow("intro", 1000, 6000, "plex")], catalog, [reference])
+    assert comparison_facts(result)["intro"]["episodes_searched"] == 1
+    assert not any("one of a kind" in reason for reason in result.reasons)

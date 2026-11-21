@@ -11,12 +11,14 @@
 
     /* Order, plain words and tone of each flag. Codes come from the server (media_preview_generator/reprise/report.py). */
     const FLAGS = [
-        ['plex_cuts_into_keep', 'Skips into a protected scene', 'danger'],
+        ['plex_cuts_into_keep', 'Skips into a scene you protected', 'danger'],
         ['plex_starts_early', 'Starts too early', 'danger'],
         ['plex_ends_late', 'Ends too late', 'danger'],
         ['failed', 'Analysis failed', 'danger'],
         ['plex_missing', 'Plex has no skip', 'warning'],
         ['unconfirmed', 'Not confirmed', 'warning'],
+        ['plex_covers_unconfirmed', 'Covers something not confirmed', 'info'],
+        ['one_of_a_kind', 'One of a kind', 'info'],
         ['stale', 'Out of date', 'warning'],
         ['not_analyzed', 'Not analyzed', 'warning'],
         ['published', 'Sent to Plex', 'positive'],

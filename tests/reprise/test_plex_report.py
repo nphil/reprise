@@ -8,6 +8,7 @@ import pytest
 from flask import Flask
 
 from media_preview_generator.markers.store import MarkerStore
+from media_preview_generator.reprise.analysis import _no_repeat_found
 from media_preview_generator.reprise.identity import media_version
 from media_preview_generator.reprise.models import DecisionRange, Evidence, PlaybackIdentity
 from media_preview_generator.reprise.publishing import ReprisePublisher
@@ -15,6 +16,8 @@ from media_preview_generator.reprise.report import (
     PLEX_BATCH,
     TEXT_LIMIT,
     TOLERANCE_MS,
+    _comparisons,
+    _verdict,
     classify,
     clock,
     render_text,
@@ -22,6 +25,7 @@ from media_preview_generator.reprise.report import (
 )
 from media_preview_generator.reprise.service import RepriseService, _mapping_fingerprint
 from media_preview_generator.reprise.store import RepriseStore
+from media_preview_generator.reprise.uniqueness import COMPARISON_KEY
 from media_preview_generator.reprise.verification_profile import PROFILE_FINGERPRINT, PROFILE_ID
 from media_preview_generator.servers.base import Library, ServerConfig, ServerType
 from media_preview_generator.servers.registry import ServerRegistry
@@ -105,12 +109,16 @@ def test_a_credits_marker_that_runs_to_the_container_end_is_not_late():
     assert found[("plex_ends_late", "credits")]["seconds"] == 10.0  # Plex's end is cut at the file's end first
 
 
-def test_plex_cutting_into_a_protected_scene_reports_the_overlap_once_across_scenes():
-    keeps = (rng("credits", 1_230_000, 1_240_000, action="keep"), rng("credits", 1_236_000, 1_250_000, action="keep"))
+def test_plex_cutting_into_a_scene_the_owner_protected_reports_the_overlap_once_across_scenes():
+    keeps = (
+        rng("credits", 1_230_000, 1_240_000, action="keep", origin="manual"),
+        rng("credits", 1_236_000, 1_250_000, action="keep", review="approved"),
+    )
     found = flags_of(plex=[marker("credits", 1_200_000, 1_245_000)], ranges=keeps)
     cut = found[("plex_cuts_into_keep", "credits")]
     assert cut["seconds"] == 15.0  # 1_230_000..1_245_000: the two scenes overlap, so it is counted once
-    assert cut["text"] == "Plex's credits skip cuts 15 s out of a protected scene"
+    assert cut["text"] == "Plex's credits skip cuts 15 s out of a scene you protected"
+    assert cut["severity"] == "problem" and ("plex_covers_unconfirmed", "credits") not in found
     assert flags_of(plex=[marker("credits", 1_200_000, 1_230_500)], ranges=keeps) == {}  # half a second: tolerated
 
 
@@ -239,9 +247,10 @@ class FakePlex:
         return self.hidden
 
 
-def evidence(r):
+def evidence(r, comparisons=None):
+    metrics = {**METRICS, **({COMPARISON_KEY: comparisons[r.kind]} if r.kind in (comparisons or {}) else {})}
     return Evidence(
-        r.evidence_ids[0], r.start_ms, r.end_ms, "audiovisual", "unknown", "x", "", None, None, None, METRICS
+        r.evidence_ids[0], r.start_ms, r.end_ms, "audiovisual", "unknown", "x", "", None, None, None, metrics
     )
 
 
@@ -272,7 +281,16 @@ def season(tmp_path, monkeypatch):
     made = {}
 
     def add(
-        number, *, show="Community", season_number=3, ranges=None, plex_markers=None, status="complete", present=True
+        number,
+        *,
+        show="Community",
+        season_number=3,
+        ranges=None,
+        plex_markers=None,
+        status="complete",
+        present=True,
+        comparisons=None,
+        owner_keeps=(),
     ):
         path = tmp_path / f"{show}-{season_number}-{number}.mkv"
         path.write_bytes(f"episode {show} {season_number} {number}".encode())
@@ -302,7 +320,12 @@ def season(tmp_path, monkeypatch):
             plex.present = (*plex.present, key)
         if status == "complete":
             run = store.begin_analysis(version.id, "job", "signature")
-            store.finish_analysis(run, [evidence(r) for r in ranges or ()], list(ranges or ()), version.id, [])
+            result = store.finish_analysis(
+                run, [evidence(r, comparisons) for r in ranges or ()], list(ranges or ()), version.id, []
+            )
+            if owner_keeps:  # a keep the owner added: the analysis itself only ever proposes
+                edits = [{"kind": k, "action": "keep", "start_ms": s, "end_ms": e} for k, s, e in owner_keeps]
+                store.save_review(version.id, result.result_revision, edits, "owner")
         elif status == "failed":
             run = store.begin_analysis(version.id, "job", "signature")
             store.fail_analysis(run, "failed", "Media analysis failed")
@@ -329,12 +352,14 @@ def get(fixture, /, **query):
 def build_community(season):
     intro = rng("intro", 100_000, 130_000)
     credits = rng("credits", 1_200_000, 1_280_000)
-    scene = rng("credits", 1_236_000, 1_250_000, action="keep")
     season.add(
         1, ranges=[intro, credits], plex_markers=[("intro", 100_000, 130_000), ("credits", 1_200_000, 1_280_000)]
     )
     season.add(
-        2, ranges=[intro, credits, scene], plex_markers=[("intro", 100_000, 130_000), ("credits", 1_200_000, 1_300_000)]
+        2,
+        ranges=[intro, credits],
+        owner_keeps=[("credits", 1_236_000, 1_250_000)],
+        plex_markers=[("intro", 100_000, 130_000), ("credits", 1_200_000, 1_300_000)],
     )
     season.add(3, ranges=[intro, credits], plex_markers=[("intro", 60_000, 130_000)])
     season.add(
@@ -375,8 +400,8 @@ def test_the_report_has_one_row_per_episode_in_order_and_flags_each_disagreement
     summary = report["summary"]
     assert summary["episodes"] == 6 and summary["analyzed"] == 4
     assert summary["counts"]["plex_cuts_into_keep"] == 1 and summary["counts"]["published"] == 0
-    assert summary["phrases"]["plex_cuts_into_keep"] == "1 episode where Plex skips into a scene Reprise protects"
-    assert summary["headline"].startswith("1 episode where Plex skips into a scene Reprise protects; ")
+    assert summary["phrases"]["plex_cuts_into_keep"] == "1 episode where Plex skips into a scene you protected"
+    assert summary["headline"].startswith("1 episode where Plex skips into a scene you protected; ")
     assert summary["differs"] == 2 and summary["needs_attention"] == 3
 
 
@@ -396,7 +421,7 @@ def test_a_row_carries_both_sides_and_the_plain_failure_reason(season):
     assert rows[6]["analysis"]["reasons"] == ["Reprise couldn't read this file well enough to compare it."]
     assert rows[5]["summary"] == "Not analyzed yet."
     assert rows[1]["summary"] == "Plex and Reprise agree."
-    assert rows[2]["summary"].startswith("Plex's credits skip cuts 14 s out of a protected scene.")
+    assert rows[2]["summary"].startswith("Plex's credits skip cuts 14 s out of a scene you protected.")
 
 
 def test_plex_is_asked_in_batches_with_markers_and_never_written(season):
@@ -506,7 +531,7 @@ def test_the_text_report_reads_in_one_call(season):
     text = answer.get_data(as_text=True)
     lines = text.splitlines()
     assert lines[0].startswith("Community S3: Plex vs Reprise, 6 episodes (")
-    assert lines[1].startswith("1 episode where Plex skips into a scene Reprise protects; ")
+    assert lines[1].startswith("1 episode where Plex skips into a scene you protected; ")
     assert lines[3:] == [
         "S3E01 P i1:40-2:10 c20:00-21:20 | R i1:40-2:10 c20:00-21:20 | OK",
         "S3E02 P i1:40-2:10 c20:00-21:40 | R i1:40-2:10 c20:00-21:20 | K 20:36-20:50 | CUTS_KEEP(c 14s) LATE(c 20s)",
@@ -530,11 +555,12 @@ def test_the_text_for_a_whole_show_is_one_line_per_season(season):
 
 def test_a_full_season_of_worst_case_rows_fits_the_text_limit(season):
     intro, credits = rng("intro", 100_000, 130_000), rng("credits", 1_200_000, 1_280_000)
-    keeps = [rng("credits", 1_236_000 + 1000 * i, 1_237_000 + 1000 * i, action="keep") for i in range(3)]
+    keeps = [("credits", 1_236_000 + 1000 * i, 1_237_000 + 1000 * i) for i in range(3)]
     for number in range(1, 25):
         season.add(
             number,
-            ranges=[intro, credits, *keeps],
+            ranges=[intro, credits],
+            owner_keeps=keeps,
             plex_markers=[("intro", 10_000, 190_000), ("credits", 1_100_000, 1_300_000)],
         )
     text = get(season, show="Community", season="3", format="text").get_data(as_text=True)
@@ -550,3 +576,135 @@ def test_the_text_never_exceeds_the_limit_however_many_episodes(season):
     text = render_text(report)
     assert len(text.encode()) <= TEXT_LIMIT
     assert "more episodes not shown (text limit)." in text
+
+
+# ── one of a kind, and keeps that are only unconfirmed ──────────────────────────────────────────────────────────
+
+
+def test_a_keep_the_analysis_made_is_unconfirmed_and_never_called_a_protected_scene():
+    keep = rng("intro", 102_000, 111_000, action="keep")  # S3E21: Plex's intro 1:28-1:51, an unconfirmed keep 1:42-1:51
+    found = flags_of(plex=[marker("intro", 88_000, 111_000)], ranges=(keep,))
+    assert set(found) == {("plex_covers_unconfirmed", "intro")}
+    covers = found[("plex_covers_unconfirmed", "intro")]
+    assert (covers["severity"], covers["seconds"]) == ("info", 9.0)
+    assert covers["text"] == "Plex's intro skip covers 9 s Reprise could not confirm"
+    assert _verdict("complete", list(found.values())) == "ok"  # nothing to fix: it is not a disagreement
+
+
+@pytest.mark.parametrize(
+    "keep,code,severity",
+    [
+        (rng("intro", 102_000, 111_000, action="keep", origin="manual"), "plex_cuts_into_keep", "problem"),
+        (rng("intro", 102_000, 111_000, action="keep", review="approved"), "plex_cuts_into_keep", "problem"),
+        (rng("intro", 102_000, 111_000, action="keep"), "plex_covers_unconfirmed", "info"),
+    ],
+)
+def test_the_flag_and_its_severity_follow_who_decided_the_keep(keep, code, severity):
+    found = flags_of(plex=[marker("intro", 88_000, 111_000)], ranges=(keep,))
+    assert {c: f["severity"] for (c, _), f in found.items()} == {code: severity}
+
+
+def facts(kind="intro", searched=9, sound=0, picture=0, confirmed_ms=0):
+    return {
+        "kind": kind,
+        "episodes_searched": searched,
+        "sound_matched": sound,
+        "picture_matched": picture,
+        "confirmed_ms": confirmed_ms,
+    }
+
+
+SUGGESTION = rng("intro", 100_000, 130_000, origin="plex", suggested_by=("Plex",))
+
+
+def test_an_intro_that_none_of_nine_episodes_shares_is_one_of_a_kind_and_not_unconfirmed():
+    found = flags_of(plex=[], ranges=(SUGGESTION,), comparisons={"intro": facts()})
+    assert set(found) == {("one_of_a_kind", "intro")}
+    flag = found[("one_of_a_kind", "intro")]
+    assert flag["severity"] == "info"
+    assert flag["text"] == "The intro is one of a kind: it matched none of 9 other episodes, so nothing is skipped"
+    assert _verdict("complete", [flag]) == "ok"
+
+
+def test_one_of_a_kind_is_said_about_its_own_kind_only():
+    credits = rng("credits", 1_200_000, 1_280_000, origin="plex", suggested_by=("Plex",))
+    found = flags_of(plex=[], ranges=(SUGGESTION, credits), comparisons={"intro": facts()})
+    assert set(found) == {("one_of_a_kind", "intro"), ("unconfirmed", None)}
+    assert found[("unconfirmed", None)]["text"] == "Reprise could not confirm the credits"
+
+
+@pytest.mark.parametrize(
+    "found_facts,unique",
+    [
+        (facts(searched=2), False),  # too few episodes to say that none shares it
+        (facts(searched=3), True),
+        (facts(searched=9, confirmed_ms=1000), True),  # a second of a 30 s intro: chance, not a shared intro
+        (facts(searched=9, confirmed_ms=3100), False),  # more than a sliver is a partial match: still a suggestion
+        (facts(searched=9, confirmed_ms=2000), True),  # two seconds of a 30 s intro is still under a tenth of it
+        (None, False),  # nothing recorded: could not compare, so not claimed
+    ],
+)
+def test_one_of_a_kind_needs_enough_episodes_and_no_real_match(found_facts, unique):
+    comparisons = {"intro": found_facts} if found_facts else {}
+    found = flags_of(plex=[], ranges=(SUGGESTION,), comparisons=comparisons)
+    assert (("one_of_a_kind", "intro") in found) is unique
+    assert (("unconfirmed", None) in found) is not unique
+
+
+def test_the_words_say_what_matched_and_how_much():
+    sliver = flags_of(plex=[], ranges=(SUGGESTION,), comparisons={"intro": facts(confirmed_ms=1000)})
+    assert sliver[("one_of_a_kind", "intro")]["text"] == (
+        "The intro is one of a kind: only 1 s of it matched any of 9 other episodes, so nothing is skipped"
+    )
+    own = flags_of(plex=[], ranges=(SUGGESTION,), comparisons={"intro": facts(sound=4)})
+    assert (
+        "its sound matches 4 of 9 other episodes but its picture does not, so it is its own version"
+        in own[("one_of_a_kind", "intro")]["text"]
+    )
+
+
+def test_a_confirmed_skip_of_the_kind_means_it_is_not_one_of_a_kind():
+    confirmed = rng("intro", 100_000, 130_000)
+    assert flags_of(plex=None, ranges=(confirmed,), comparisons={"intro": facts()}) == {}
+
+
+@pytest.mark.parametrize("status", ["failed", "missing"])
+def test_an_episode_that_was_not_compared_is_never_called_one_of_a_kind(status):
+    found = flags_of(status=status, plex=[], ranges=(SUGGESTION,), comparisons={"intro": facts()})
+    assert ("one_of_a_kind", "intro") not in found
+
+
+def test_the_facts_come_from_the_evidence_and_an_old_result_from_its_note():
+    recorded = SimpleNamespace(
+        evidence=(Evidence("e", 0, 1, "audiovisual", "unknown", "x", "", None, None, None, {COMPARISON_KEY: facts()}),),
+        reasons=(),
+    )
+    assert _comparisons(recorded) == {"intro": facts()}
+    old = SimpleNamespace(evidence=(), reasons=(_no_repeat_found(9),))
+    assert _comparisons(old) == {"intro": facts(), "credits": facts("credits")}
+    assert _comparisons(SimpleNamespace(evidence=(), reasons=("Plex suggested the intro",))) == {}
+    assert _comparisons(None) == {}
+
+
+def test_the_report_says_so_in_the_row_the_summary_and_the_text(season):
+    season.add(1, ranges=[SUGGESTION], plex_markers=[("intro", 100_000, 130_000)], comparisons={"intro": facts()})
+    season.add(2, ranges=[rng("intro", 102_000, 111_000, action="keep")], plex_markers=[("intro", 88_000, 111_000)])
+    report = get(season, show="Community", season="3").get_json()
+    one, two = report["episodes"]
+    assert [(f["code"], f["severity"]) for f in one["flags"]] == [("one_of_a_kind", "info")]
+    assert one["verdict"] == "ok" and one["summary"].startswith("The intro is one of a kind: it matched none of 9")
+    assert [(f["code"], f["severity"], f["seconds"]) for f in two["flags"]] == [
+        ("plex_covers_unconfirmed", "info", 9.0)
+    ]
+    assert [k["protected"] for k in two["reprise"]["keeps"]] == [False]
+    assert report["summary"]["counts"]["one_of_a_kind"] == 1
+    text = get(season, show="Community", season="3", format="text").get_data(as_text=True)
+    assert "S3E01 P i1:40-2:10 | R i1:40-2:10 | UNIQUE(i)" in text
+    assert "U 1:42-1:51 | COVERS_UNCONFIRMED(i 9s)" in text and "U range Reprise could not confirm" in text
+
+
+def test_a_sliver_is_at_most_a_tenth_of_the_suggested_range():
+    short = rng("intro", 100_000, 110_000, origin="plex", suggested_by=("Plex",))
+    for confirmed_ms, unique in ((1000, True), (1500, False)):
+        found = flags_of(plex=[], ranges=(short,), comparisons={"intro": facts(confirmed_ms=confirmed_ms)})
+        assert (("one_of_a_kind", "intro") in found) is unique
