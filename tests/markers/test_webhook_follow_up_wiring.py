@@ -5,6 +5,7 @@ library never holds them up. The end-to-end journeys (each sender route, restart
 Previews off) are in tests/journeys/test_journey_webhook_jobs_per_feature.py.
 """
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -90,6 +91,55 @@ def test_a_sender_webhook_queues_its_jobs_on_arrival_with_the_preview_pin(source
     submit.assert_called_once_with(paths=[SONARR_PATH], source=source, pin=pin, item_id_hints=None, delay_s=60)
     (batch,) = wh._pending_batches.values()
     assert batch["server_id_pin"] == pin  # the preview job publishes where its Intro & Credits job does
+
+
+def _reprise_service(monkeypatch, autopilot):
+    monkeypatch.setattr(
+        "media_preview_generator.reprise.service.get_service", lambda: SimpleNamespace(autopilot=autopilot)
+    )
+
+
+@pytest.mark.parametrize("source", ["sonarr", "radarr", "custom", "recently_added"])
+def test_a_sender_webhook_tells_reprise_automatic_mode_the_file_arrived(monkeypatch, source):
+    nudges = []
+    _reprise_service(monkeypatch, SimpleNamespace(nudge=lambda path, delay=0: nudges.append((path, delay))))
+    with patch(SUBMIT_JOBS, return_value=[]):
+        _schedule(source, SONARR_PATH)
+    assert nudges == [(SONARR_PATH, 60)]
+
+
+def test_a_vendor_webhook_tells_reprise_automatic_mode_the_file_arrived(monkeypatch):
+    nudges = []
+    _reprise_service(monkeypatch, SimpleNamespace(nudge=lambda path, delay=0: nudges.append((path, delay))))
+    with patch.object(wh, "_check_and_record_dedup", return_value=None), patch(SUBMIT_JOBS, return_value=[]):
+        wh.create_vendor_webhook_job(source="jellyfin", title="Foo", canonical_path="/data/Movies/Foo.mkv")
+    assert nudges == [("/data/Movies/Foo.mkv", 60)]
+
+
+def test_a_duplicate_webhook_does_not_nudge_reprise_again(monkeypatch):
+    nudges = []
+    _reprise_service(monkeypatch, SimpleNamespace(nudge=lambda path, delay=0: nudges.append(path)))
+    with patch.object(wh, "_check_and_record_dedup", return_value=12), patch(SUBMIT_JOBS):
+        assert wh._schedule_webhook_job("sonarr", "Show", SONARR_PATH, early_scan=False) is False
+    assert nudges == []
+
+
+def test_a_webhook_is_queued_even_when_reprise_automatic_mode_cannot_be_told(monkeypatch):
+    def refuses(path, delay=0):
+        raise RuntimeError("Reprise could not be told")
+
+    for autopilot in (SimpleNamespace(nudge=refuses), None):
+        _reprise_service(monkeypatch, autopilot)
+        with patch(SUBMIT_JOBS, return_value=["ic-1"]) as submit:
+            assert wh._queue_webhook_jobs("sonarr", SONARR_PATH, None, 60) == ["ic-1"]
+        submit.assert_called_once()
+
+    def no_service():
+        raise RuntimeError("Reprise is not started")
+
+    monkeypatch.setattr("media_preview_generator.reprise.service.get_service", no_service)
+    with patch(SUBMIT_JOBS, return_value=["ic-2"]):
+        assert wh._queue_webhook_jobs("sonarr", SONARR_PATH, None, 60) == ["ic-2"]
 
 
 def test_each_file_a_batch_takes_queues_its_own_jobs():

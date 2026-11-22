@@ -937,6 +937,12 @@ def create_app(config_dir: str | None = None) -> Flask:
         writes_enabled=sm.get("reprise_plex_writes_enabled", False) is True,
     )
     set_service(reprise_service)
+    try:
+        from ..reprise.autopilot import build as build_autopilot
+
+        reprise_service.autopilot = build_autopilot(reprise_service, config_dir)
+    except Exception:
+        logger.exception("Reprise's automatic mode could not start; everything else works as before")
     app.extensions["reprise"] = reprise_service
     app.register_blueprint(create_reprise_blueprint(reprise_service))
     _resume_reprise_after_restart(reprise_service)

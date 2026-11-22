@@ -34,6 +34,11 @@ _SERVICE = None
 # How many episodes the Plex switch tries before it reports why none can be sent.
 SWITCH_CHECK_LIMIT = 25
 
+# The ``source`` of the jobs Reprise starts by itself: new and changed files, and the slow backfill of the library.
+AUTOPILOT_JOB_SOURCE = "autopilot"
+AUTOPILOT_BACKFILL_SOURCE = "autopilot_backfill"
+AUTOPILOT_SOURCES = (AUTOPILOT_JOB_SOURCE, AUTOPILOT_BACKFILL_SOURCE)
+
 NOT_IN_LIBRARY = "This episode is not in the library any more. Refresh the library, then try again."
 CHANGED_ON_DISK = (
     "This file changed on disk after the library was last refreshed. Refresh the library, then analyze it again."
@@ -359,10 +364,18 @@ class SettingsRegistry:
         return self._current().servers()
 
 
+def _film_title(item):
+    """A film's name as the library shows it: its title and, when Plex knows it, its year."""
+    title = str(item.get("title", ""))
+    year = item.get("year")
+    return f"{title} ({year})" if title and isinstance(year, int) else title
+
+
 class RepriseService:
     def __init__(self, store, registry, job_manager):
         self.store, self.registry, self.job_manager = store, registry, job_manager
         self.publisher = None
+        self.autopilot = None  # Reprise's own automatic work (``autopilot.Autopilot``), set by the app at start
         self._enqueue_lock = threading.Lock()
         self._refresh_locks = {}
         self._show_ids = {}
@@ -436,6 +449,79 @@ class RepriseService:
             raise ValueError("File path is missing, ambiguous, or outside the enabled library")
         return paths.pop()
 
+    def _library_rows(self, cfg, server, library, checkpoint=lambda: None):
+        """Everything Plex lists for one library, page by page and checked against the size Plex reports (films and
+        episodes each by their own type): ``(machine id, rows)``."""
+        machine = str(server._plex_http("get", "/").json()["MediaContainer"]["machineIdentifier"])
+        if cfg.server_identity and cfg.server_identity != machine:
+            raise ValueError("Plex server identity changed")
+        if not str(library.id).isdecimal():
+            raise ValueError("Invalid Plex library id")
+        kind = "1" if getattr(library, "kind", None) == "movie" else "4"
+        rows, offset, expected_total = [], 0, None
+        while True:
+            checkpoint()
+            container = server._plex_http(
+                "get",
+                f"/library/sections/{library.id}/all",
+                params={"type": kind, "X-Plex-Container-Start": str(offset), "X-Plex-Container-Size": "200"},
+            ).json()["MediaContainer"]
+            batch = container.get("Metadata", [])
+            if not isinstance(batch, list):
+                raise ValueError("Incomplete Plex library response")
+            rows.extend(batch)
+            offset += len(batch)
+            total = int(container["totalSize"]) if "totalSize" in container else None
+            if total is None:
+                if len(batch) >= 200:
+                    raise ValueError("Plex omitted the complete library size")
+                break
+            if expected_total is not None and total != expected_total:
+                raise ValueError("Plex library changed during enumeration")
+            expected_total = total
+            if offset > total:
+                raise ValueError("Invalid Plex library page")
+            if offset == total:
+                break
+            if not batch:
+                raise ValueError("Incomplete Plex library response")
+        keys = [str(item.get("ratingKey", "")) for item in rows]
+        if len(keys) != len(set(keys)):
+            raise ValueError("Duplicate Plex episodes in library response")
+        return machine, rows
+
+    def list_library(self, server_id, library_id):
+        """What Plex lists for one library right now, registering nothing: ``(config, library, machine id, rows)``."""
+        cfg, server, library = self._server(server_id, library_id)
+        machine, rows = self._library_rows(cfg, server, library)
+        return cfg, library, machine, rows
+
+    def local_file(self, cfg, library, remote):
+        """Where a file Plex lists is on this machine, or None when it can't be read here (missing, outside the library
+        or ambiguous)."""
+        try:
+            return self._local_path(cfg, library, remote)
+        except (ValueError, OSError):
+            return None
+
+    def _may_hold(self, cfg, library, summary, requested):
+        """Whether a library listing row may hold one of the ``requested`` files. It is false only when the row lists
+        its files and none is one of them: a read of a few named files then skips that row's detail request."""
+        media_rows = summary.get("Media")
+        if not isinstance(media_rows, list) or not media_rows:
+            return True
+        for media in media_rows:
+            parts = media.get("Part") if isinstance(media, dict) else None
+            if not isinstance(parts, list):
+                return True
+            for part in parts:
+                remote = part.get("file") if isinstance(part, dict) else None
+                if not remote:
+                    return True
+                if self.local_file(cfg, library, remote) in requested:
+                    return True
+        return False
+
     def _scan_library(
         self,
         server_id,
@@ -490,41 +576,8 @@ class RepriseService:
             )
 
         checkpoint()
-        machine = str(server._plex_http("get", "/").json()["MediaContainer"]["machineIdentifier"])
-        if cfg.server_identity and cfg.server_identity != machine:
-            raise ValueError("Plex server identity changed")
-        if not str(library.id).isdecimal():
-            raise ValueError("Invalid Plex library id")
-        rows, offset, expected_total = [], 0, None
-        while True:
-            checkpoint()
-            container = server._plex_http(
-                "get",
-                f"/library/sections/{library.id}/all",
-                params={"type": "4", "X-Plex-Container-Start": str(offset), "X-Plex-Container-Size": "200"},
-            ).json()["MediaContainer"]
-            batch = container.get("Metadata", [])
-            if not isinstance(batch, list):
-                raise ValueError("Incomplete Plex library response")
-            rows.extend(batch)
-            offset += len(batch)
-            total = int(container["totalSize"]) if "totalSize" in container else None
-            if total is None:
-                if len(batch) >= 200:
-                    raise ValueError("Plex omitted the complete library size")
-                break
-            if expected_total is not None and total != expected_total:
-                raise ValueError("Plex library changed during enumeration")
-            expected_total = total
-            if offset > total:
-                raise ValueError("Invalid Plex library page")
-            if offset == total:
-                break
-            if not batch:
-                raise ValueError("Incomplete Plex library response")
-        keys = [str(item.get("ratingKey", "")) for item in rows]
-        if len(keys) != len(set(keys)):
-            raise ValueError("Duplicate Plex episodes in library response")
+        machine, rows = self._library_rows(cfg, server, library, checkpoint)
+        films = getattr(library, "kind", None) == "movie"
         registered = skipped = 0
         seen = []
         unreadable, touched, listed = set(), set(), {}
@@ -547,6 +600,10 @@ class RepriseService:
             rating_key = str(summary.get("ratingKey", ""))
             if not rating_key.isdecimal():
                 skip(summary, "Plex gave it an id Reprise can't use")
+                if progress_callback:
+                    progress_callback(index + 1, total)
+                continue
+            if requested is not None and not self._may_hold(cfg, library, summary, requested):
                 if progress_callback:
                     progress_callback(index + 1, total)
                 continue
@@ -608,6 +665,7 @@ class RepriseService:
                     part_key = urlsplit(str(part["key"])).path
                     if not part_key.startswith("/library/parts/"):
                         raise ValueError("Invalid Plex part key")
+                    wanted = ("credits",) if films else ("intro", "credits")
                     candidates = [
                         {
                             "kind": marker["type"],
@@ -616,7 +674,7 @@ class RepriseService:
                             "source": "plex",
                         }
                         for marker in item.get("Marker", [])
-                        if marker.get("type") in ("intro", "credits")
+                        if marker.get("type") in wanted
                     ]
                     metadata = {
                         "library_id": str(library.id),
@@ -630,6 +688,16 @@ class RepriseService:
                         "episode": item.get("index"),
                         "candidates": candidates,
                     }
+                    if films:
+                        # A film belongs to no show and has no season: its credits are all that is ever asked about.
+                        metadata.update(
+                            kind="movie",
+                            title=_film_title(item),
+                            show_title="",
+                            show_key=None,
+                            season=None,
+                            episode=None,
+                        )
                     for audio in json.loads(signature)["audio_streams"]:
                         checkpoint()
                         if not config_current():
@@ -988,7 +1056,9 @@ class RepriseService:
                 raise ValueError("Select at least one absolute candidate path")
             candidate_paths = sorted({os.path.realpath(path) for path in candidate_paths})
         request = {"server_id": server_id, "library_id": str(library_id), "candidate_paths": candidate_paths}
-        source = RECENTLY_ADDED_JOB_SOURCE if trigger == "recently_added" else "schedule"
+        source = {"recently_added": RECENTLY_ADDED_JOB_SOURCE, "autopilot": AUTOPILOT_JOB_SOURCE}.get(
+            trigger, "schedule"
+        )
         with self._enqueue_lock:
             for job in self.job_manager.get_all_jobs():
                 config = job.config or {}
@@ -1001,7 +1071,7 @@ class RepriseService:
                 ):
                     return self._job_json(job)
             job = self.job_manager.create_job(
-                library_name="Reprise analysis",
+                library_name="Reprise: new files" if trigger == "autopilot" else "Reprise analysis",
                 kind="reprise",
                 server_id=server_id,
                 library_id=str(library_id),
@@ -1044,6 +1114,74 @@ class RepriseService:
 
             _start_job_async(job.id, dict(job.config))
             return self._job_json(job)
+
+    def enqueue_backfill(self, media_version_ids, label):
+        """Queue the slow, background analysis of some files for Reprise's own automatic work, in the order given. It
+        runs below everything the owner or a new import asks for. Files that can't be read any more are left out;
+        returns the job, or None when none was left."""
+        from ..web.jobs import PRIORITY_LOW
+        from ..web.routes.job_runner import _start_job_async
+
+        ids = []
+        for mid in dict.fromkeys(media_version_ids):
+            version = self.store.get_media(mid)
+            bindings = self._bindings(mid) if version else []
+            if bindings and any(self._valid_binding(version, *b) for b in bindings):
+                ids.append(mid)
+        if not ids:
+            return None
+        with self._enqueue_lock:
+            for job in self.job_manager.get_all_jobs():
+                c = job.config or {}
+                if (
+                    job.kind == "reprise"
+                    and c.get("source") == AUTOPILOT_BACKFILL_SOURCE
+                    and c.get("media_version_ids") == ids
+                    and job.status.value in ("pending", "running")
+                ):
+                    return self._job_json(job)
+            job = self.job_manager.create_job(
+                library_name=f"Reprise backfill: {label}"[:80],
+                kind="reprise",
+                priority=PRIORITY_LOW,
+                config={"media_version_ids": ids, "reprise_owner": "owner", "source": AUTOPILOT_BACKFILL_SOURCE},
+            )
+            _start_job_async(job.id, dict(job.config))
+            return self._job_json(job)
+
+    def queued_candidate_paths(self):
+        """The files already waiting in, or being read by, a library analysis that names its files: a new look at the
+        library does not queue them a second time."""
+        paths = set()
+        for job in self.job_manager.get_all_jobs():
+            request = (job.config or {}).get("library_analysis_request") or {}
+            if job.kind == "reprise" and job.status.value in ("pending", "running") and request.get("candidate_paths"):
+                paths.update(request["candidate_paths"])
+        return paths
+
+    def _is_autopilot_job(self, job_id):
+        """Whether Reprise's own automatic work queued this job (new files, or the slow backfill)."""
+        job = self.job_manager.get_job(job_id)
+        return bool(job and (job.config or {}).get("source") in AUTOPILOT_SOURCES)
+
+    def _is_current(self, media_id, bindings):
+        """Whether this file already has a finished analysis that still counts: what Reprise's own looks leave alone."""
+        answer = self._lookup(bindings[0][0])[0]
+        return (
+            answer.get("media_version_id") == media_id
+            and answer.get("analysis_status") == "complete"
+            and answer.get("freshness") == "current"
+        )
+
+    def _notify_autopilot(self, method, *args):
+        """Tell Reprise's automatic work about something it raises an alert for. It never affects the job that said it."""
+        autopilot = self.autopilot
+        if autopilot is None:
+            return
+        try:
+            getattr(autopilot, method)(*args)
+        except Exception:
+            logger.opt(exception=True).warning("Reprise's automatic work could not note {}", method)
 
     def enqueue_preview(self, media_version_id, start_ms, end_ms, audio_stream_id, *, principal="owner"):
         if type(start_ms) is not int or type(end_ms) is not int or not isinstance(audio_stream_id, str):
@@ -1345,6 +1483,8 @@ class RepriseService:
         except Exception:
             logger.exception("Reprise job {} could not be paused for its owner", job_id)
         logger.warning("Reprise job {} is waiting for its owner: {}", job_id[:8], message)
+        if reason == "kept_stopping":
+            self._notify_autopilot("note_paused", job_id)
 
     def resume_after_restart(self, now=None):
         """One pass over the jobs waiting to carry on after a restart: start those that may run, hand to their owner
@@ -1464,6 +1604,7 @@ class RepriseService:
 
     def _mark_set_aside(self, job_id, media_id):
         """Say, on the episode itself, why it was not analyzed (the job's own notes carry the reason too)."""
+        self._notify_autopilot("note_set_aside", job_id, media_id)
         try:
             run = self.store.begin_analysis(media_id, job_id, "set-aside")
         except Exception:
@@ -1568,7 +1709,15 @@ class RepriseService:
                     summary["removed"] = self.store.drop_unlisted_media(server_id, library_id, scanned["listed"])
                 self.job_manager.merge_job_config(job_id, {"refresh_result": summary})
 
-            if scanned["skipped"]:
+            # New files found by Reprise itself go on with the ones that were read: a file that can't be read yet must
+            # not hold back the others, and a later look at Plex tries it again.
+            carry_on = for_analysis and bool(registered_ids) and self._is_autopilot_job(job_id)
+            if carry_on and scanned["skipped"]:
+                self.job_manager.add_log(
+                    job_id,
+                    f"WARNING - {scanned['skipped']} file(s) could not be read yet; they will be looked at again",
+                )
+            if scanned["skipped"] and not carry_on:
                 # A refresh of the whole library whose only trouble is episodes it could not read did its job: it
                 # completes with a warning naming them. A scan of specific files (a webhook, an analysis) has no use for
                 # a partial answer, so it still fails.
@@ -1632,6 +1781,25 @@ class RepriseService:
     def _server_external_ids(self, server_id, rating_key):
         return self.registry.get(server_id).get_external_ids(rating_key)
 
+    def _film_windows(self, lookups, version, identity, server_id, meta, job):
+        """Where the online databases put a film's credits, on this file's own clock: ``{media version id: (OnlineWindow,)}``.
+        Only the credits are asked for: a film's opening is not an intro that repeats."""
+        from . import online
+
+        ids = online.film_ids(version.canonical_path, lambda: self._server_external_ids(server_id, identity.rating_key))
+        if ids.kind != "movie":
+            return {}
+        windows = lookups.windows(
+            ids,
+            duration_ms=version.duration_ms,
+            frame_rate=online.frame_rate_of(version.stream_signature),
+            plex=[CandidateWindow(**c) for c in meta.get("candidates", [])],
+            priority=job.priority,
+            cancel_check=lambda: self.job_manager.is_cancellation_requested(job.id),
+        )
+        credits = tuple(window for window in windows if window.kind == "credits")
+        return {version.id: credits} if credits else {}
+
     def _online_windows(self, lookups, version, bindings, references, job):
         """Where the online databases put the intro and credits of this episode and of each reference, each read on
         its own file's clock: ``{media version id: (OnlineWindow, ...)}``. Every episode is asked at most once; an episode
@@ -1642,6 +1810,8 @@ class RepriseService:
             return {}
         identity, server_id, meta = bindings[0]
         try:
+            if meta.get("kind") == "movie":
+                return self._film_windows(lookups, version, identity, server_id, meta, job)
             key = (server_id, meta.get("show_key"))
             ids = self._show_ids.get(key) if key[1] else None
             if ids is None:
@@ -1679,6 +1849,7 @@ class RepriseService:
         from .analysis import (
             ENDING_WINDOW,
             FALLBACK_WINDOW_MS,
+            MOVIE_NOTE,
             NO_OTHER_EPISODES,
             NO_REFERENCES,
             OPENING_WINDOW,
@@ -1845,6 +2016,7 @@ class RepriseService:
         # the one whose result was saved just before the stop.
         resumed = any(queue.get(key) for key in ("next", "attempts", "running", "recovery"))
         saved_before = self.store.finished_in_job(job_id) if resumed else frozenset()
+        autopilot_job = (job.config or {}).get("source") in AUTOPILOT_SOURCES
         for index in range(min(recovery.position(queue), len(ids)), len(ids)):
             mid = ids[index]
             from ..markers.freeze import Freeze
@@ -1877,16 +2049,21 @@ class RepriseService:
                 )
                 leave_out(index, mid, code, all_bindings)
                 continue
+            if autopilot_job and self._is_current(mid, bindings):
+                # Reprise's own looks at the library never redo what is already done and still counts.
+                settle(index, mid, recovery.RESULT)
+                continue
             if recovery.exhausted(self._queue(job_id), mid):
                 set_aside(index, mid, all_bindings)
                 continue
             meta = bindings[0][2]
+            movie = meta.get("kind") == "movie"
             candidates = [CandidateWindow(**c) for c in meta.get("candidates", [])]
             present = {candidate.kind for candidate in candidates}
             midpoint = version.duration_ms // 2
-            if "intro" not in present and midpoint > 0:
+            if not movie and "intro" not in present and midpoint > 0:
                 candidates.append(CandidateWindow("intro", 0, min(FALLBACK_WINDOW_MS, midpoint), OPENING_WINDOW))
-            if "credits" not in present and version.duration_ms > midpoint:
+            if not movie and "credits" not in present and version.duration_ms > midpoint:
                 candidates.append(
                     CandidateWindow(
                         "credits",
@@ -1899,7 +2076,7 @@ class RepriseService:
             cursor = None
             seen_refs = set()
             other_episodes = set()
-            while True:
+            while not movie:
                 page = self.store.list_media(server_id=bindings[0][1], cursor=cursor, limit=100)
                 for row in page["items"]:
                     rid = row["media_version"]["id"]
@@ -1926,7 +2103,10 @@ class RepriseService:
             admitted = admit_references(version, references, self.store)
             nearest = admitted[:MAX_REFERENCES]
             references = [ref for ref, _ in admitted]
-            no_comparison_note = OTHER_EPISODES_NOT_READY if other_episodes else NO_OTHER_EPISODES
+            if movie:
+                no_comparison_note = MOVIE_NOTE
+            else:
+                no_comparison_note = OTHER_EPISODES_NOT_READY if other_episodes else NO_OTHER_EPISODES
             owner_keeps = self.store.owner_keep_ranges(mid)
             online_windows = self._online_windows(lookups, version, bindings, [ref for ref, _ in nearest], job)
             signature = hashlib.sha256(
@@ -1960,6 +2140,7 @@ class RepriseService:
                     ffmpeg_path=ffmpeg_path,
                     owner_keeps=owner_keeps,
                     online=online_windows,
+                    movie=movie,
                 )
                 if is_shutting_down():
                     # The stop killed ffmpeg along with the app, so this draft may be cut short, whatever its status: it

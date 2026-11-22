@@ -396,19 +396,30 @@ def create_reprise_blueprint(service):
             raise KeyError(action)
         return jsonify(_json(service.control_job(job_id, action)))
 
+    no_autopilot = "Automatic work is not available right now."
+
     @bp.route("/api/reprise/settings", methods=["GET", "PATCH"])
     @owner
     def settings():
+        autopilot = getattr(service, "autopilot", None)
         if request.method == "PATCH":
-            data = _body({"writes_enabled", "gpu_decode", "online_lookups", "gpu_vram_cap_mb"})
+            data = _body(
+                {"writes_enabled", "gpu_decode", "online_lookups", "gpu_vram_cap_mb", "auto_send", "backfill", "alerts"}
+            )
             asked_cap = "gpu_vram_cap_mb" in data
             cap = data.pop("gpu_vram_cap_mb", None)
+            # The three automatic-work switches go to the autopilot; only the keys that were sent.
+            automatic = {key: data.pop(key) for key in ("auto_send", "backfill", "alerts") if key in data}
             # The memory cap is a whole number of MiB inside the range the setting allows; the switches are booleans.
             low, high = acceleration.VRAM_CAP_RANGE_MB
-            if not (data or asked_cap) or any(type(value) is not bool for value in data.values()):
+            if not (data or asked_cap or automatic) or any(
+                type(value) is not bool for value in (*data.values(), *automatic.values())
+            ):
                 raise ValueError("Invalid setting")
             if asked_cap and (type(cap) is not int or not low <= cap <= high):
                 raise ValueError("Invalid setting")
+            if automatic and autopilot is None:
+                return jsonify(error=no_autopilot), 400
             if "writes_enabled" in data:
                 try:
                     service.set_writes_enabled(data["writes_enabled"])
@@ -422,6 +433,8 @@ def create_reprise_blueprint(service):
                 service.set_online_lookups_enabled(data["online_lookups"])
             if asked_cap:
                 acceleration.set_vram_cap_mb(cap)
+            if automatic:
+                autopilot.update_settings(automatic)
         publisher = service.publisher
         return jsonify(
             publication_available=publisher is not None,
@@ -432,7 +445,17 @@ def create_reprise_blueprint(service):
             gpu_vram_cap_mb=acceleration.vram_cap_mb(),
             # The owner's switch for asking public databases where an episode's intro and credits are.
             online_lookups=service.online_lookups_enabled(),
+            # The background job that looks after the library by itself: its three switches and what it is doing now.
+            autopilot=None if autopilot is None else {**autopilot.settings(), "status": autopilot.status()},
         )
+
+    @bp.post("/api/reprise/alerts/test")
+    @owner
+    def alerts_test():
+        autopilot = getattr(service, "autopilot", None)
+        if autopilot is None:
+            return jsonify(error=no_autopilot), 400
+        return jsonify(_json(autopilot.send_test_alert()))
 
     @bp.route("/api/reprise/setup-guide", methods=["GET", "POST"])
     @owner

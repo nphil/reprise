@@ -91,6 +91,22 @@ def show_ids(path: str, fetch: Callable[[], Mapping[str, Any] | None]) -> MediaI
     return merge_ids(from_path, answer) if from_path.is_episode else answer
 
 
+def film_ids(path: str, fetch: Callable[[], Mapping[str, Any] | None]) -> MediaIds:
+    """A film's ids: from the ``{tmdb-…}`` or ``{imdb-tt…}`` tags of its file or folder name when there are any, else
+    taken from the server's answer for the film (``fetch``). ``kind`` is "movie" only when a source knew the film."""
+    from_path = ids_from_path(path)
+    film = from_path if from_path.kind == "movie" else MediaIds()
+    if film.kind == "movie":
+        return film
+    try:
+        raw = fetch()
+    except Exception as exc:
+        logger.debug("External ids for {} failed: {}", path, type(exc).__name__)
+        raw = None
+    answer = ids_from_server_dict(dict(raw)) if raw else MediaIds()
+    return answer if answer.kind == "movie" else film
+
+
 def _encode(candidates: Sequence[Candidate]) -> str:
     return json.dumps([[c.type.value, c.start_ms, c.end_ms, c.confidence] for c in candidates], separators=(",", ":"))
 
@@ -243,7 +259,7 @@ class OnlineLookups:
         Returns:
             At most one window per kind; empty when no source gave usable times.
         """
-        if not self._clients or not ids.is_episode or not duration_ms:
+        if not self._clients or ids.kind not in ("episode", "movie") or not duration_ms:
             return ()
         found: list[Candidate] = []
         for source in self._clients:

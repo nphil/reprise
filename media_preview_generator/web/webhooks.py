@@ -402,10 +402,28 @@ def _queue_webhook_jobs(
     delay: int,
     item_id_hints: dict[str, dict[str, str]] | None = None,
 ) -> list[str]:
-    """Queue the webhook's Intro & Credits and loudness jobs, each only where that feature is on for the file."""
+    """Queue the webhook's Intro & Credits and loudness jobs, each only where that feature is on for the file.
+
+    Reprise's own automatic mode is told about the file too, whatever those features are set to: it reads Plex for the
+    file itself (and a webhook that comes before Plex has scanned the file is not lost).
+    """
     from ..markers.triggers import submit_webhook_jobs
 
+    _nudge_reprise(path, delay)
     return submit_webhook_jobs(paths=[path], source=source, pin=pin, item_id_hints=item_id_hints, delay_s=delay)
+
+
+def _nudge_reprise(path: str, delay: int) -> None:
+    """Tell Reprise's automatic mode a file just arrived, so it looks at Plex soon instead of at its next half-hourly
+    look. Never fails the webhook."""
+    try:
+        from ..reprise.service import get_service
+
+        autopilot = get_service().autopilot
+        if autopilot is not None:
+            autopilot.nudge(path, delay)
+    except Exception:
+        logger.debug("Reprise's automatic mode could not be told about {}", path, exc_info=True)
 
 
 def _as_dict(value: object) -> dict:

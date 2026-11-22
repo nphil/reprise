@@ -20,6 +20,27 @@
     <p id="rpWriteState" class="rp-note" aria-live="polite">Checking whether sending to Plex is available…</p>
   </section>
 
+  <section class="rp-panel rp-auto" id="rpAutoPanel" aria-labelledby="rpAutoTitle" hidden>
+    <div class="rp-section-head rp-split">
+      <div><h2 id="rpAutoTitle">Automatic work</h2><p>Reprise can look after your library by itself. These switches only control what it does on its own; you can still review everything by hand.</p></div>
+    </div>
+    <div class="rp-auto-row">
+      <div class="form-check form-switch rp-switch"><input class="form-check-input" id="rpAutoSend" type="checkbox" role="switch" aria-describedby="rpAutoSendHelp rpAutoSendNote"><label class="form-check-label" for="rpAutoSend">Send sure matches to Plex automatically</label></div>
+      <p class="rp-note" id="rpAutoSendHelp">When Reprise has confirmed an intro or credits by comparing picture and sound, it sends that one to Plex by itself. Guesses and anything you decided yourself are left alone. Needs “Allow sending to Plex” above. Every automatic change can be undone.</p>
+      <p class="rp-note" id="rpAutoSendNote" hidden></p>
+    </div>
+    <div class="rp-auto-row">
+      <div class="form-check form-switch rp-switch"><input class="form-check-input" id="rpBackfill" type="checkbox" role="switch" aria-describedby="rpBackfillHelp"><label class="form-check-label" for="rpBackfill">Work through the rest of the library quietly</label></div>
+      <p class="rp-note" id="rpBackfillHelp">Reprise slowly analyzes episodes it has not looked at yet, most-watched shows first. New files always go first.</p>
+    </div>
+    <div class="rp-auto-row">
+      <div class="form-check form-switch rp-switch"><input class="form-check-input" id="rpAlerts" type="checkbox" role="switch" aria-describedby="rpAlertsHelp"><label class="form-check-label" for="rpAlerts">Send me an alert when something needs attention</label></div>
+      <p class="rp-note" id="rpAlertsHelp">A short message to your phone. One message per problem, never one per file.</p>
+      <div class="rp-actions"><button type="button" class="rp-btn" id="rpTestAlert">Send test alert</button><span id="rpAlertResult" class="rp-note" role="status" aria-live="polite"></span></div>
+    </div>
+    <p id="rpAutoStatus" class="rp-note" role="status" aria-live="polite"></p>
+  </section>
+
   <section class="rp-panel" aria-labelledby="rpClientsTitle">
     <div class="rp-section-head rp-split">
       <div><h2 id="rpClientsTitle">Apps that read your results</h2><p>Give an app such as Marquee its own limited access to the saved skip and keep ranges.</p></div>

@@ -115,6 +115,11 @@ NO_REFERENCES = "There are no other episodes of this season to compare with, so 
 NO_USABLE_REFERENCES = "None of the other episodes of this season could be used for the comparison."
 NO_OTHER_EPISODES = "This is the only episode of its season in the library, so there is nothing to compare it with."
 OTHER_EPISODES_NOT_READY = "Other episodes of this season are in the library but none are ready to compare yet. Refresh the library and try again."
+MOVIE_NOTE = (
+    "A film has no other episodes to compare with, so its credits can only be suggested (by Plex and the online "
+    "databases). Nothing is confirmed, so a suggestion waits for your approval."
+)
+FILM_NOT_CONFIRMED = "There is nothing in a film to confirm it against."
 COPY_PICTURE_DIFFERS = (
     "This copy of the episode has a different picture format from every other episode of its season, "
     "so it can't be compared with them and nothing could be confirmed."
@@ -266,7 +271,7 @@ def _fit_windows(windows, duration):
     return sorted(fitted, key=lambda w: (w.start_ms, w.end_ms, w.kind, w.source)), ignored
 
 
-def _suggestion(media, window, names, tracks):
+def _suggestion(media, window, names, tracks, movie=False):
     """A suggested window as a proposal: evidence that nothing confirmed it, and a skip only the owner can make
     eligible. Plex's marker (origin plex, also when an online database agrees with it) or online times (origin online);
     ``names`` are who suggested it."""
@@ -276,10 +281,18 @@ def _suggestion(media, window, names, tracks):
     eid = _id(*eid_parts, "plex") if names == ("Plex",) else _id(*eid_parts, window.source, names)
     if names == ("Plex",):
         claim = "Plex's own marker; not confirmed by comparing episodes"
-        text = PLEX_EVIDENCE_TEXT
+        text = (
+            "Plex has a marker here, but a film has no other episode to confirm it against."
+            if movie
+            else PLEX_EVIDENCE_TEXT
+        )
     else:
         claim = f"{who}'s times; not confirmed by comparing episodes"
-        text = f"{who} put the {window.kind} here, but comparing episodes did not confirm it."
+        text = (
+            f"{who} put the {window.kind} here, but a film has no other episode to confirm it against."
+            if movie
+            else f"{who} put the {window.kind} here, but comparing episodes did not confirm it."
+        )
     metrics = {
         "verification_profile": PROFILE_ID,
         "profile_fingerprint": PROFILE_FINGERPRINT,
@@ -996,6 +1009,7 @@ def _analyze(
     ffmpeg_path=None,
     owner_keeps: Sequence[tuple[int, int]] = (),
     online: Mapping[str, Sequence[OnlineWindow]] | None = None,
+    movie: bool = False,
     comparison_failure=None,
 ) -> AnalysisDraft:
     """One analysis pass. ``comparison_failure`` is what an earlier pass failed with (a headline, then details): it
@@ -1003,7 +1017,7 @@ def _analyze(
     why nothing was confirmed. ``owner_keeps`` are the (start, end) ranges the owner keeps: no gap is ever filled
     across one. ``online`` maps a media version id (this file's and its references') to where the online databases
     put its intro and credits, read on that file's clock: the target's become suggested windows, every file's say
-    where else to look in a reference."""
+    where else to look in a reference. ``movie`` marks a film: nothing is compared with it, and the notes say so."""
     cancel = cancel_check or (lambda: False)
     pause = pause_check or (lambda: False)
     threads = 1
@@ -1616,7 +1630,7 @@ def _analyze(
                 )
             )
         for window in suggested:
-            suggestion_evidence, suggestion_range = _suggestion(media, window, suggested_by[window], tracks)
+            suggestion_evidence, suggestion_range = _suggestion(media, window, suggested_by[window], tracks, movie)
             if window.kind in facts:
                 suggestion_evidence = replace(
                     suggestion_evidence, metrics={**suggestion_evidence.metrics, COMPARISON_KEY: facts[window.kind]}
@@ -1635,7 +1649,9 @@ def _analyze(
             if lengths:
                 reasons.append(_bridges_note(_whose(window, suggested_by[window]), lengths))
         for window in suggested:
-            if window.end_ms - window.start_ms > MAX_CANDIDATE_MS:
+            if movie:
+                why = FILM_NOT_CONFIRMED
+            elif window.end_ms - window.start_ms > MAX_CANDIDATE_MS:
                 why = TOO_LONG_TO_COMPARE
             elif window in fragments:
                 why = _confirmed_only(fragments[window])
@@ -1679,6 +1695,7 @@ def analyze(
     ffmpeg_path=None,
     owner_keeps: Sequence[tuple[int, int]] = (),
     online: Mapping[str, Sequence[OnlineWindow]] | None = None,
+    movie: bool = False,
 ) -> AnalysisDraft:
     """Compare the episode with the references and propose what repeats; see ``_analyze``.
 
@@ -1696,6 +1713,7 @@ def analyze(
         "ffmpeg_path": ffmpeg_path,
         "owner_keeps": owner_keeps,
         "online": online,
+        "movie": movie,
     }
     with acceleration.compare_lease():
         draft = _analyze(media, candidates, references, **options)

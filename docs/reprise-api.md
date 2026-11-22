@@ -47,8 +47,45 @@ The JSON body is `{schema_version, show, season, generated_at, tolerance_ms, ple
 - `unconfirmed`: Reprise has only suggestions (Plex's or online), nothing it confirmed.
 - `not_analyzed`, `failed`, `stale`: there is no usable result, so nothing is compared with Plex; `analysis.reasons` gives the failure in plain words.
 - `published`: the latest applied change for this episode in the publication journal is still in force (`published_revision`).
+- `published_auto` (text token `AUTO_SENT`, "sent to Plex automatically"): the same, and Reprise sent it by itself. An episode that carries it does not carry `published`; the row's `published` boolean is still true.
 
 Differences of 1 second or less are not flagged. Plex flags are only raised for a complete, current analysis. `format=text` returns `text/plain`, under 4 KB however big the season: a season is one line per episode (`S3E02 P i1:40-2:10 c20:00-21:40 | R i1:40-2:10 c20:00-21:20 | K 20:36-20:50 | CUTS_KEEP(c 14s) LATE(c 20s)`, with `P` Plex, `R` Reprise, `K` scenes you protected, `U` ranges Reprise could not confirm), cut with a note if it would not fit; a whole show is one line per season. The Library's **Plex report** button opens the same report as a page (`/reprise/report`).
+
+Each row also has `published_automatically`: true when `published` is true and the latest applied change was made by Reprise's own automatic sending (see [Automatic mode](#automatic-mode)), otherwise false.
+
+## Automatic mode
+
+Reprise can read new files, work through the rest of the library and send sure matches to Plex without being asked; the "Autopilot: automatic intro and credits" section of `DESIGN.md` says how, and the "Automatic mode" section of the README says how to turn it on. These routes only show and switch it. Both are owner only: a client key gets `403` with `{"error": "Owner access required"}`.
+
+`GET /api/reprise/settings` and `PATCH /api/reprise/settings` carry one more field, `autopilot`. It is `null` when automatic mode could not start (everything else still works), otherwise:
+
+```json
+{
+  "auto_send": true,
+  "backfill": true,
+  "alerts": true,
+  "status": {
+    "queue_length": 12,
+    "last_reconcile": "2026-11-22T09:30:00Z",
+    "last_alert": {"kind": "problem", "title": "Plex backup failed", "at": "2026-11-22T08:10:00Z"},
+    "auto_send_blocked": "Sending to Plex is switched off, so nothing is sent."
+  }
+}
+```
+
+- `auto_send` (default `true`): send sure matches to Plex automatically. It does nothing unless **Allow sending to Plex** (`writes_enabled`) is also on.
+- `backfill` (default `true`): analyse the rest of the library gradually, in the background.
+- `alerts` (default `true`): send phone alerts.
+- `status.queue_length`: files waiting in the jobs Reprise queued by itself, counting files a job has not listed yet.
+- `status.last_reconcile`: the last time Reprise looked at Plex's listing for new or changed files, ISO 8601 in UTC, or `null` if it has not yet.
+- `status.last_alert`: the latest alert actually sent, `{kind, title, at}`, or `null`. `kind` is `problem`, `resolved` (the "fixed" follow-up) or `test`; `at` is ISO 8601 in UTC.
+- `status.auto_send_blocked`: one plain sentence saying why nothing is being sent automatically right now (sending to Plex is off, an earlier write needs checking, Plex's database could not be backed up, or sending is paused after a refusal), or `null` while it can send. It is also `null` when `auto_send` is off.
+
+`PATCH` accepts `{"auto_send": true | false}`, `{"backfill": …}` and `{"alerts": …}`, alone or together with the other keys, and every value must be a boolean. Anything else, an unknown key or an empty body is `400` with `{"error": "Invalid request or operation"}`. Without automatic mode (`autopilot` is `null`) it is `400` with `{"error": "Automatic work is not available right now."}` and nothing in the same request is changed. The answer is the same body as `GET`, after the change.
+
+Owner `POST /api/reprise/alerts/test` takes no body and sends one test message to the phone, whether or not `alerts` is on. It answers `200` with `{"sent": true, "message": "Test alert sent. Check your phone."}`, or `{"sent": false, "message": "<one plain sentence>"}` when it could not (no token file, the alert server refused it with a code, or it could not be reached). Without automatic mode it is `400` with the same error as above. The token is read from `ntfy-token` in the config folder at the moment of sending and is never returned or logged.
+
+Every change Reprise sends by itself is in the publication journal like any other and can be undone the same way; its change record has `actor: "reprise-auto"`.
 
 ## Reanalysis and job controls
 

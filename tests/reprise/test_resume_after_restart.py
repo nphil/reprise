@@ -399,6 +399,54 @@ def test_a_restart_loop_pauses_for_the_owner_instead_of_running_forever(plant):
     assert plant.names() == ["ep3"]  # ep1 and ep2 had used up their attempts
 
 
+class AutomaticMode:
+    """Stands in for Reprise's automatic mode: records what the service tells it, and may refuse to take it in."""
+
+    def __init__(self, refuses=False):
+        self.calls, self.refuses = [], refuses
+
+    def note_set_aside(self, job_id, media_id):
+        self.calls.append(("set_aside", job_id, media_id))
+        if self.refuses:
+            raise RuntimeError("the alert could not be recorded")
+
+    def note_paused(self, job_id):
+        self.calls.append(("paused", job_id))
+        if self.refuses:
+            raise RuntimeError("the alert could not be recorded")
+
+
+@pytest.mark.parametrize("refuses", [False, True])
+def test_automatic_mode_hears_of_a_set_aside_episode_and_can_never_hold_up_the_job(plant, refuses):
+    ids = plant.add_episodes(3)
+    job = plant.job(ids)
+    plant.behave(ep2="crash")
+    resume_in_a_row(plant, job.id, crashes=1)
+    assert plant.restart() == [job.id]
+    plant.service.autopilot = told = AutomaticMode(refuses=refuses)
+    assert plant.service.resume_after_restart(SETTLED + timedelta(minutes=9)) == ([job.id], [])
+    plant.run(job.id)
+    assert told.calls == [("set_aside", job.id, ids[1])]
+    assert plant.info(job.id)["status"] == "completed"
+    assert plant.store.get_result(ids[1]).analysis_status == "cancelled"
+
+
+@pytest.mark.parametrize("refuses", [False, True])
+def test_automatic_mode_hears_of_a_restart_loop_and_can_never_hold_up_the_pause(plant, refuses):
+    ids = plant.add_episodes(3)
+    job = plant.job(ids)
+    plant.behave(default="crash")
+    resume_in_a_row(plant, job.id, crashes=recovery.LOOP_RESUMES)
+    assert plant.restart() == [job.id]
+    plant.service.autopilot = told = AutomaticMode(refuses=refuses)
+    assert plant.service.resume_after_restart(SETTLED + timedelta(minutes=10)) == ([], [])
+    assert told.calls == [("paused", job.id)]
+    assert plant.info(job.id)["recovery"]["state"] == "paused"
+    # Looking again does not tell it again.
+    assert plant.service.resume_after_restart(SETTLED + timedelta(hours=3)) == ([], [])
+    assert told.calls == [("paused", job.id)]
+
+
 def test_resumes_that_finish_episodes_or_are_long_past_do_not_count_as_a_loop():
     config = {"media_version_ids": ["a", "b", "c"]}
     at = NOW

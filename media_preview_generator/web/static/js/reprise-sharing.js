@@ -31,6 +31,7 @@
             ? (settings.writes_enabled ? 'Sending to Plex is on. Applying a change still needs your confirmation each time.' : 'Sending to Plex is off. Reprise cannot change any Plex markers.')
             : 'Sending to Plex is not available. It needs a Plex connection, which is set up in Connections.';
         if (!settings.publication_available) { const link = el('a', 'Open Connections'); link.href = '/servers'; note.append(link); }
+        showAutopilot(settings.autopilot);
         window.dispatchEvent(new CustomEvent('rp:settings', { detail: settings }));
     }
     $('rpWritesEnabled').addEventListener('change', async event => {
@@ -43,6 +44,49 @@
             try { showSettings(await api('/api/reprise/settings')); } catch (reloadError) { $('rpWriteState').textContent = reloadError.message; return; }
             $('rpWriteState').textContent = error.message;
         }
+    });
+
+    // Automatic work: the three switches of the background job and a line about what it is doing. The panel stays hidden when Reprise has no such job.
+    const AUTO_SWITCHES = { rpAutoSend: 'auto_send', rpBackfill: 'backfill', rpAlerts: 'alerts' };
+    function ago(iso) {
+        const then = Date.parse(iso);
+        if (!iso || Number.isNaN(then)) return null;
+        const seconds = Math.max(0, Math.round((Date.now() - then) / 1000));
+        if (seconds < 60) return 'just now';
+        const [size, name] = [[86400, 'day'], [3600, 'hour'], [60, 'minute']].find(([unit]) => seconds >= unit);
+        const count = Math.floor(seconds / size);
+        return `${count} ${name}${count === 1 ? '' : 's'} ago`;
+    }
+    function showAutopilot(autopilot) {
+        $('rpAutoPanel').hidden = !autopilot;
+        if (!autopilot) return;
+        for (const [id, key] of Object.entries(AUTO_SWITCHES)) $(id).checked = !!autopilot[key];
+        const status = autopilot.status || {};
+        const blocked = $('rpAutoSendNote');
+        blocked.textContent = status.auto_send_blocked || ''; blocked.hidden = !status.auto_send_blocked;
+        const last = status.last_alert;
+        const lastWhen = last && ago(last.at);
+        $('rpAutoStatus').textContent = `${status.queue_length || 0} waiting in the queue · Last check for new files: ${ago(status.last_reconcile) || 'not yet'} · Last alert: ${last ? [last.title, lastWhen].filter(Boolean).join(', ') : 'none yet'}`;
+    }
+    for (const [id, key] of Object.entries(AUTO_SWITCHES)) {
+        $(id).addEventListener('change', async event => {
+            const box = event.target, wanted = box.checked;
+            box.disabled = true;
+            try { showSettings(await api('/api/reprise/settings', { method: 'PATCH', body: { [key]: wanted } })); }
+            catch (error) {
+                box.checked = !wanted; fail(error);
+                try { showSettings(await api('/api/reprise/settings')); } catch (_) { /* the switch already went back to what it was */ }
+            } finally { box.disabled = false; }
+        });
+    }
+    $('rpTestAlert').addEventListener('click', async event => {
+        const send = event.currentTarget, result = $('rpAlertResult');
+        send.disabled = true; result.textContent = 'Sending a test alert…';
+        try {
+            result.textContent = (await api('/api/reprise/alerts/test', { method: 'POST' })).message || 'The test alert was sent.';
+            try { showSettings(await api('/api/reprise/settings')); } catch (_) { /* the status line just keeps its old numbers */ }
+        } catch (error) { result.textContent = (error && error.message) || 'The test alert could not be sent.'; }
+        finally { send.disabled = false; }
     });
 
     function showSecret(result) {

@@ -2,6 +2,7 @@
 
 import subprocess
 import threading
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -116,6 +117,51 @@ class TestStillFailing:
         with pytest.raises(ConnectionError):
             _run(svc, {"server_id": "s", "library_id": "1"})
         svc.job_manager.complete_job.assert_not_called()
+
+
+class TestAutomaticJobsCarryOn:
+    """A file Reprise's own automatic mode found that can't be read yet must not hold back the ones queued with it."""
+
+    @staticmethod
+    def _svc(source, *, registers):
+        svc = _service(BROKEN)
+        svc.job_manager.get_job.return_value = SimpleNamespace(config={"source": source})
+        original = svc._scan_library
+
+        def scan(*args, register, **kwargs):
+            if registers:
+                register(SimpleNamespace(id="version-1"), None, server_id="s", metadata={})
+            return original()
+
+        svc._scan_library = scan
+        return svc
+
+    @pytest.mark.parametrize("source", ["autopilot", "autopilot_backfill"])
+    def test_the_files_that_were_read_are_analyzed_and_the_rest_is_logged(self, source):
+        svc = self._svc(source, registers=True)
+
+        ids = svc._run_refresh("job", {"server_id": "s", "library_id": "1"}, lambda: False, for_analysis=True)
+
+        assert ids == ["version-1"]
+        svc.job_manager.complete_job.assert_not_called()
+        (log,) = [c.args[1] for c in svc.job_manager.add_log.call_args_list if "could not be read" in c.args[1]]
+        assert log == "WARNING - 1 file(s) could not be read yet; they will be looked at again"
+
+    def test_any_other_job_still_fails_when_a_file_could_not_be_read(self):
+        svc = self._svc("scheduled_recently_added", registers=True)
+
+        ids = svc._run_refresh("job", {"server_id": "s", "library_id": "1"}, lambda: False, for_analysis=True)
+
+        assert ids is None
+        assert svc.job_manager.complete_job.call_args.kwargs["error"].startswith("Library refresh incomplete")
+
+    def test_an_automatic_job_that_read_nothing_still_fails(self):
+        svc = self._svc("autopilot", registers=False)
+
+        ids = svc._run_refresh("job", {"server_id": "s", "library_id": "1"}, lambda: False, for_analysis=True)
+
+        assert ids is None
+        assert svc.job_manager.complete_job.call_args.kwargs["error"].startswith("Library refresh incomplete")
 
 
 class TestJobJson:

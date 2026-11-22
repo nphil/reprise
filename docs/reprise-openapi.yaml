@@ -174,16 +174,26 @@ paths:
       responses:
         '200':
           description: Publication availability, write status and what decodes analysed video (a verified GPU, or the CPU)
-          content: {application/json: {schema: {type: object, required: [publication_available, writes_enabled, acceleration, online_lookups], properties: {publication_available: {type: boolean}, writes_enabled: {type: boolean}, acceleration: {$ref: '#/components/schemas/Acceleration'}, online_lookups: {type: boolean, description: "The owner's switch for asking public intro and credits databases (IntroDB, SkipDB, and TheIntroDB when it has a key) where an episode's intro and credits are. On unless explicitly turned off."}}}}}
+          content: {application/json: {schema: {type: object, required: [publication_available, writes_enabled, acceleration, online_lookups, autopilot], properties: {publication_available: {type: boolean}, writes_enabled: {type: boolean}, acceleration: {$ref: '#/components/schemas/Acceleration'}, online_lookups: {type: boolean, description: "The owner's switch for asking public intro and credits databases (IntroDB, SkipDB, and TheIntroDB when it has a key) where an episode's intro and credits are. On unless explicitly turned off."}, autopilot: {$ref: '#/components/schemas/Autopilot'}}}}}
     patch:
-      summary: Change a setting - Plex writes (disabled by default), GPU decoding (on by default) and/or online intro and credits lookups (on by default); send any of them
+      summary: Change a setting - Plex writes (disabled by default), GPU decoding (on by default), online intro and credits lookups (on by default) and/or the three automatic-work switches auto_send, backfill and alerts (all on by default); send any of them
       security: [{owner: []}]
       requestBody:
         required: true
-        content: {application/json: {schema: {type: object, additionalProperties: false, minProperties: 1, properties: {writes_enabled: {type: boolean}, gpu_decode: {type: boolean}, online_lookups: {type: boolean}}}}}
+        content: {application/json: {schema: {type: object, additionalProperties: false, minProperties: 1, properties: {writes_enabled: {type: boolean}, gpu_decode: {type: boolean}, online_lookups: {type: boolean}, auto_send: {type: boolean}, backfill: {type: boolean}, alerts: {type: boolean}}}}}
       responses:
-        '200': {description: "Publication availability, write status, the active video decoder and online_lookups, as in GET"}
-        '400': {description: "Invalid request, or writes_enabled true was refused. A refusal body is {error: <plain sentence>} that names the owner's own folders, for example Sending to Plex needs Plex's database, and Reprise can't see it: ..."}
+        '200': {description: "Publication availability, write status, the active video decoder, online_lookups and autopilot, as in GET"}
+        '400': {description: "Invalid request, or writes_enabled true was refused, or an automatic-work switch was sent while automatic mode could not start (nothing in the request is changed). A refusal body is {error: <plain sentence>} that names the owner's own folders, for example Sending to Plex needs Plex's database, and Reprise can't see it: ..."}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /api/reprise/alerts/test:
+    post:
+      summary: Send one test alert to the phone (it is sent even when alerts are switched off)
+      security: [{owner: []}]
+      responses:
+        '200':
+          description: "Whether the test message was delivered. The alert token is read at the moment of sending and is never returned or logged."
+          content: {application/json: {schema: {type: object, required: [sent, message], properties: {sent: {type: boolean}, message: {type: string, description: One plain sentence for the owner}}}}}
+        '400': {description: "Automatic mode could not start; the body is {error: <plain sentence>}"}
         '403': {$ref: '#/components/responses/Forbidden'}
   /api/reprise/setup-guide:
     get:
@@ -329,6 +339,30 @@ components:
               media_version_ids: {type: array, minItems: 1, maxItems: 100, items: {type: string}}
               idempotency_key: {type: string, maxLength: 256}
   schemas:
+    Autopilot:
+      type: object
+      nullable: true
+      description: Automatic mode - Reprise reads new files, works through the rest of the library and sends only sure matches to Plex by itself. Null when it could not start; everything else still works.
+      required: [auto_send, backfill, alerts, status]
+      properties:
+        auto_send: {type: boolean, description: "Send sure matches to Plex automatically (default true). It does nothing unless writes_enabled is also on."}
+        backfill: {type: boolean, description: "Analyse the rest of the library gradually in the background (default true)."}
+        alerts: {type: boolean, description: "Send phone alerts (default true)."}
+        status:
+          type: object
+          required: [queue_length, last_reconcile, last_alert, auto_send_blocked]
+          properties:
+            queue_length: {type: integer, minimum: 0, description: Files waiting in the jobs Reprise queued by itself}
+            last_reconcile: {type: string, format: date-time, nullable: true, description: The last time Reprise looked at Plex's listing for new or changed files; null before the first look}
+            last_alert:
+              type: object
+              nullable: true
+              required: [kind, title, at]
+              properties:
+                kind: {type: string, enum: [problem, resolved, test]}
+                title: {type: string}
+                at: {type: string, format: date-time}
+            auto_send_blocked: {type: string, nullable: true, description: One plain sentence saying why nothing is sent automatically right now; null while it can send, and null when auto_send is off}
     Acceleration:
       type: object
       description: What decodes the video that analysis compares. A GPU is used only after it matched the CPU frame for frame on packaged reference clips, only for H.264 and HEVC 4:2:0 streams, and any failed GPU decode is repeated on the CPU.

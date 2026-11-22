@@ -12,6 +12,8 @@ The [playback API](docs/reprise-api.md) serves saved results using the exact Ple
 
 The **Plex report** (the Library's "Plex report" button, or `GET /api/reprise/report`) lines Plex's current skip markers up against what Reprise found for a show or season and flags where they differ, for example Plex skipping 52 seconds of story before the credits. It only reads: nothing is written to Plex.
 
+**Automatic mode** lets Reprise handle intro and credits by itself: it analyses new files, works through the rest of your library quietly, sends only the sure matches to Plex, and alerts your phone when something needs attention. It is on by default, but nothing reaches Plex until you also turn on sending. See [Automatic mode](#automatic-mode).
+
 ## Detection evidence and limits
 
 Synthetic checks exercise detection and preservation using reproducible generated media. Results are proposals, and ranking scores are not calibrated probabilities.
@@ -175,7 +177,7 @@ You can skip the mapping by sharing the folder at the same path Plex uses. Here 
 | 3 | **Refresh the library** | Required | Reprise reads your episode list from Plex. It analyzes nothing and changes nothing in Plex or your files. |
 | 4 | **Use a graphics card (GPU)** | Optional | Reprise works on your processor alone. A graphics card only makes video decoding a little faster. See [Optional GPU decoding](#optional-gpu-decoding). |
 | 5 | **Look up intro times online** | Optional | On by default. Reprise asks the public databases IntroDB and SkipDB where intros and credits are. It sends only the show's id, season, episode and the file's length, and their answers are only suggestions. |
-| 6 | **Connect Sonarr and Radarr** | Optional | Lets Sonarr and Radarr tell Reprise about new files. Skip it if you do not use them. Details below. |
+| 6 | **Connect Sonarr and Radarr** | Optional | Lets Sonarr and Radarr tell Reprise about new files, so [automatic mode](#automatic-mode) analyses them straight away. Skip it if you do not use them (Reprise still finds new files within 30 minutes). Details below. |
 | 7 | **Send results to Plex** | Optional | Off by default. Writes the ranges you approved into Plex. See [Turn on sending to Plex](#turn-on-sending-to-plex). |
 
 When steps 1 to 3 are done, opening Reprise goes straight to the **Library**, where a short tour starts the first time. The guide stays one click away: choose **Setup guide** in the sidebar, or open Settings, Advanced, Account. **Skip for now** on the guide stops it opening by itself. An install that was already set up before the guide existed (it has an account and a connected Plex) does not show the guide by itself, but it is still in the sidebar.
@@ -186,7 +188,7 @@ When steps 1 to 3 are done, opening Reprise goes straight to the **Library**, wh
 2. In Sonarr or Radarr, open Settings, Connect, add a **Webhook**, and paste the address (method POST). Leave **Username** empty and put the secret in **Password**. Press **Test**.
 3. If Sonarr or Radarr see your folders at different paths than Plex does, put their path in the **Path used by Sonarr / Radarr** column of the path mapping (Settings, Connections, Edit, Path mappings).
 
-For review only, leave the import and upgrade events off and leave automatic analysis schedules off. A successful **Test** confirms that Reprise can be reached; it does not switch any automation on. These inherited import hooks do not trigger native Reprise analysis (today they only drive Plex preview thumbnails), so see the [thumbnail workflow guide](docs/sonarr-radarr-preview-thumbnails.md) before enabling them. After new episodes arrive, press **Refresh library** in the Library instead.
+Review only still holds: analysing a file only reads it, and nothing reaches Plex unless **Allow sending to Plex** is on. A successful **Test** confirms that Reprise can be reached; it does not switch any automation on. To have Sonarr and Radarr tell Reprise about new files, tick the import and upgrade events as in [Turn on automatic mode](#turn-on-automatic-mode). Those same events also start the older per-library webhook jobs (Plex preview thumbnails and the like) according to your library settings, so see the [thumbnail workflow guide](docs/sonarr-radarr-preview-thumbnails.md) before enabling them. If you have no webhook, press **Refresh library** after new episodes arrive, or wait: automatic mode finds new files within 30 minutes.
 
 Known follow-on work is tracked separately: [consistent Reprise navigation across retained pages](https://github.com/nphil/reprise/issues/2) is not claimed as implemented. GPU-assisted analysis ([issue 1](https://github.com/nphil/reprise/issues/1)) is limited to decoding the video that is analysed; see [Optional GPU decoding](#optional-gpu-decoding).
 
@@ -291,6 +293,58 @@ What sending does: Plex keeps its intro and credits markers in its own database,
 - **Undo one change.** Open the episode and its **Send to Plex** section. It lists every change Reprise prepared or applied for that episode. Press **Undo** on an applied one and confirm. Undo needs the switch on, so switch sending off only after you have undone what you want to undo. Undo refuses when Plex changed those rows since, for example when Plex found its own markers meanwhile, so it never overwrites someone else's change.
 - **Go back to your backup.** If something goes badly wrong, stop Plex and put your backup in place of its database. Plex's page [Restore a database backed up via Scheduled Tasks](https://support.plex.tv/articles/202485658-restore-a-database-backed-up-via-scheduled-tasks/) lists the steps: move the old database and its `-shm` and `-wal` files aside, copy the backup in under the original name, make sure Plex can read and write it, then start Plex.
 
+## Automatic mode
+
+Automatic mode (also called autopilot) is Reprise looking after intro and credits on its own. It runs as one scheduled job inside the app, once a minute. There is nothing extra to install, and it needs no outside script or AI. It does four things:
+
+1. **Analyses new and changed files.** Reprise reads Plex's list of your library and analyses only files that are new or changed. It skips anything already analysed and up to date, and never queues a file twice. A new import goes to the front of the queue. If more than 50 turn up at once (a backlog, for example after a big move), they wait at low priority instead. A file that keeps failing is tried again after 30 minutes, 2 hours and 8 hours, then left alone.
+2. **Works through the rest of the library quietly.** 5 files at a time, at low priority, only while none of Reprise's own jobs is waiting. It starts with the shows you watch most (by Plex's play counts for the Plex account Reprise uses, then most recently watched, then A to Z), in season and episode order, then films, then specials (season 0).
+3. **Sends sure matches to Plex.** Only when **Allow sending to Plex** is on. See "What counts as a sure match" below.
+4. **Alerts your phone** when something needs attention. See "Phone alerts" below.
+
+### What counts as a sure match
+
+Reprise sends a range to Plex by itself only when all of this is true:
+
+- It is a TV episode (never a film, never a special) and its analysis is complete and up to date.
+- Reprise **confirmed** it by finding the same picture and the same sound in other episodes. A suggestion from Plex or an online database never counts, and neither does a gap Reprise only filled in between two confirmed pieces.
+- It is one unbroken run, and nothing you approved, locked, kept or decided yourself touches it.
+- It passes every check a manual send passes, including a dry run of how Plex would store it.
+- Nothing was ever sent, undone or left unfinished for that episode before. Reprise sends an episode at most once by itself.
+
+Only the kind it is sure about is replaced: sure credits leave Plex's intro exactly as it is, and the other way round. Everything else waits for your approval, as before.
+
+Every automatic change can be undone like any other (open the episode, **Send to Plex**, **Undo**) and shows as **Sent to Plex automatically** in the [Plex report](docs/reprise-api.md#plex-report). Before the first automatic change of each day, Reprise makes a safe copy of Plex's database in `/config/plex-db-backups/` (inside the container; the newest 7 are kept). If that copy fails, nothing is sent and you are alerted. If Plex refuses a change, Reprise puts your episode back as it was, pauses automatic sending (30 minutes; 6 hours after 3 refusals in a row) and alerts you. If it cannot tell whether Plex took a change, it pauses for 6 hours, never repeats it and alerts you.
+
+Heads-up: the first automatic pass after an update can send episodes that were analysed earlier and now qualify. If you would rather look first, switch **Send sure matches to Plex automatically** off before you update.
+
+Films get credits only, and only as suggestions (Plex's own credits marker, and the online databases SkipDB and TheIntroDB). They wait for your approval and are never sent automatically. Reprise does not detect credits in films yet. Scenes during or after credits stay protected, as for episodes.
+
+### Turn on automatic mode
+
+1. **Check the switches.** Open Settings, **Sharing**, and find **Automatic work**. All three switches are on by default: **Send sure matches to Plex automatically**, **Work through the rest of the library quietly** and **Send me an alert when something needs attention**. A line under them shows how many files are waiting in the queue, when Reprise last looked at Plex and the last alert. Switching the first one off pauses automatic sending only; analysis carries on.
+2. **Let Sonarr and Radarr tell Reprise at once.** First make sure you added the Reprise webhook in [step 6 of the Setup guide](#first-start-and-the-setup-guide). Then, in the webhook you made for Reprise:
+   - **Sonarr:** Settings, Connect, open it, tick **On File Import** and **On File Upgrade**, and leave every other event off. Save.
+   - **Radarr:** Settings, Connect, open it, tick **On Import** and **On Upgrade**, and leave every other event off. Save.
+
+   Without this, Reprise still finds new files, within 30 minutes. If a message arrives before Plex has scanned the file, Reprise asks Plex again every 2 minutes, up to 6 times. These events also start the older per-library webhook jobs, according to your library settings.
+3. **To let it send to Plex,** follow [Turn on sending to Plex](#turn-on-sending-to-plex), including the backup and the **Allow sending to Plex** switch. Both switches must be on. While **Allow sending to Plex** is off, automatic mode only reads and analyses, and the line under the switches says "Sending to Plex is switched off, so nothing is sent."
+4. **Set up phone alerts** (optional), below.
+
+### Phone alerts
+
+Reprise sends alerts with [ntfy](https://ntfy.sh/) to the server `https://ntfy.nateshome.net`, topic `homelabber`. Both are built in. You give Reprise only the access token: save it as the file `ntfy-token` in the folder you share with Reprise as `/config` (so `/config/ntfy-token` inside the container), and make the file private (`chmod 600`). Reprise reads it only at the moment of sending and never writes it to a log. Press **Send test alert** (under the switches) to check: it sends one message even when alerts are switched off, and says in words if it could not.
+
+You get one alert per problem, never one per file, and a plain "fixed" message when it clears. The alerts are:
+
+- Episodes were set aside after repeated failures (one message per job).
+- Reprise paused an analysis because it kept stopping.
+- Plex, or Plex's library list, could not be reached for more than 1 hour.
+- Plex refused an automatic change.
+- The daily backup of Plex's database failed.
+- Low disk space where `/config` lives (alert under 2 GB free, fixed at 3 GB).
+- An automatic change whose result Reprise cannot tell.
+
 ## Troubleshooting
 
 Find the words you see in the first column. Where a row says **Edit**, it means Settings, Connections, then **Edit** on your Plex server.
@@ -307,6 +361,7 @@ Find the words you see in the first column. Where a row says **Edit**, it means 
 | **No Plex library is connected yet.** (Library) | Plex is not connected, or no library is chosen. | Do steps 1 and 2 of the Setup guide, or open Settings, Connections. |
 | **Connection failed** (setup wizard, or a server card in Connections) | Reprise cannot reach Plex or sign in: the address is wrong, Plex is not running, or the sign-in is no longer valid. | Use your server's IP and Plex's port, for example `http://192.168.1.100:32400`, not `localhost`. Inside Reprise's container, `localhost` means Reprise itself. Check that Plex is running, and sign in again if asked. |
 | **401** or **Authentication required** when Sonarr or Radarr tests the webhook | The webhook secret is missing or wrong. | In the Sonarr or Radarr webhook, leave **Username** empty and put the webhook secret (Settings, Connections, Webhook secret) in **Password**. If you regenerated the secret, update every sender. If they cannot reach Reprise at all, use the server's IP, not `localhost`, and port 8080. |
+| **Send test alert** says "No ntfy token was found", "refused the message" or "could not be reached" | The token file is missing or wrong, or the alert server cannot be reached from Reprise. | Save the token as `ntfy-token` in the folder shared as `/config` (see [Phone alerts](#phone-alerts)) and press the button again. A refusal with a code usually means a wrong token. |
 | **Publication conflict; refresh and try again** (**Prepare a Plex change** or **Apply to Plex**) | Something changed since you reviewed the episode (the file, Plex's details for it, or your saved review), or a safety check refused. Reprise refuses rather than guesses. | Refresh the library, open the episode again, save your review, and prepare the change again. If every episode is refused, go through "Before you start" in [Turn on sending to Plex](#turn-on-sending-to-plex), including Plex's own marker. |
 
 After **Sending to Plex can't be turned on:** the reason that follows is one of these:

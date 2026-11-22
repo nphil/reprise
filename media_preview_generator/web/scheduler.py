@@ -63,6 +63,7 @@ _QUIET_HOURS_RECHECK = "__qh_recheck"
 _LIBRARY_HEALTH_NIGHTLY = "__library_health_nightly"
 _MARKERS_CHECK_SERVERS_DAILY = "__markers_check_servers_daily"
 _PLEX_HELD_REREADS = "__plex_held_rereads"
+_REPRISE_AUTOPILOT = "__reprise_autopilot"
 
 # APScheduler day_of_week names (Mon-first). Order matters for cron
 # strings — keep these literal so a typo in the JS payload can't slip
@@ -762,6 +763,24 @@ def run_markers_check_servers_daily() -> None:
         run_markers_reconcile()
     except Exception:
         logger.exception("Daily Check servers could not start. It will try again tomorrow.")
+
+
+def run_reprise_autopilot() -> None:
+    """Scheduler entry point, every minute: Reprise's own automatic work (new files, backfill, sending, alerts).
+
+    Logs instead of raising so APScheduler never sees a failure.
+    """
+    from ..reprise.service import get_service
+
+    try:
+        service = get_service()
+    except RuntimeError:
+        return  # Reprise has not started (yet), so there is nothing to do this minute
+    try:
+        if service.autopilot is not None:
+            service.autopilot.tick()
+    except Exception:
+        logger.exception("Reprise's automatic work failed. It will try again in a minute.")
 
 
 # Module-level function for APScheduler to call
@@ -1765,6 +1784,7 @@ class ScheduleManager:
             self._register_library_health_nightly()
             self._register_markers_check_servers_daily()
             self._register_plex_held_rereads()
+            self._register_reprise_autopilot()
 
     def _remove_retired_schedule_jobs(self) -> None:
         """Drop the jobstore entries (start cron and stop cron) of schedules deleted at load."""
@@ -1836,6 +1856,22 @@ class ScheduleManager:
             )
         except Exception:
             logger.warning("Could not register the held Plex re-reads job", exc_info=True)
+
+    def _register_reprise_autopilot(self) -> None:
+        """Add the internal job that runs Reprise's automatic work (new files, backfill, alerts) every minute."""
+        try:
+            self.scheduler.add_job(
+                run_reprise_autopilot,
+                IntervalTrigger(minutes=1),
+                id=_REPRISE_AUTOPILOT,
+                # Not at once: the app finishes starting (and resumes interrupted work) first.
+                next_run_time=datetime.now() + timedelta(seconds=90),
+                replace_existing=True,
+                coalesce=True,
+                max_instances=1,
+            )
+        except Exception:
+            logger.warning("Could not register Reprise's automatic work", exc_info=True)
 
     def _register_library_health_nightly(self) -> None:
         """Add the internal 03:00 library-health check; hidden from user schedules by its ``__`` id."""

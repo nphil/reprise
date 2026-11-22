@@ -2374,6 +2374,7 @@ class TestStartRemovesLeftoverScheduleJobs:
             execute_schedule_stop,
             execute_scheduled_job,
             run_markers_check_servers_daily,
+            run_reprise_autopilot,
         )
 
         config_dir = str(tmp_path / "config")
@@ -2402,6 +2403,7 @@ class TestStartRemovesLeftoverScheduleJobs:
             "__library_health_nightly": jobs["__library_health_nightly"],
             "__markers_check_servers_daily": run_markers_check_servers_daily,
             "__plex_held_rereads": jobs["__plex_held_rereads"],
+            "__reprise_autopilot": run_reprise_autopilot,
         }
 
     def test_nothing_is_removed_when_schedules_json_failed_to_load(self, tmp_path):
@@ -2672,7 +2674,8 @@ class TestPausedIntroCreditsJobsAfterAScheduleChanges:
 def test_nothing_is_scheduled_after_a_fresh_start(tmp_path):
     """A new install has no user schedule; the only jobs are the internal ``__`` ones.
 
-    The internal ``__`` jobs (library-health nightly, daily Check servers, held Plex re-reads) are not user schedules.
+    The internal ``__`` jobs (library-health nightly, daily Check servers, held Plex re-reads, Reprise's automatic work)
+    are not user schedules.
     """
     manager = ScheduleManager(config_dir=str(tmp_path / "config"), run_job_callback=None)
     manager.start()
@@ -2683,9 +2686,56 @@ def test_nothing_is_scheduled_after_a_fresh_start(tmp_path):
             "__library_health_nightly",
             "__markers_check_servers_daily",
             "__plex_held_rereads",
+            "__reprise_autopilot",
         ]
     finally:
         manager.stop()
+
+
+def test_reprise_automatic_work_is_one_internal_job_that_ticks_every_minute_after_the_app_started(tmp_path):
+    from datetime import timedelta
+
+    from media_preview_generator.web.scheduler import run_reprise_autopilot
+
+    manager = ScheduleManager(config_dir=str(tmp_path / "config"), run_job_callback=None)
+    manager.start()
+    try:
+        job = manager.scheduler.get_job("__reprise_autopilot")
+        assert job.func is run_reprise_autopilot
+        assert job.trigger.interval == timedelta(minutes=1)
+        assert job.max_instances == 1 and job.coalesce
+        # Not at once: the app finishes starting (and resumes interrupted work) first.
+        assert job.next_run_time > datetime.now(job.next_run_time.tzinfo) + timedelta(seconds=30)
+        assert all(schedule["id"] != "__reprise_autopilot" for schedule in manager.get_all_schedules())
+    finally:
+        manager.stop()
+
+
+def test_the_reprise_automatic_job_ticks_the_service_and_never_raises(monkeypatch):
+    from media_preview_generator.reprise import service as reprise_service
+    from media_preview_generator.web.scheduler import run_reprise_autopilot
+
+    ticks = []
+
+    def broken():
+        raise RuntimeError("the pass failed")
+
+    def no_service():
+        raise RuntimeError("Reprise is not started")
+
+    monkeypatch.setattr(
+        reprise_service, "get_service", lambda: SimpleNamespace(autopilot=SimpleNamespace(tick=lambda: ticks.append(1)))
+    )
+    run_reprise_autopilot()
+    assert ticks == [1]
+    # A failed pass, a service without automatic work and no service at all are all logged, never raised.
+    monkeypatch.setattr(reprise_service, "get_service", lambda: SimpleNamespace(autopilot=SimpleNamespace(tick=broken)))
+    run_reprise_autopilot()
+    monkeypatch.setattr(reprise_service, "get_service", lambda: SimpleNamespace(autopilot=None))
+    run_reprise_autopilot()
+    monkeypatch.setattr(reprise_service, "get_service", no_service)
+    run_reprise_autopilot()
+    assert ticks == [1]
 
 
 class TestMultiLibrarySchedules:

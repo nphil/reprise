@@ -49,6 +49,7 @@ FLAGS = {
     "stale": ("attention", "STALE", "with an out-of-date analysis"),
     "not_analyzed": ("attention", "NOT_ANALYZED", "not analyzed yet"),
     "published": ("good", "PUBLISHED", "sent to Plex"),
+    "published_auto": ("good", "AUTO_SENT", "sent to Plex automatically"),
 }
 
 _PLAIN_REASONS = (
@@ -206,7 +207,17 @@ def _nearest(marker, confirmed):
 
 
 def classify(
-    *, status, freshness, stale, plex, ranges, duration_ms, published, unknown_kinds=frozenset(), comparisons=None
+    *,
+    status,
+    freshness,
+    stale,
+    plex,
+    ranges,
+    duration_ms,
+    published,
+    automatic=False,
+    unknown_kinds=frozenset(),
+    comparisons=None,
 ):
     """Every flag one episode earns, worst first. A flag is ``{code, severity, kind, seconds, text}``.
 
@@ -289,7 +300,9 @@ def classify(
             for kind in PLEX_KINDS:
                 if kind not in served and kind not in unknown_kinds and any(r.kind == kind for r in confirmed):
                     add("plex_missing", f"Plex has no {kind} skip, Reprise found one", kind)
-    if published:
+    if published and automatic:
+        add("published_auto", "Sent to Plex automatically")
+    elif published:
         add("published", "Sent to Plex")
     order = list(FLAGS)
     ordered = sorted(found.values(), key=lambda f: (order.index(f["code"]), f["kind"] or ""))
@@ -337,7 +350,7 @@ def _by_time(ranges):
     return sorted(ranges, key=lambda r: (r.start_ms, r.end_ms))
 
 
-def episode_row(item, result, current, why, plex, unknown_kinds, published_revision):
+def episode_row(item, result, current, why, plex, unknown_kinds, published_revision, automatic=False):
     """One report row. ``item``: catalogue facts; ``result``: the saved ``AnalysisResult`` or None; ``current``: the
     service's lookup answer; ``why``: the stale reason code; ``plex``: markers, None when unread."""
     status = current["analysis_status"]
@@ -353,6 +366,7 @@ def episode_row(item, result, current, why, plex, unknown_kinds, published_revis
         ranges=ranges,
         duration_ms=item["duration_ms"],
         published=published,
+        automatic=automatic,
         unknown_kinds=unknown_kinds,
         comparisons=_comparisons(result),
     )
@@ -392,6 +406,7 @@ def episode_row(item, result, current, why, plex, unknown_kinds, published_revis
         },
         "published": published,
         "published_revision": published_revision,
+        "published_automatically": published and automatic,
     }
 
 
@@ -569,9 +584,11 @@ def build_report(service, show, season=None):
         for library in {e["library_id"] for e in group}:
             hidden[(server_id, library)] = _hidden_kinds(server, library)
 
-    published = {}
+    published, automatic = {}, set()
     if service.publisher is not None:
-        published = service.publisher.published_versions([e["item"]["id"] for e in entries])
+        ids = [e["item"]["id"] for e in entries]
+        published = service.publisher.published_versions(ids)
+        automatic = service.publisher.automatically_published(ids)
 
     rows = []
     for e in entries:
@@ -586,6 +603,7 @@ def build_report(service, show, season=None):
                 plex,
                 hidden.get((server_id, e["library_id"]), frozenset()),
                 published.get(e["item"]["id"]),
+                e["item"]["id"] in automatic,
             )
         )
     unread = sum(1 for row in rows if row["plex"]["status"] == "unavailable")

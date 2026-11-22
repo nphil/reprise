@@ -22,6 +22,7 @@
         ['stale', 'Out of date', 'warning'],
         ['not_analyzed', 'Not analyzed', 'warning'],
         ['published', 'Sent to Plex', 'positive'],
+        ['published_auto', 'Sent to Plex automatically', 'positive'],
     ];
     const TONE = { problem: 'danger', attention: 'warning', info: 'info', good: 'positive' };
     const KIND = { intro: 'Intro', credits: 'Credits', recap: 'Recap', preview: 'Preview' };

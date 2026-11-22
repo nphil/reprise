@@ -31,6 +31,10 @@ class PublicationConflict(RevisionConflict, ValueError):
     """The reviewed state or the external database no longer matches."""
 
 
+# Who the journal names for a change Reprise made by itself (its automatic sending); the owner's carry their own name.
+AUTO_ACTOR = "reprise-auto"
+
+
 def _json(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
@@ -526,23 +530,64 @@ class ReprisePublisher:
             ]
         return [self._public(self._load(i)) for i in ids]
 
-    def published_versions(self, media_version_ids):
-        """``{media_version_id: revision}`` for each version whose latest settled change in the journal is an applied
-        one (a later undo clears it). One read of the journal: the Plex report asks for a whole season at once."""
+    def _latest_settled(self, media_version_ids):
+        """``{media_version_id: (state, revision, actor)}`` for each version's latest applied-or-undone change in the
+        journal. One read of the journal: the Plex report asks for a whole season at once."""
         ids = list(dict.fromkeys(media_version_ids))
         latest = {}
         with self.store.marker_store._reading() as conn:
             for start in range(0, len(ids), 400):
                 chunk = ids[start : start + 400]
                 rows = conn.execute(
-                    "SELECT media_version_id,state,json_extract(payload,'$.revision') AS revision "
+                    "SELECT media_version_id,state,actor,json_extract(payload,'$.revision') AS revision "
                     "FROM reprise_publication_changes WHERE state IN ('applied','undone') "
                     f"AND media_version_id IN ({','.join('?' for _ in chunk)}) ORDER BY created_at,rowid",
                     chunk,
                 ).fetchall()
                 for row in rows:
-                    latest[row["media_version_id"]] = (row["state"], row["revision"])
-        return {version: revision for version, (state, revision) in latest.items() if state == "applied"}
+                    latest[row["media_version_id"]] = (row["state"], row["revision"], row["actor"])
+        return latest
+
+    def published_versions(self, media_version_ids):
+        """``{media_version_id: revision}`` for each version whose latest settled change in the journal is an applied
+        one (a later undo clears it)."""
+        latest = self._latest_settled(media_version_ids)
+        return {version: revision for version, (state, revision, _) in latest.items() if state == "applied"}
+
+    def automatically_published(self, media_version_ids):
+        """The versions among these whose latest settled change is an applied one Reprise made by itself."""
+        latest = self._latest_settled(media_version_ids)
+        return {version for version, (state, _, actor) in latest.items() if state == "applied" and actor == AUTO_ACTOR}
+
+    def automatic_hold(self, media_version_id):
+        """Why Reprise must not send this episode by itself, as a plain sentence; None when nothing stands in the way.
+        A change already sent (by anyone), undone or left unfinished is a decision the owner takes from there; one that
+        never reached Plex (``not_applied``) counts for nothing."""
+        with self.store.marker_store._reading() as conn:
+            rows = conn.execute(
+                "SELECT state,actor FROM reprise_publication_changes WHERE media_version_id=?", (media_version_id,)
+            ).fetchall()
+        for row in rows:
+            if row["state"] == "applied":
+                return "It was already sent to Plex" + (" automatically." if row["actor"] == AUTO_ACTOR else " by you.")
+            if row["state"] == "undone":
+                return "A change sent to Plex for it was undone, so what happens next is yours to decide."
+            if row["state"] != "not_applied":
+                return "An earlier change to Plex for it is not finished."
+        return None
+
+    def unfinished_writes(self):
+        """How many changes are being written to Plex right now or were cut off mid-write (``applying``/``undoing``).
+        An ``uncertain`` one is not counted: it is final, and nothing resolves it from here."""
+        with self.store.marker_store._reading() as conn:
+            return conn.execute(
+                "SELECT COUNT(*) FROM reprise_publication_changes WHERE state IN ('applying','undoing')"
+            ).fetchone()[0]
+
+    def abandon(self, change_id, actor):
+        """Give up a prepared change that was never applied: Plex was not touched and the change is no longer offered."""
+        self._actor(actor)
+        self._intent(change_id, "prepared", "not_applied", actor)
 
     def _set_state(self, change_id, state, actor):
         with self._journal() as conn:

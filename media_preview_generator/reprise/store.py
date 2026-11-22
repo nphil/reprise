@@ -531,6 +531,52 @@ class RepriseStore:
             if r.action == "keep" and _owner_decided(r, overrides)
         )
 
+    def owner_decided_ids(self, media_version_id):
+        """The ids of the ranges that are the owner's (made, locked, overridden or reviewed by them), as
+        :meth:`owner_keep_ranges` reads them; empty when nothing is stored."""
+        with self.marker_store._reading(snapshot=True) as c:
+            result = self._result(c, media_version_id)
+            overrides = self._override_ids(c, media_version_id)
+        return frozenset(r.id for r in (result.ranges if result else ()) if _owner_decided(r, overrides))
+
+    def bound_parts(self, server_id, library_id):
+        """What Reprise has read from one Plex library, as ``{(rating key, media id, part id): (size, duration_ms)}``
+        for every active binding: all a comparison with Plex's own listing needs, in one query."""
+        with self.marker_store._reading() as c:
+            rows = c.execute(
+                "SELECT rating_key,media_id,part_id,identity,metadata FROM reprise_bindings WHERE active=1 AND server_id=?",
+                (server_id,),
+            ).fetchall()
+        parts = {}
+        for row in rows:
+            if str(json.loads(row["metadata"]).get("library_id")) != str(library_id):
+                continue
+            identity = json.loads(row["identity"])
+            parts[(row["rating_key"], row["media_id"], row["part_id"])] = (
+                identity["part_size_bytes"],
+                identity["duration_ms"],
+            )
+        return parts
+
+    def unanalyzed(self):
+        """The files Reprise has read that have no analysis that counts, oldest first: none yet, one that did not
+        finish, or one made by an older method. Each is ``{"version_id", "server_id", "metadata"}`` (a file with
+        several audio tracks appears once). An ``unsupported`` result is final and a ``running`` one is on its way,
+        so neither is here."""
+        with self.marker_store._reading() as c:
+            rows = c.execute(
+                "SELECT b.version_id AS version_id,b.server_id AS server_id,b.metadata AS metadata "
+                "FROM reprise_bindings b LEFT JOIN reprise_decision_results r ON r.version_id=b.version_id "
+                "WHERE b.active=1 AND (r.version_id IS NULL OR r.status IN ('failed','cancelled') "
+                "OR (r.status='complete' AND r.policy_version<>?)) "
+                "GROUP BY b.version_id ORDER BY MIN(b.rowid)",
+                (POLICY_VERSION,),
+            ).fetchall()
+        return [
+            {"version_id": r["version_id"], "server_id": r["server_id"], "metadata": json.loads(r["metadata"])}
+            for r in rows
+        ]
+
     def online_answer(self, source, lookup_key):
         """What an online source answered for one episode, as ``online.OnlineLookups`` stored it; None when never asked."""
         with self.marker_store._reading(snapshot=True) as c:
@@ -877,6 +923,75 @@ class RepriseStore:
                     "UPDATE reprise_decision_results SET revision=revision+1 WHERE version_id=?", (media_version_id,)
                 )
             return self._result(c, media_version_id)
+
+    def auto_approve(self, media_version_id, expected_revision, range_ids):
+        """Approve ranges on Reprise's own authority, for the automatic sender: only skips a detector confirmed that are
+        still proposed, unlocked and untouched by the owner, on a result that is complete, current and unchanged.
+        Unlike :meth:`save_review` it records no owner override, so what the owner decided stays what tells their
+        ranges apart. Returns the stored result."""
+        wanted = set(range_ids)
+        if not wanted:
+            raise ValueError("no range to approve")
+        with self.transaction() as c:
+            result = self._result(c, media_version_id)
+            if (
+                not result
+                or result.result_revision != expected_revision
+                or result.analysis_status != "complete"
+                or result.freshness != "current"
+            ):
+                raise RevisionConflict("result changed or is not current")
+            overrides = self._override_ids(c, media_version_id)
+            by_id = {r.id: r for r in result.ranges}
+            for rid in wanted:
+                r = by_id.get(rid)
+                if (
+                    r is None
+                    or r.origin != "detector"
+                    or r.action != "skip"
+                    or r.review_status != "proposed"
+                    or r.locked
+                    or rid in overrides
+                ):
+                    raise RevisionConflict("range changed or is not for automatic approval")
+            for rid in wanted:
+                c.execute(
+                    "UPDATE reprise_ranges SET data=? WHERE version_id=? AND id=?",
+                    (_json(asdict(replace(by_id[rid], review_status="approved"))), media_version_id, rid),
+                )
+            c.execute("UPDATE reprise_decision_results SET revision=revision+1 WHERE version_id=?", (media_version_id,))
+            return self._result(c, media_version_id)
+
+    def auto_unapprove(self, media_version_id, expected_revision, range_ids):
+        """Take back :meth:`auto_approve` for ranges that were not sent after all. Only an approved, unlocked detector
+        skip the owner never touched moves back to proposed; a result that changed since ``expected_revision`` is the
+        owner's now and raises ``RevisionConflict``. Returns whether anything changed."""
+        wanted = set(range_ids)
+        with self.transaction() as c:
+            result = self._result(c, media_version_id)
+            if not result or result.result_revision != expected_revision:
+                raise RevisionConflict("result changed")
+            overrides = self._override_ids(c, media_version_id)
+            moved = [
+                r
+                for r in result.ranges
+                if r.id in wanted
+                and r.origin == "detector"
+                and r.action == "skip"
+                and r.review_status == "approved"
+                and not r.locked
+                and r.id not in overrides
+            ]
+            for r in moved:
+                c.execute(
+                    "UPDATE reprise_ranges SET data=? WHERE version_id=? AND id=?",
+                    (_json(asdict(replace(r, review_status="proposed"))), media_version_id, r.id),
+                )
+            if moved:
+                c.execute(
+                    "UPDATE reprise_decision_results SET revision=revision+1 WHERE version_id=?", (media_version_id,)
+                )
+            return bool(moved)
 
     def _new_client(self, c, name, scopes):
         if not isinstance(name, str) or not name.strip():

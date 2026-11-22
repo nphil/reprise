@@ -11,6 +11,12 @@
 #repriseSharing .rp-note a { color: var(--lu-accent-text); }
 #repriseSharing #rpWriteState { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
 
+/* Automatic work: each switch has its explanation underneath, like the online-lookups switch on the Library page. */
+#repriseSharing .rp-auto-row { display: grid; gap: 4px; max-width: 640px; padding: 12px 0; border-top: 1px solid var(--lu-edge-soft); }
+#repriseSharing .rp-auto-row .rp-switch .form-check-label { white-space: normal; }
+#repriseSharing .rp-auto-row .rp-actions { margin-top: 4px; }
+#repriseSharing #rpAutoStatus { padding-top: 12px; border-top: 1px solid var(--lu-edge-soft); }
+
 #repriseSharing #rpClientForm { max-width: 34rem; margin-top: 4px; padding: 16px; border: 1px solid var(--lu-edge-soft); border-radius: var(--lu-radius-control); background: var(--lu-canvas); }
 #repriseSharing #rpClientForm .rp-toggle { display: flex; align-items: center; gap: 10px; min-height: var(--lu-target); font-weight: 600; }
 #repriseSharing #rpClientForm .rp-actions { margin-top: 12px; }
