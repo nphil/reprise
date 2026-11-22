@@ -70,12 +70,49 @@ def _remove_partial(partial: str) -> None:
             os.remove(partial + suffix)
 
 
+# Plex's own SQLite build adds a full-text tokenizer and ICU collations that stock SQLite can't load. A check that needs
+# one of them fails for that reason alone, not because the copy is damaged.
+_NEEDS_PLEX_EXTENSION = ("unknown tokenizer", "no such collation sequence")
+
+
 def _quick_check_ok(conn: sqlite3.Connection) -> bool:
+    """Every ordinary table of the copy is sound.
+
+    Each table is checked by name (structure, and its indexes). A table whose check needs one of Plex's own extensions
+    is instead read in full without its indexes, which still proves every row of the copy is readable. Virtual tables
+    and their shadow tables are left out: they can't be opened without Plex's tokenizer at all.
+    """
     try:
-        return conn.execute("PRAGMA quick_check").fetchall() == [("ok",)]
+        virtual = {
+            name
+            for (name,) in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND sql LIKE 'CREATE VIRTUAL%'"
+            )
+        }
+        tables = [
+            name
+            for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            if name not in virtual and not any(name.startswith(v + "_") for v in virtual)
+        ]
+        if not tables:
+            return False
+        for name in tables:
+            try:
+                if conn.execute(f"PRAGMA quick_check({_quoted(name)})").fetchall() != [("ok",)]:
+                    logger.warning("The backup of Plex's database failed its check on table {}", name)
+                    return False
+            except sqlite3.OperationalError as exc:
+                if not any(text in str(exc) for text in _NEEDS_PLEX_EXTENSION):
+                    raise
+                conn.execute(f"SELECT count(*) FROM {_quoted(name)} NOT INDEXED").fetchone()
+        return True
     except sqlite3.Error as exc:
         logger.warning("Checking the backup of Plex's database failed: {}", exc)
         return False
+
+
+def _quoted(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
 
 
 def _check_free_space(db_path: str, directory: str) -> None:

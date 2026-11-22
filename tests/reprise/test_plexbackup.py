@@ -316,3 +316,22 @@ def test_todays_backup_defaults_to_the_current_time(tmp_path, monkeypatch):
     (tmp_path / FIRST_NAME).write_text("x")
 
     assert todays_backup(str(tmp_path)) == str(tmp_path / FIRST_NAME)
+
+
+def test_a_copy_needing_plex_s_own_collation_still_passes_and_damage_still_fails(tmp_path):
+    """Plex's database sorts some indexes with an ICU collation stock SQLite can't load; that alone must not block."""
+    path = str(tmp_path / "plexlike.db")
+    with contextlib.closing(sqlite3.connect(path)) as conn:
+        conn.create_collation("icu_root", lambda a, b: (a > b) - (a < b))
+        conn.execute("CREATE TABLE tags (id INTEGER PRIMARY KEY, tag TEXT)")
+        conn.execute("CREATE INDEX tags_tag ON tags (tag COLLATE icu_root)")
+        conn.executemany("INSERT INTO tags (tag) VALUES (?)", [("b",), ("a",)])
+        conn.commit()
+    with contextlib.closing(sqlite3.connect(path)) as plain:
+        assert plexbackup._quick_check_ok(plain)
+    with contextlib.closing(sqlite3.connect(path)) as plain:
+        plain.execute("PRAGMA writable_schema=ON")
+        plain.execute("UPDATE sqlite_master SET rootpage=9999 WHERE name='tags'")
+        plain.commit()
+    with contextlib.closing(sqlite3.connect(path)) as plain:
+        assert not plexbackup._quick_check_ok(plain)
