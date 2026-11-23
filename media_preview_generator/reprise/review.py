@@ -78,7 +78,9 @@ def plex_projection(result, identity, eligible, plex_now=None):
             or (previous is not None and item.start_ms < previous.end_ms)
         ):
             raise ValueError("Skip ranges overlap or have invalid bounds")
-        limit = span_limit(item.kind, item.start_ms, item.end_ms, identity.duration_ms, item.terminal)
+        limit = span_limit(
+            item.kind, item.start_ms, item.end_ms, identity.duration_ms, item.terminal, owner=is_owner_span(item)
+        )
         if limit:
             raise ValueError(limit)
         if identity.audio_stream_id not in item.audio_stream_ids:

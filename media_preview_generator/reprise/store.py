@@ -1002,7 +1002,9 @@ class RepriseStore:
             if len(set(kinds)) != len(kinds):
                 raise ReviewRefused("Set one exact skip for the intro and one for the credits, not two of the same.")
             for span in spans:
-                limit = span_limit(span.kind, span.start_ms, span.end_ms, version.duration_ms, span.terminal)
+                limit = span_limit(
+                    span.kind, span.start_ms, span.end_ms, version.duration_ms, span.terminal, owner=True
+                )
                 if limit:
                     raise ReviewRefused(limit)
                 # One exact skip per kind: the new one replaces the owner's earlier one.

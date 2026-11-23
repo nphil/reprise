@@ -531,6 +531,8 @@ def test_the_two_exact_skips_cannot_overlap(lab):
     [
         ("intro", 90_000, 98_000, LAST_TWO_SECONDS),
         ("intro", 10_000, 99_000, LAST_TWO_SECONDS),
+        ("intro", 10_000, 100_000, LAST_TWO_SECONDS),
+        ("credits", 80_000, 99_999, LAST_TWO_SECONDS),
         ("credits", 1_999, 50_000, CREDITS_START),
         ("intro", 10_000, 100_001, OUTSIDE_THE_FILE),
         ("intro", 20_000, 20_000, OUTSIDE_THE_FILE),
@@ -1015,3 +1017,17 @@ def test_the_publication_routes_say_nothing_to_publish_in_a_plain_sentence_and_s
     assert change.status_code == 200
     assert client.post(f"/api/reprise/publications/{change.get_json()['id']}/apply").status_code == 200
     assert _marker_times(lab.plex, "intro") == [(10_000, 22_000)]
+
+
+def test_a_credits_skip_set_to_the_very_end_goes_to_plex_as_its_final_credits_marker(client, lab):
+    ep = lab.episode(1)
+    _seed_marker(lab.plex, "credits", 80_000, 90_000, 0)
+    lab.analyse(ep, suggestion(ep, "credits", 80_000, 90_000))
+    lab.owner_review(ep, [set_span("credits", 80_000, DURATION)])
+
+    change = prepare(client, lab, ep)
+
+    assert change.status_code == 200
+    assert client.post(f"/api/reprise/publications/{change.get_json()['id']}/apply").status_code == 200
+    assert _marker_times(lab.plex, "credits") == [(78_000, DURATION)]
+    assert '"pv:final":"1"' in _marker_rows(lab.plex, "credits")[0][-1]

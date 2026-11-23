@@ -16,10 +16,14 @@ def clock(ms: int) -> str:
     return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes}:{seconds:02d}"
 
 
-def span_limit(kind: str, start_ms: int, end_ms: int, duration_ms: int, terminal: bool = False) -> str | None:
+def span_limit(
+    kind: str, start_ms: int, end_ms: int, duration_ms: int, terminal: bool = False, owner: bool = False
+) -> str | None:
     """Why Plex cannot hold a skip exactly where it sits in the file, or None: the last two seconds cannot be
-    projected safely, and a credits skip cannot start in the first two."""
-    if terminal or end_ms >= duration_ms - END_MARGIN_MS:
+    projected safely, and a credits skip cannot start in the first two. The one exception is a credits skip the owner
+    set to end exactly at the file's end: Plex holds that exactly, as its final credits marker."""
+    final_credits = owner and kind == "credits" and end_ms == duration_ms and not terminal
+    if not final_credits and (terminal or end_ms >= duration_ms - END_MARGIN_MS):
         return "The final two seconds cannot be projected safely to Plex"
     if kind == "credits" and start_ms < END_MARGIN_MS:
         return "Plex cannot represent this credits start exactly"
