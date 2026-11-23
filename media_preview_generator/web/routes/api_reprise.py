@@ -11,8 +11,9 @@ from loguru import logger
 from ...reprise import acceleration
 from ...reprise import setup_guide as guide
 from ...reprise.api_auth import DEFAULT_SCOPES, SCOPES, bearer_secret, require_client
-from ...reprise.models import AnalysisRefused, PlaybackIdentity, ReportRefused, ReviewRefused
+from ...reprise.models import AnalysisRefused, PlaybackIdentity, PublicationRefused, ReportRefused, ReviewRefused
 from ...reprise.report import render_text
+from ...reprise.store import NEEDS_OWNER_SPAN_ACKNOWLEDGMENT
 from ..auth import (
     SETUP_GUIDE_COMPLETED,
     SETUP_GUIDE_DISMISSED,
@@ -363,20 +364,24 @@ def create_reprise_blueprint(service):
             "reason",
             "acknowledge_suggestion",
             "acknowledge_plex_suggestion",
+            "acknowledge_owner_span",
         }
+
+        def names_a_range(edit):
+            """An existing range by id, a new keep, or a new exact skip (it has no id yet)."""
+            if edit["range_id"] is None:
+                return edit.get("action") == "keep" or {"kind", "start_ms", "end_ms"} <= set(edit)
+            return isinstance(edit["range_id"], str) and bool(edit["range_id"])
+
+        if any(not isinstance(edit, dict) or set(edit) - allowed or "range_id" not in edit for edit in data["edits"]):
+            raise ValueError("Invalid edits")
+        if not all(names_a_range(edit) for edit in data["edits"]):
+            raise ValueError("Invalid edits")
         if any(
-            not isinstance(edit, dict)
-            or set(edit) - allowed
-            or "range_id" not in edit
-            or not (
-                isinstance(edit["range_id"], str)
-                and edit["range_id"]
-                or edit["range_id"] is None
-                and edit.get("action") == "keep"
-            )
+            edit["range_id"] is None and edit.get("action") != "keep" and edit.get("acknowledge_owner_span") is not True
             for edit in data["edits"]
         ):
-            raise ValueError("Invalid edits")
+            raise ReviewRefused(NEEDS_OWNER_SPAN_ACKNOWLEDGMENT)
         return jsonify(_json(service.review(media_id, data["expected_revision"], data["edits"], "owner")))
 
     @bp.get("/api/reprise/jobs")
@@ -547,6 +552,8 @@ def create_reprise_blueprint(service):
         identity = _identity(data["identity"])
         try:
             result = service.publisher.prepare(data["media_version_id"], data["expected_revision"], identity, "owner")
+        except PublicationRefused as error:
+            return jsonify(error=str(error)), 409
         except ValueError:
             return jsonify(error="Publication conflict; refresh and try again"), 409
         return jsonify(_json(result))

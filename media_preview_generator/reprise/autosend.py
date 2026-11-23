@@ -29,6 +29,7 @@ from loguru import logger
 from ..markers.publishers import plex_db
 from ..shutdown import is_shutting_down
 from . import plexbackup
+from .models import is_owner_span
 from .policy import eligible_ranges
 from .publishing import AUTO_ACTOR
 from .review import plex_projection
@@ -83,6 +84,9 @@ def sure_runs(result, decided, keeps):
     ``decided`` is the set of range ids that are the owner's and ``keeps`` the ``(start, end)`` of every scene the
     owner keeps. A kind is in ``pieces`` (ordered) only when its confirmed pieces make one unbroken run that none of
     the owner's choices touches; ``notes`` say, in plain words, why a kind or the whole result is not."""
+    if any(is_owner_span(r) for r in result.ranges):
+        # An exact skip the owner set is theirs alone: it is never sent, replaced or worked around automatically.
+        return {}, ["You set a skip yourself, so sending it is up to you."]
     if any(r.action == "skip" and r.review_status == "approved" for r in result.ranges):
         return {}, ["You already approved part of it, so sending it is up to you."]
     runs, notes = {}, []

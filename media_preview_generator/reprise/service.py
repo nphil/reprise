@@ -24,7 +24,7 @@ from ..shutdown import is_shutting_down
 from . import recovery, scan_cache
 from .admission import MAX_REFERENCES, admit_references, pair_provenance
 from .identity import currency, media_version
-from .models import SUGGESTION_ORIGINS, AnalysisRefused, CandidateWindow, PlaybackIdentity
+from .models import SUGGESTION_ORIGINS, AnalysisRefused, CandidateWindow, PlaybackIdentity, is_owner_span
 from .policy import eligible_ranges
 from .setup_guide import plex_database_findings, sending_refusal
 from .verification_profile import POLICY_VERSION, PROFILE_FINGERPRINT, is_current_profile
@@ -122,8 +122,10 @@ def _suggesters(ranges):
 
 def _range_counts(ranges):
     """``to_review``: skips Reprise confirmed and the owner has not decided; ``suggested``: Plex's or an online
-    database's, likewise, and ``suggested_by`` who they are."""
-    undecided = [r for r in ranges if r.action == "skip" and r.review_status == "proposed"]
+    database's, likewise, and ``suggested_by`` who they are. A kind the owner set an exact skip for has nothing left
+    to decide: their span replaces every other skip of it."""
+    owned = {r.kind for r in ranges if is_owner_span(r) and r.review_status == "approved"}
+    undecided = [r for r in ranges if r.action == "skip" and r.review_status == "proposed" and r.kind not in owned]
     suggested = [r for r in undecided if r.origin in SUGGESTION_ORIGINS]
     return {
         "skip": sum(1 for r in ranges if r.action == "skip"),

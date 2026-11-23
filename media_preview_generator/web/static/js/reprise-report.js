@@ -19,6 +19,7 @@
         ['unconfirmed', 'Not confirmed', 'warning'],
         ['plex_covers_unconfirmed', 'Covers something not confirmed', 'info'],
         ['one_of_a_kind', 'One of a kind', 'info'],
+        ['owner_span', 'Set by you', 'info'],
         ['stale', 'Out of date', 'warning'],
         ['not_analyzed', 'Not analyzed', 'warning'],
         ['published', 'Sent to Plex', 'positive'],
@@ -139,7 +140,8 @@
         const times = el('dl', null, 'rp-report-times');
         times.append(timeLine('Plex', row.plex.status === 'unavailable' ? 'Could not be read' : (row.plex.markers.length ? spans(row.plex.markers) : 'No skips'), !row.plex.markers.length));
         const r = row.reprise;
-        const found = r.skips.length ? spans(r.skips) : (r.suggestions.length ? 'Suggestions only: ' + spans(r.suggestions) : '');
+        const own = (r.owner_spans || []).map(o => `${spans([o])} (set by you)`); /* a skip you set replaces what Reprise found for its type */
+        const found = [...own, ...(r.skips.length ? [spans(r.skips)] : [])].join(' \u00b7 ') || (r.suggestions.length ? 'Suggestions only: ' + spans(r.suggestions) : '');
         times.append(timeLine('Reprise', found || (row.analysis.status === 'complete' && row.analysis.freshness === 'current' ? 'Nothing found' : 'No result'), !found));
         if (r.keeps.length) times.append(timeLine('Protected', r.keeps.map(span).join(' \u00b7 ')));
         const chevron = el('i', null, 'bi bi-chevron-right'); chevron.setAttribute('aria-hidden', 'true');

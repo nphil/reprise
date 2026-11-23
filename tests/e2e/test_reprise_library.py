@@ -594,6 +594,189 @@ class TestPlexSuggestions:
         assert edits["o-intro"]["acknowledge_suggestion"] is True
 
 
+def _owned(rid: str, kind: str, start: int, end: int, status: str = "approved") -> dict:
+    return {
+        **_range(rid, kind, "skip", start, end, status),
+        "locked": True,
+        "origin": "owner",
+        "reason_code": "owner_span",
+        "reason": "Set by you",
+    }
+
+
+def _open_pilot(page: Page, app_url: str) -> None:
+    _open(page, app_url)
+    page.locator(".rp-episode-open").first.click()
+    expect(page.locator("#rpSetSkip")).to_be_enabled()
+
+
+def _set_skip(page: Page, kind: str, start: int, end: int) -> None:
+    page.locator("#rpSetSkip").click()
+    page.locator("#rpSpanKind").select_option(kind)
+    page.locator("#rpSpanStart").fill(str(start))
+    page.locator("#rpSpanEnd").fill(str(end))
+    page.get_by_role("button", name="Add this skip").click()
+
+
+@pytest.mark.e2e
+class TestSettingASkipExactly:
+    def test_the_button_opens_the_form_and_cancel_closes_it(
+        self, authed_page: Page, api: RepriseApi, app_url: str
+    ) -> None:
+        _open_pilot(authed_page, app_url)
+        form, button = authed_page.locator("#rpSpanForm"), authed_page.locator("#rpSetSkip")
+        expect(form).to_be_hidden()
+        button.click()
+        expect(form).to_be_visible()
+        expect(button).to_have_attribute("aria-expanded", "true")
+        expect(authed_page.locator("#rpSpanStart")).to_be_focused()
+        form.get_by_role("button", name="Cancel").click()
+        expect(form).to_be_hidden()
+        expect(button).to_have_attribute("aria-expanded", "false")
+        expect(button).to_be_focused()
+
+    def test_a_skip_set_exactly_replaces_the_others_of_its_type_and_is_sent_with_the_yes(
+        self, authed_page: Page, api: RepriseApi, app_url: str
+    ) -> None:
+        _open_pilot(authed_page, app_url)
+        _set_skip(authed_page, "intro", 5_000, 40_000)
+        expect(authed_page.locator("#rpSpanForm")).to_be_hidden()
+        expect(authed_page.locator("#rpOutcome")).to_contain_text("You set the intro skip yourself.")
+        expect(authed_page.locator(".rp-range .rp-chip", has_text="Set by you")).to_have_count(1)
+        expect(authed_page.locator(".rp-range .rp-chip", has_text="Replaced by your skip")).to_have_count(1)
+        expect(authed_page.locator("#rpSaveBar")).to_be_visible()
+        authed_page.locator("#rpSave").click()
+        expect(authed_page.locator("#rpMessage")).to_have_text("Review saved. Nothing was sent to Plex.")
+        edits = api.reviews[0]["edits"]
+        assert [edit for edit in edits if edit["range_id"] is None] == [
+            {
+                "range_id": None,
+                "kind": "intro",
+                "start_ms": 5_000,
+                "end_ms": 40_000,
+                "review_status": "approved",
+                "acknowledge_owner_span": True,
+            }
+        ]
+        others = {edit["range_id"]: edit for edit in edits if edit["range_id"]}
+        assert {rid: edit["review_status"] for rid, edit in others.items()} == {
+            "r-intro": "proposed",
+            "r-keep": "proposed",
+            "r-credits": "proposed",
+        }
+        assert all("acknowledge_owner_span" not in edit for edit in others.values())
+
+    def test_both_types_can_be_set_and_a_second_skip_of_a_type_replaces_the_first(
+        self, authed_page: Page, api: RepriseApi, app_url: str
+    ) -> None:
+        _open_pilot(authed_page, app_url)
+        _set_skip(authed_page, "intro", 5_000, 40_000)
+        _set_skip(authed_page, "intro", 6_000, 41_000)
+        _set_skip(authed_page, "credits", 1_200_000, 1_300_000)
+        expect(authed_page.locator("#rpOutcome")).to_contain_text(
+            "You set the intro skip and the credits skip yourself."
+        )
+        expect(authed_page.locator(".rp-range .rp-chip", has_text="Set by you")).to_have_count(2)
+        authed_page.locator("#rpSave").click()
+        expect(authed_page.locator("#rpMessage")).to_have_text("Review saved. Nothing was sent to Plex.")
+        new = [(e["kind"], e["start_ms"], e["end_ms"]) for e in api.reviews[0]["edits"] if e["range_id"] is None]
+        assert new == [("intro", 6_000, 41_000), ("credits", 1_200_000, 1_300_000)]
+
+    @pytest.mark.parametrize(("start", "end"), [(40_000, 5_000), (5_000, 5_000), (5_000, DURATION + 1)])
+    def test_times_that_do_not_fit_the_episode_are_refused_in_words_and_nothing_is_added(
+        self, authed_page: Page, api: RepriseApi, app_url: str, start: int, end: int
+    ) -> None:
+        _open_pilot(authed_page, app_url)
+        _set_skip(authed_page, "intro", start, end)
+        expect(authed_page.locator("#rpMessage")).to_have_text(
+            "The skip needs a start before its end, inside the episode."
+        )
+        expect(authed_page.locator("#rpSpanForm")).to_be_visible()
+        expect(authed_page.locator("#rpSaveBar")).to_be_hidden()
+        expect(authed_page.locator(".rp-range-name")).to_have_count(3)
+
+    def test_remove_takes_back_a_skip_that_is_not_saved_yet(
+        self, authed_page: Page, api: RepriseApi, app_url: str
+    ) -> None:
+        _open_pilot(authed_page, app_url)
+        _set_skip(authed_page, "intro", 5_000, 40_000)
+        expect(authed_page.locator(".rp-range-name")).to_have_count(4)
+        expect(authed_page.locator("input[name^=decision-]")).to_have_count(9)  # the new skip has nothing to decide
+        authed_page.locator(".rp-range").last.get_by_role("button", name="Remove").click()
+        expect(authed_page.locator(".rp-range-name")).to_have_count(3)
+        expect(authed_page.locator(".rp-range .rp-chip", has_text="Replaced by your skip")).to_have_count(0)
+        expect(authed_page.locator("#rpOutcome")).to_contain_text("Reprise found 2 sections it can skip")
+
+    def test_a_saved_skip_is_badged_and_leaves_only_approve_and_reject(
+        self, authed_page: Page, api: RepriseApi, app_url: str
+    ) -> None:
+        api.results["v1"]["ranges"].append(_owned("o-intro", "intro", 5_000, 40_000))
+        _open_pilot(authed_page, app_url)
+        expect(authed_page.locator("#rpOutcome")).to_contain_text("You set the intro skip yourself.")
+        expect(authed_page.locator(".rp-range .rp-chip", has_text="Replaced by your skip")).to_have_count(1)
+        box = authed_page.locator(".rp-range", has=authed_page.locator(".rp-chip", has_text="Set by you"))
+        expect(box).to_have_count(1)
+        box.locator(":scope > summary").click()
+        expect(box).to_contain_text("You set this skip yourself.")
+        expect(box.locator("label[data-value]")).to_have_text(["Approve", "Reject"])
+        box.locator(".rp-fine > summary").click()
+        expect(box.get_by_label("What to do")).to_have_count(0)
+        expect(box.get_by_label("Lock this section so a new analysis never changes it")).to_have_count(0)
+        expect(box.get_by_label("Type").locator("option")).to_have_text(["Intro", "Credits"])
+
+    def test_rejecting_a_saved_skip_hands_its_type_back_and_sends_no_yes(
+        self, authed_page: Page, api: RepriseApi, app_url: str
+    ) -> None:
+        api.results["v1"]["ranges"].append(_owned("o-intro", "intro", 5_000, 40_000))
+        _open_pilot(authed_page, app_url)
+        box = authed_page.locator(".rp-range", has=authed_page.locator(".rp-chip", has_text="Set by you"))
+        box.locator(":scope > summary").click()
+        box.locator("label[data-value=rejected]").click()
+        expect(authed_page.locator("#rpOutcome")).not_to_contain_text("You set the intro skip yourself.")
+        expect(authed_page.locator(".rp-range .rp-chip", has_text="Replaced by your skip")).to_have_count(0)
+        authed_page.locator("#rpSave").click()
+        expect(authed_page.locator("#rpMessage")).to_have_text("Review saved. Nothing was sent to Plex.")
+        sent = {edit["range_id"]: edit for edit in api.reviews[0]["edits"]}
+        assert sent["o-intro"]["review_status"] == "rejected"
+        assert "acknowledge_owner_span" not in sent["o-intro"]
+
+    def test_a_saved_skip_is_sent_again_with_the_yes_when_something_else_is_saved(
+        self, authed_page: Page, api: RepriseApi, app_url: str
+    ) -> None:
+        api.results["v1"]["ranges"].append(_owned("o-intro", "intro", 5_000, 40_000))
+        _open_pilot(authed_page, app_url)
+        credits = authed_page.locator(".rp-range", has_text="Skip credits")
+        credits.locator(":scope > summary").click()
+        credits.locator("label[data-value=rejected]").click()
+        authed_page.locator("#rpSave").click()
+        expect(authed_page.locator("#rpMessage")).to_have_text("Review saved. Nothing was sent to Plex.")
+        sent = {edit["range_id"]: edit for edit in api.reviews[0]["edits"]}
+        assert sent["o-intro"] == {
+            "range_id": "o-intro",
+            "action": "skip",
+            "kind": "intro",
+            "start_ms": 5_000,
+            "end_ms": 40_000,
+            "review_status": "approved",
+            "locked": True,
+            "reason": "Set by you",
+            "acknowledge_owner_span": True,
+        }
+
+    def test_a_changed_file_cannot_have_a_skip_set(self, authed_page: Page, api: RepriseApi, app_url: str) -> None:
+        _open(authed_page, app_url)
+        authed_page.locator(".rp-episode-open").nth(5).click()
+        expect(authed_page.locator("#rpOutcome")).to_contain_text("This file has changed since Reprise last read it.")
+        expect(authed_page.locator("#rpSetSkip")).to_be_disabled()
+
+    def test_the_form_fits_a_phone(self, authed_page: Page, api: RepriseApi, app_url: str) -> None:
+        authed_page.set_viewport_size({"width": 390, "height": 844})
+        _open_pilot(authed_page, app_url)
+        authed_page.locator("#rpSetSkip").click()
+        expect(authed_page.locator("#rpSpanForm")).to_be_visible()
+        assert authed_page.evaluate("document.documentElement.scrollWidth") <= 390
+
+
 @pytest.mark.e2e
 class TestAnalysisProgress:
     def test_analyze_selected_shows_progress_and_then_the_result(

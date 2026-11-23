@@ -55,6 +55,12 @@ SUGGESTION_ORIGINS = (ORIGIN_PLEX, ORIGIN_ONLINE)
 REASON_PLEX_SUGGESTION = "plex_suggestion"
 REASON_ONLINE_SUGGESTION = "online_suggestion"
 
+# The owner's own exact skip for one kind (intro or credits): origin ``owner``, a skip, approved and locked. It is not
+# a finding of the analysis, so nothing has to confirm it: the owner's word stands in for the evidence, and it
+# replaces every other skip of its kind. (Origin ``manual`` stays what it was: a scene the owner protects.)
+ORIGIN_OWNER = "owner"
+REASON_OWNER_SPAN = "owner_span"
+
 
 @dataclass(frozen=True)
 class DecisionRange:
@@ -74,6 +80,11 @@ class DecisionRange:
     # Who suggested a suggestion range, in display order ("Plex", "IntroDB", ...); empty on every other range, and on
     # Plex suggestions stored before online databases were used (those are Plex's).
     suggested_by: tuple[str, ...] = ()
+
+
+def is_owner_span(r: DecisionRange) -> bool:
+    """Whether a range is the exact skip the owner set for its kind (see ``ORIGIN_OWNER``)."""
+    return r.action == "skip" and r.origin == ORIGIN_OWNER
 
 
 @dataclass(frozen=True)
@@ -138,3 +149,8 @@ class ReviewRefused(ValueError):
 class ReportRefused(ValueError):
     """A report request the client can put right (no such show, several shows match); the message is a plain
     sentence that is safe to show as is."""
+
+
+class PublicationRefused(ValueError):
+    """A change the owner asked to send that Reprise will not make, or that has nothing to send (an exact skip Plex
+    already has); the message is a plain sentence that is safe to show as is."""

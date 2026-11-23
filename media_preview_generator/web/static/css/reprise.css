@@ -162,6 +162,8 @@
 .rp-ranges-block{margin-top:24px}
 .rp-ranges-block>.rp-note{margin:-4px 0 12px}
 .rp-ranges-block .rp-state{padding:12px 4px}
+.rp-ranges-block .rp-section-head{flex-wrap:wrap}
+.rp-span-form .rp-fine-grid{margin:8px 0 12px}.rp-span-form .rp-span-kind{grid-column:1/-1;max-width:260px}
 
 /* A range: native details, collapsed until opened. */
 .rp-range{border-top:1px solid var(--lu-edge-soft);padding:0}

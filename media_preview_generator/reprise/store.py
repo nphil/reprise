@@ -15,6 +15,8 @@ from loguru import logger
 from .admission import pair_provenance
 from .identity import is_current
 from .models import (
+    ORIGIN_OWNER,
+    REASON_OWNER_SPAN,
     SUGGESTION_ORIGINS,
     AnalysisResult,
     ClientPrincipal,
@@ -23,7 +25,9 @@ from .models import (
     MediaVersion,
     PlaybackIdentity,
     ReviewRefused,
+    is_owner_span,
 )
+from .policy import blocked_sentence, owner_blockers, span_limit
 from .recovery import INTERRUPTED_REASON
 from .uniqueness import COMPARISON_KEY
 from .verification_profile import POLICY_VERSION, is_current_profile
@@ -41,6 +45,11 @@ LEGACY_PLEX_ACKNOWLEDGMENT = "acknowledge_plex_suggestion"
 NEEDS_ACKNOWLEDGMENT = (
     "A suggested range needs a deliberate approval: send acknowledge_suggestion: true with that range."
 )
+# Review key, not stored: the owner's deliberate "yes" to an exact skip of their own (see ``is_owner_span``), sent with
+# a new span and with any later change to, or fresh approval of, an existing one. Nothing confirmed such a skip, so a
+# bulk or older client cannot make one by accident.
+OWNER_SPAN_ACKNOWLEDGMENT = "acknowledge_owner_span"
+NEEDS_OWNER_SPAN_ACKNOWLEDGMENT = "An exact skip needs a deliberate yes: send acknowledge_owner_span: true with it."
 
 
 class RevisionConflict(Exception):
@@ -73,7 +82,7 @@ def _owner_decided(r, override_ids):
     """Whether a range is the owner's: made or locked by them, overridden by them, or a keep they have reviewed.
     A new analysis preserves these ranges."""
     return (
-        r.origin == "manual"
+        r.origin in ("manual", ORIGIN_OWNER)
         or r.locked
         or r.id in override_ids
         or (r.action == "keep" and r.review_status != "proposed")
@@ -85,7 +94,7 @@ def _validate_range(r, duration):
         r.kind not in ("intro", "credits", "recap", "preview")
         or r.action not in ("skip", "keep")
         or r.review_status not in ("proposed", "approved", "rejected")
-        or r.origin not in ("manual", "detector", *SUGGESTION_ORIGINS)
+        or r.origin not in ("manual", ORIGIN_OWNER, "detector", *SUGGESTION_ORIGINS)
         or type(r.start_ms) is not int
         or type(r.end_ms) is not int
         or not 0 <= r.start_ms < r.end_ms <= duration
@@ -769,7 +778,12 @@ class RepriseStore:
             else:
                 override_ids = self._override_ids(c, expected_media_version)
                 preserved = [r for r in (previous.ranges if previous else ()) if _owner_decided(r, override_ids)]
-                preserved = [replace(r, review_status="proposed") if r.action == "skip" else r for r in preserved]
+                # An owner's exact skip does not rest on what an analysis found, so its approval stays; every other
+                # skip needs approving again.
+                preserved = [
+                    replace(r, review_status="proposed") if r.action == "skip" and not is_owner_span(r) else r
+                    for r in preserved
+                ]
                 ids = {r.id for r in preserved}
                 # A locked skip is the owner's decision and wins: the new run's pieces of its kind are cut back to
                 # what lies outside it, so the result holds one consistent set and never two overlapping versions.
@@ -823,8 +837,11 @@ class RepriseStore:
             )
             current = self._result(c, run["version_id"])
             if current and current.analysis_id == analysis_id:
+                # A cut-off run leaves no result to approve against, so every approval falls back to proposed; the
+                # owner's own exact skip rests on nothing the run found, so it stays (and stays inert until a run
+                # completes: nothing is eligible or sent while the analysis is not complete).
                 for item in current.ranges:
-                    if item.action == "skip" and item.review_status == "approved":
+                    if item.action == "skip" and item.review_status == "approved" and not is_owner_span(item):
                         c.execute(
                             "UPDATE reprise_ranges SET data=? WHERE version_id=? AND id=?",
                             (_json(asdict(replace(item, review_status="proposed"))), run["version_id"], item.id),
@@ -833,6 +850,53 @@ class RepriseStore:
                     "UPDATE reprise_decision_results SET status=?,analysis_id=?,reasons=?,revision=revision+1 WHERE version_id=?",
                     (status, analysis_id, _json(reasons), run["version_id"]),
                 )
+
+    @staticmethod
+    def _new_owner_span(c, media_version_id, rid, edit, duration_ms):
+        """A new owner span from the type and times the owner gave: a skip, approved and locked, for every audio track
+        the file can be played with (each one has a Plex binding). The owner may state those three facts, but they
+        cannot be anything else."""
+        if (
+            set(edit) - {"kind", "start_ms", "end_ms", "action", "review_status", "locked"}
+            or edit.get("action", "skip") != "skip"
+            or edit.get("review_status", "approved") != "approved"
+            or edit.get("locked", True) is not True
+        ):
+            raise ReviewRefused(
+                "A skip you set is always approved and locked. Give only its type (intro or credits) and its start "
+                "and end times."
+            )
+        if (
+            edit.get("kind") not in ("intro", "credits")
+            or type(edit.get("start_ms")) is not int
+            or type(edit.get("end_ms")) is not int
+        ):
+            raise ReviewRefused("Say whether the skip is the intro or the credits, and where it starts and ends.")
+        if not 0 <= edit["start_ms"] < edit["end_ms"] <= duration_ms:
+            raise ReviewRefused("The skip must start before it ends, and both times must be inside the episode.")
+        tracks = tuple(
+            row["audio_id"]
+            for row in c.execute(
+                "SELECT DISTINCT audio_id FROM reprise_bindings WHERE version_id=? AND active=1 ORDER BY audio_id",
+                (media_version_id,),
+            )
+        )
+        if not tracks:
+            raise ReviewRefused("This episode is not in the library right now, so a skip cannot be set for it.")
+        return DecisionRange(
+            rid,
+            edit["kind"],
+            "skip",
+            edit["start_ms"],
+            edit["end_ms"],
+            "approved",
+            True,
+            ORIGIN_OWNER,
+            REASON_OWNER_SPAN,
+            "Set by you",
+            (),
+            tracks,
+        )
 
     def save_review(self, media_version_id, expected_revision, edits, actor):
         with self.transaction() as c:
@@ -856,23 +920,32 @@ class RepriseStore:
             if edits:
                 current = {
                     rid: replace(item, review_status="proposed")
-                    if item.action == "skip" and item.review_status == "approved" and rid not in explicit_approvals
+                    if item.action == "skip"
+                    and item.review_status == "approved"
+                    and rid not in explicit_approvals
+                    and not is_owner_span(item)
                     else item
                     for rid, item in current.items()
                 }
+            spans = []  # the owner's exact skips this review makes or changes
             for edit in edits:
                 edit = dict(edit)
                 supplied_id = edit.pop("range_id", None)
                 acknowledged = edit.pop(SUGGESTION_ACKNOWLEDGMENT, None)
                 legacy_acknowledged = edit.pop(LEGACY_PLEX_ACKNOWLEDGMENT, None)
+                span_acknowledged = edit.pop(OWNER_SPAN_ACKNOWLEDGMENT, None)
                 if supplied_id is not None and supplied_id not in current:
                     raise RevisionConflict("range no longer exists")
-                if supplied_id is None and edit.get("action", "keep") != "keep":
-                    raise ValueError("new manual ranges must protect content")
                 rid = supplied_id if supplied_id is not None else _id()
                 original = current.get(rid)
                 existing = original is not None
-                if original is None:
+                if supplied_id is None and (span_acknowledged is not None or edit.get("action") == "skip"):
+                    if span_acknowledged is not True:
+                        raise ReviewRefused(NEEDS_OWNER_SPAN_ACKNOWLEDGMENT)
+                    original, edit = self._new_owner_span(c, media_version_id, rid, edit, version.duration_ms), {}
+                elif supplied_id is None and edit.get("action", "keep") != "keep":
+                    raise ValueError("new manual ranges must protect content")
+                elif original is None:
                     original = DecisionRange(
                         rid, "intro", "keep", 0, 1, "proposed", False, "manual", "manual", "", (), ()
                     )
@@ -909,12 +982,44 @@ class RepriseStore:
                     raise ReviewRefused(NEEDS_ACKNOWLEDGMENT)
                 if existing and original.action == "keep" and updated.action != "keep":
                     raise ValueError("a protected keep cannot be implicitly removed")
+                if existing and is_owner_span(original) and not is_owner_span(updated):
+                    raise ReviewRefused("A skip you set stays a skip: reject it, or set it again.")
+                if is_owner_span(updated):
+                    updated = replace(updated, locked=True)
+                    if updated.kind not in ("intro", "credits"):
+                        raise ReviewRefused("Only an intro or credits skip can be set exactly.")
+                    if updated.review_status == "approved" and (not existing or updated != original):
+                        if span_acknowledged is not True:
+                            raise ReviewRefused(NEEDS_OWNER_SPAN_ACKNOWLEDGMENT)
+                        spans.append(updated)
                 current[rid] = updated
                 if not existing or updated != original:
                     c.execute(
                         "INSERT INTO reprise_manual_overrides VALUES (?,?,?,?,0) ON CONFLICT(version_id,range_id) DO UPDATE SET data=excluded.data,actor=excluded.actor,quarantined=0",
                         (media_version_id, rid, _json(asdict(updated)), str(actor)),
                     )
+            kinds = [span.kind for span in spans]
+            if len(set(kinds)) != len(kinds):
+                raise ReviewRefused("Set one exact skip for the intro and one for the credits, not two of the same.")
+            for span in spans:
+                limit = span_limit(span.kind, span.start_ms, span.end_ms, version.duration_ms, span.terminal)
+                if limit:
+                    raise ReviewRefused(limit)
+                # One exact skip per kind: the new one replaces the owner's earlier one.
+                for rid, item in list(current.items()):
+                    if rid != span.id and is_owner_span(item) and item.kind == span.kind:
+                        del current[rid]
+                        c.execute(
+                            "DELETE FROM reprise_manual_overrides WHERE version_id=? AND range_id=?",
+                            (media_version_id, rid),
+                        )
+            for item in current.values():
+                # Every exact skip the owner has set must clear what they protect, whichever edit made the clash: a
+                # skip set over a protected scene, or a scene to protect added over a skip already set.
+                if is_owner_span(item) and item.review_status == "approved":
+                    blockers = owner_blockers(list(current.values()), item)
+                    if blockers:
+                        raise ReviewRefused(blocked_sentence(item, blockers))
             if edits:
                 c.execute("DELETE FROM reprise_ranges WHERE version_id=?", (media_version_id,))
                 for r in current.values():

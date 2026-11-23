@@ -20,6 +20,10 @@
     const joinAnd = parts => { const list = parts.filter(Boolean); return list.length > 1 ? list.slice(0, -1).join(', ') + ' and ' + list[list.length - 1] : list[0] || ''; };
     /* A suggestion is a range someone else proposed (Plex or an online database) that Reprise did not confirm. */
     const isSuggestion = r => r.origin === 'plex' || r.origin === 'online';
+    /* The owner's own exact skip (origin "owner"): their word stands in for the evidence, and it replaces every other skip of its type. */
+    const isOwnerSpan = r => r.action === 'skip' && r.origin === 'owner';
+    const ownedKinds = () => new Set(state.edits.filter(r => isOwnerSpan(r) && r.review_status === 'approved').map(r => r.kind));
+    const isReplaced = r => r.action === 'skip' && !isOwnerSpan(r) && ownedKinds().has(r.kind);
     const suggesters = r => (Array.isArray(r.suggested_by) && r.suggested_by.length ? r.suggested_by : ['Plex']);
     const suggesterNames = ranges => [...new Set(ranges.flatMap(suggesters))];
     const suggestionBadge = r => suggesters(r).join(' + ') + ' suggestion';
@@ -299,7 +303,7 @@
         Object.assign(video.dataset, { mediaId: item.id, duration: item.duration_ms || '0', origin: '0', preview: 'false', desired: '0' });
         $('rpVideoOrigin').textContent = ''; $('rpVideoPreview').hidden = true; $('rpVideoError').hidden = true;
         video.src = '/api/reprise/media/' + encodeURIComponent(item.id) + '/stream'; video.load();
-        renderReferences(); syncOffList(); clear($('rpRanges')); clear($('rpTimeline')); clear($('rpEvidence')); $('rpSave').disabled = true; $('rpAddKeep').disabled = true; $('rpAnalyzeOne').disabled = true;
+        renderReferences(); syncOffList(); clear($('rpRanges')); clear($('rpTimeline')); clear($('rpEvidence')); $('rpSave').disabled = true; $('rpAddKeep').disabled = true; $('rpSetSkip').disabled = true; toggleSpanForm(false); $('rpAnalyzeOne').disabled = true;
         if (narrow.matches) document.querySelector('.rp-workspace').scrollIntoView({ block: 'start' });
         try {
             const result = await api(`/api/reprise/media/${encodeURIComponent(item.id)}/result`); if (request !== reviewRequest) return;
@@ -330,7 +334,7 @@
             // The open episode's own result is the freshest truth: keep its list row and header chip in step with it.
             item.analysis_status = r.analysis_status; item.freshness = r.freshness; item.stale = r.stale;
             const count = test => state.edits.filter(test).length;
-            if (r.analysis_status === 'complete' && !state.dirty) { const open = state.edits.filter(x => isSuggestion(x) && x.review_status === 'proposed'); item.ranges = { skip: count(x => x.action === 'skip'), keep: count(x => x.action === 'keep'), proposed: count(x => x.review_status === 'proposed'), approved: count(x => x.review_status === 'approved'), to_review: count(x => x.action === 'skip' && x.review_status === 'proposed' && !isSuggestion(x)), suggested: open.length, suggested_by: suggesterNames(open) }; }
+            if (r.analysis_status === 'complete' && !state.dirty) { const owned = ownedKinds(), undecided = state.edits.filter(x => x.action === 'skip' && x.review_status === 'proposed' && !owned.has(x.kind)), open = undecided.filter(isSuggestion); item.ranges = { skip: count(x => x.action === 'skip'), keep: count(x => x.action === 'keep'), proposed: count(x => x.review_status === 'proposed'), approved: count(x => x.review_status === 'approved'), to_review: undecided.length - open.length, suggested: open.length, suggested_by: suggesterNames(open) }; }
         }
         paintChip($('rpStatusChip'), episodeStatus(item)); paintStatuses();
         const stale = staleOf(r), again = !!r && ['failed', 'cancelled', 'unsupported'].includes(r.analysis_status);
@@ -357,10 +361,11 @@
         }
         switch (r.analysis_status) {
             case 'complete': {
-                const suggestions = state.edits.filter(isSuggestion), suggestionsOpen = suggestions.filter(x => x.review_status === 'proposed').length;
+                const own = state.edits.filter(x => isOwnerSpan(x) && x.review_status === 'approved'), live = state.edits.filter(x => !isReplaced(x) && !own.includes(x)); /* what is left once the skips you set have replaced their types */
+                const suggestions = live.filter(isSuggestion), suggestionsOpen = suggestions.filter(x => x.review_status === 'proposed').length;
                 const names = suggesterNames(suggestions), plexOnly = names.length === 1 && names[0] === 'Plex', noun = plexOnly ? 'Plex suggestion' : 'suggestion';
-                const skip = state.edits.filter(x => x.action === 'skip' && !isSuggestion(x)).length, keep = state.edits.filter(x => x.action === 'keep').length;
-                const pending = state.edits.filter(x => x.action === 'skip' && x.review_status === 'proposed' && !isSuggestion(x)).length;
+                const skip = live.filter(x => x.action === 'skip' && !isSuggestion(x)).length, keep = live.filter(x => x.action === 'keep').length;
+                const pending = live.filter(x => x.action === 'skip' && x.review_status === 'proposed' && !isSuggestion(x)).length;
                 if (!state.edits.length) {
                     return setOutcome('none', 'No repeated intro or credits found.',
                         plain[0] || 'Reprise compared this episode with other episodes of the same season, but nothing matched closely enough to suggest a skip.',
@@ -371,6 +376,10 @@
                 const next = !skip && !suggestions.length ? 'There is nothing to skip here. Protected scenes are never skipped.' : pending
                     ? `${plural(pending, 'section')} still need${pending === 1 ? 's' : ''} your review. Nothing is skipped until you approve it and save.${plexNote}` : suggestionsOpen
                         ? `Nothing is skipped until you approve it and save.${plexNote}` : 'Every section has a decision. Save the review to keep your choices.';
+                if (own.length) {
+                    const who = joinAnd(own.map(x => `the ${kindLabel(x.kind)} skip`));
+                    return setOutcome('found', `You set ${who} yourself.`, `Reprise skips exactly what you set, even where it could not confirm it, and leaves out anything else it found for ${own.length === 1 ? 'that part' : 'those parts'}.${parts ? ` It also found ${parts}.` : ''}${pending ? ` ${plural(pending, 'section')} still need${pending === 1 ? 's' : ''} your review.` : ''} ${state.dirty ? 'Save the review to keep your changes.' : 'Nothing is sent to Plex until you send it.'}`, details);
+                }
                 if (!skip && suggestions.length) {
                     const headline = plain[0] && !names.some(n => plain[0].startsWith(n)) ? plain[0] + ' ' : '';
                     return setOutcome('suggested', `${joinAnd(names)} suggested ${plural(suggestions.length, 'section')} to skip, but Reprise could not confirm ${suggestions.length === 1 ? 'it' : 'them'}.`, headline + next, details);
@@ -462,13 +471,19 @@
     }
 
     /* ── the review ─────────────────────────────────────────────────────────────────────────────────────── */
+    /* The "Set a skip exactly" form (see isOwnerSpan). */
+    function toggleSpanForm(open) {
+        $('rpSpanForm').hidden = !open; $('rpSetSkip').setAttribute('aria-expanded', String(open));
+        if (open) $('rpSpanStart').focus(); else $('rpSpanForm').reset();
+    }
     function renderReview(rebuild = true) {
         const r = state.result; if (!r) return;
+        state.edits.forEach(range => rangeViews.get(range)?.update()); /* a skip you set changes what the others of its type say */
         const duration = Number(r.duration_ms || state.item?.duration_ms || 0); $('rpDuration').textContent = duration ? 'Length ' + ms(duration) : '';
         const timeline = $('rpTimeline'); clear(timeline);
         const bar = (cls, a, b, title) => { const s = el('span', null, `rp-timeline-segment ${cls}`); s.style.left = `${Math.max(0, a / duration * 100)}%`; s.style.width = `${Math.max(0, Math.min(duration, b) - a) / duration * 100}%`; s.title = title; timeline.append(s); };
         if (duration) {
-            for (const range of state.edits) if (range.end_ms > range.start_ms) bar(range.action === 'keep' ? 'keep' : isSuggestion(range) && range.review_status !== 'approved' ? 'skip suggested' : 'skip', range.start_ms, range.end_ms, `${isSuggestion(range) ? suggestionBadge(range) : range.action} ${ms(range.start_ms)}–${ms(range.end_ms)}`);
+            for (const range of state.edits) if (range.end_ms > range.start_ms) bar(range.action === 'keep' ? 'keep' : isReplaced(range) || isSuggestion(range) && range.review_status !== 'approved' ? 'skip suggested' : 'skip', range.start_ms, range.end_ms, `${isOwnerSpan(range) ? 'set by you' : isReplaced(range) ? 'replaced by your skip' : isSuggestion(range) ? suggestionBadge(range) : range.action} ${ms(range.start_ms)}–${ms(range.end_ms)}`);
             for (const e of r.evidence || []) if (e.end_ms > e.start_ms) bar('evidence', e.start_ms, e.end_ms, `${e.verdict || 'Evidence'} ${ms(e.start_ms)}–${ms(e.end_ms)}`);
         }
         if (rebuild) {
@@ -478,7 +493,7 @@
             renderEvidence(); renderFacts(); renderPublication();
         }
         const current = r.freshness === 'current' && r.result_revision != null;
-        $('rpSave').disabled = !state.dirty || !current; $('rpDiscard').disabled = !state.dirty; $('rpAddKeep').disabled = !current;
+        $('rpSave').disabled = !state.dirty || !current; $('rpDiscard').disabled = !state.dirty; $('rpAddKeep').disabled = !current; $('rpSetSkip').disabled = !current;
         $('rpSaveBar').hidden = !state.dirty;
         $('rpSaveState').textContent = r.freshness !== 'current' ? (staleOf(r)?.action === 'analyze' ? 'This result is out of date, so its review can’t be saved until you analyze it again.' : 'This file has changed, so its review can’t be saved until the library is refreshed.') : state.dirty ? 'You have unsaved changes.' : 'Saving a review never changes Plex.';
         syncOffList(); renderOutcome();
@@ -508,31 +523,34 @@
         const known = rangeViews.get(range); if (known) { list.append(known.box); return; }
         const id = ++uid, box = el('details', null, 'rp-range'), summary = el('summary'), name = el('span', null, 'rp-range-name'), bounds = el('span', null, 'rp-range-bounds'), chip = el('span', null, 'rp-chip');
         const badge = el('span', null, 'rp-chip'), radios = [];
-        box.open = !range.id && range.origin === 'manual';
+        box.open = !range.id && (range.origin === 'manual' || range.origin === 'owner');
         const updateSummary = () => {
             name.textContent = (range.action === 'keep' ? 'Keep ' : 'Skip ') + kindLabel(range.kind);
             bounds.textContent = ms(range.start_ms) + ' – ' + ms(range.end_ms) + (range.end_ms > range.start_ms ? ` (${Math.round((range.end_ms - range.start_ms) / 1000)} s)` : '');
             chip.textContent = decisionLabel(range.review_status) + (range.locked ? ' · Locked' : ''); chip.dataset.tone = range.review_status === 'approved' ? 'positive' : range.review_status === 'rejected' ? 'danger' : 'accent';
             if (isSuggestion(range)) { badge.textContent = suggestionBadge(range) + (range.review_status === 'approved' ? ' · approved by you' : ''); badge.dataset.tone = 'info'; chip.hidden = range.review_status === 'approved' && !range.locked; }
+            if (isOwnerSpan(range)) { badge.textContent = 'Set by you'; badge.dataset.tone = 'info'; }
+            if (isReplaced(range)) { chip.textContent = 'Replaced by your skip'; chip.dataset.tone = 'info'; chip.hidden = false; }
         };
         const changed = () => { if (isSuggestion(range) && range.review_status === 'approved') range.acknowledged = true; const was = state.dirty; state.dirty = true; updateSummary(); renderReview(false); if (!was) renderPublication(); };
-        summary.append(name, bounds, ...(isSuggestion(range) ? [badge] : []), chip); box.append(summary);
-        const body = el('div', null, 'rp-range-body'); body.append(el('p', plainReason(range.reason || range.reason_code || '') || 'Added by you.', 'rp-note'));
+        summary.append(name, bounds, ...(isSuggestion(range) || isOwnerSpan(range) ? [badge] : []), chip); box.append(summary);
+        const body = el('div', null, 'rp-range-body'); body.append(el('p', isOwnerSpan(range) ? 'You set this skip yourself. It is skipped exactly as set, even where Reprise could not confirm it, and it replaces every other skip of this type.' : plainReason(range.reason || range.reason_code || '') || 'Added by you.', 'rp-note'));
         const seg = el('div', null, 'rp-seg'); seg.setAttribute('role', 'radiogroup'); seg.setAttribute('aria-label', 'Your decision');
         const syncRadios = () => radios.forEach(input => { input.checked = input.value === (range.review_status || 'proposed'); });
         const confirmBox = el('div', null, 'rp-plex-confirm'); confirmBox.hidden = true; confirmBox.setAttribute('role', 'group'); confirmBox.setAttribute('aria-label', 'Confirm approving a suggestion');
         const confirmActions = el('div', null, 'rp-actions');
         confirmActions.append(button('Approve it', () => { range.review_status = 'approved'; range.acknowledged = true; confirmBox.hidden = true; syncRadios(); changed(); }), button('Not now', () => { confirmBox.hidden = true; syncRadios(); }, 'rp-btn quiet'));
         confirmBox.append(el('p', `${joinAnd(suggesters(range))} found this, Reprise could not confirm it. Approve it only if it is right.`), confirmActions);
-        [['approved', 'Approve'], ['rejected', 'Reject'], ['proposed', 'Decide later']].forEach(([value, text]) => {
+        (isOwnerSpan(range) ? [['approved', 'Approve'], ['rejected', 'Reject']] : [['approved', 'Approve'], ['rejected', 'Reject'], ['proposed', 'Decide later']]).forEach(([value, text]) => {
             const label = el('label'), input = el('input'); input.type = 'radio'; input.name = 'decision-' + id; input.value = value; input.checked = (range.review_status || 'proposed') === value;
             input.addEventListener('change', () => {
                 if (value === 'approved' && isSuggestion(range) && range.review_status !== 'approved') { syncRadios(); confirmBox.hidden = false; return; }
                 range.review_status = value; changed();
             }); radios.push(input); label.dataset.value = value; label.append(input, el('span', text)); seg.append(label);
         });
-        const actions = el('div', null, 'rp-actions'); actions.append(seg, button('Play this section', () => playBounded($('rpVideo'), range.start_ms, range.end_ms)));
-        if (range.origin === 'manual' && !range.id) actions.append(button('Remove', () => { state.edits = state.edits.filter(edit => edit !== range); state.dirty = true; renderReview(); $('rpAddKeep').focus(); }, 'rp-btn quiet'));
+        const unsaved = isOwnerSpan(range) && !range.id; /* a skip just set has nothing to decide: it is approved, and Remove takes it back */
+        const actions = el('div', null, 'rp-actions'); actions.append(...(unsaved ? [] : [seg]), button('Play this section', () => playBounded($('rpVideo'), range.start_ms, range.end_ms)));
+        if ((range.origin === 'manual' || range.origin === 'owner') && !range.id) actions.append(button('Remove', () => { state.edits = state.edits.filter(edit => edit !== range); state.dirty = true; renderReview(); $(unsaved ? 'rpSetSkip' : 'rpAddKeep').focus(); }, 'rp-btn quiet'));
         body.append(actions, confirmBox);
         const fine = el('details', null, 'rp-fine'), grid = el('div', null, 'rp-fine-grid'); fine.append(el('summary', 'Fine-tune this section'), grid);
         const numberField = (text, key) => {
@@ -545,16 +563,19 @@
             input.addEventListener('change', () => { range[key] = input.value; changed(); }); label.append(input); return label;
         };
         grid.append(numberField('Start (milliseconds)', 'start_ms'), numberField('End (milliseconds)', 'end_ms'),
-            selectField('What to do', 'action', range.id && range.originalAction !== 'keep' ? [['skip', 'Skip it'], ['keep', 'Keep it']] : [['keep', 'Keep it']]),
-            selectField('Type', 'kind', [['intro', 'Intro'], ['credits', 'Credits'], ['recap', 'Recap'], ['preview', 'Next-episode preview']]));
+            ...(isOwnerSpan(range) ? [] : [selectField('What to do', 'action', range.id && range.originalAction !== 'keep' ? [['skip', 'Skip it'], ['keep', 'Keep it']] : [['keep', 'Keep it']])]),
+            selectField('Type', 'kind', isOwnerSpan(range) ? [['intro', 'Intro'], ['credits', 'Credits']] : [['intro', 'Intro'], ['credits', 'Credits'], ['recap', 'Recap'], ['preview', 'Next-episode preview']]));
         const lock = el('label', null, 'rp-check'), check = el('input'); check.type = 'checkbox'; check.checked = !!range.locked;
         check.addEventListener('change', () => { range.locked = check.checked; changed(); }); lock.append(check, document.createTextNode('Lock this section so a new analysis never changes it'));
-        fine.append(lock); body.append(fine); box.append(body); updateSummary(); rangeViews.set(range, { box }); list.append(box);
+        if (!isOwnerSpan(range)) fine.append(lock); /* a skip you set is always locked */
+        body.append(fine); box.append(body); updateSummary(); rangeViews.set(range, { box, update: updateSummary }); list.append(box);
     }
     async function saveReview() {
         const duration = Number(state.result?.duration_ms || state.item?.duration_ms || 0);
         if (state.edits.some(r => !Number.isInteger(r.start_ms) || !Number.isInteger(r.end_ms) || r.start_ms < 0 || r.start_ms >= r.end_ms || (duration && r.end_ms > duration))) return message('Each section needs a start before its end, inside the episode.', true);
-        const edits = state.edits.map(r => ({ range_id: r.id || null, action: r.action, kind: r.kind, start_ms: r.start_ms, end_ms: r.end_ms, review_status: r.review_status || 'proposed', locked: !!r.locked, reason: r.reason || '', ...(isSuggestion(r) && r.review_status === 'approved' && r.acknowledged ? { acknowledge_suggestion: true } : {}) }));
+        const edits = state.edits.map(r => isOwnerSpan(r) && !r.id
+            ? { range_id: null, kind: r.kind, start_ms: r.start_ms, end_ms: r.end_ms, review_status: 'approved', acknowledge_owner_span: true }
+            : { range_id: r.id || null, action: r.action, kind: r.kind, start_ms: r.start_ms, end_ms: r.end_ms, review_status: r.review_status || 'proposed', locked: !!r.locked, reason: r.reason || '', ...(isSuggestion(r) && r.review_status === 'approved' && r.acknowledged ? { acknowledge_suggestion: true } : {}), ...(isOwnerSpan(r) && r.review_status === 'approved' ? { acknowledge_owner_span: true } : {}) });
         try { $('rpSave').disabled = true; await api(`/api/reprise/media/${encodeURIComponent(state.item.id)}/review`, { method: 'PATCH', body: { expected_revision: state.result.result_revision, edits } }); state.dirty = false; await openItem(state.item, true); message('Review saved. Nothing was sent to Plex.'); }
         catch (error) { fail(error); $('rpSave').disabled = false; }
     }
@@ -740,6 +761,18 @@
         const duration = Number(state.result?.duration_ms || state.item?.duration_ms || 0), start = fileTime($('rpVideo'));
         state.edits.push({ kind: 'credits', action: 'keep', start_ms: start, end_ms: Math.min(duration || start + 1000, start + 1000), review_status: 'proposed', locked: true, origin: 'manual', reason: 'Protected by you' });
         state.dirty = true; renderReview();
+    });
+    /* Set a skip exactly: the owner's own span for the intro or credits. It joins the list as an unsaved section; Save review sends it. */
+    $('rpSetSkip').addEventListener('click', () => toggleSpanForm($('rpSpanForm').hidden));
+    $('rpSpanCancel').addEventListener('click', () => { toggleSpanForm(false); $('rpSetSkip').focus(); });
+    for (const [buttonId, fieldId] of [['rpSpanStartNow', 'rpSpanStart'], ['rpSpanEndNow', 'rpSpanEnd']]) $(buttonId).addEventListener('click', () => { $(fieldId).value = String(fileTime($('rpVideo'))); });
+    $('rpSpanForm').addEventListener('submit', event => {
+        event.preventDefault();
+        const kind = $('rpSpanKind').value, start = Number($('rpSpanStart').value), end = Number($('rpSpanEnd').value), duration = Number(state.result?.duration_ms || state.item?.duration_ms || 0);
+        if ($('rpSpanStart').value === '' || $('rpSpanEnd').value === '' || !Number.isInteger(start) || !Number.isInteger(end) || start < 0 || start >= end || (duration && end > duration)) return message('The skip needs a start before its end, inside the episode.', true);
+        state.edits = state.edits.filter(x => !(isOwnerSpan(x) && x.kind === kind)); /* one exact skip per type: the new one replaces the earlier */
+        state.edits.push({ kind, action: 'skip', start_ms: start, end_ms: end, review_status: 'approved', locked: true, origin: 'owner', reason_code: 'owner_span', reason: 'Set by you' });
+        state.dirty = true; toggleSpanForm(false); renderReview(); $('rpSetSkip').focus();
     });
     window.addEventListener('beforeunload', event => { if (state.dirty) { event.preventDefault(); event.returnValue = ''; } });
     /* How analysis decodes video (GPU or CPU): reported by the same settings payload as the Plex switch. */

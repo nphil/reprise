@@ -88,8 +88,18 @@
         </div>
 
         <section class="rp-ranges-block" aria-labelledby="rpRangesTitle">
-          <div class="rp-section-head"><h3 id="rpRangesTitle">What Reprise found</h3><button type="button" class="rp-btn" id="rpAddKeep"><i class="bi bi-shield-plus" aria-hidden="true"></i>Protect a scene</button></div>
+          <div class="rp-section-head"><h3 id="rpRangesTitle">What Reprise found</h3><div class="rp-actions"><button type="button" class="rp-btn" id="rpSetSkip" aria-expanded="false" aria-controls="rpSpanForm"><i class="bi bi-bullseye" aria-hidden="true"></i>Set a skip exactly</button><button type="button" class="rp-btn" id="rpAddKeep"><i class="bi bi-shield-plus" aria-hidden="true"></i>Protect a scene</button></div></div>
           <p class="rp-note">Open a section to preview it before you approve or reject it. Quiet or very short changes can be missed, and anything marked Keep is never skipped. Saving a review never changes Plex.</p>
+          <form class="rp-plex-confirm rp-span-form" id="rpSpanForm" aria-labelledby="rpSpanTitle" hidden novalidate>
+            <p id="rpSpanTitle"><strong>Set a skip exactly</strong></p>
+            <p class="rp-note">Reprise skips exactly these times, even where it could not confirm them, and this skip replaces every other skip of its type. A new analysis never changes it, and it cannot cover a scene you protected.</p>
+            <div class="rp-fine-grid">
+              <label class="rp-span-kind">Type<select id="rpSpanKind"><option value="intro">Intro</option><option value="credits">Credits</option></select></label>
+              <div class="rp-set"><label>Start (milliseconds)<input type="number" id="rpSpanStart" min="0" step="1"></label><button type="button" class="rp-btn" id="rpSpanStartNow">Use video time</button></div>
+              <div class="rp-set"><label>End (milliseconds)<input type="number" id="rpSpanEnd" min="0" step="1"></label><button type="button" class="rp-btn" id="rpSpanEndNow">Use video time</button></div>
+            </div>
+            <div class="rp-actions"><button type="submit" class="rp-btn primary">Add this skip</button><button type="button" class="rp-btn quiet" id="rpSpanCancel">Cancel</button></div>
+          </form>
           <div id="rpRanges"></div>
         </section>
 

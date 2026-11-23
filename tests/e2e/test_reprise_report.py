@@ -48,7 +48,14 @@ def _row(n: int, title: str, summary: str, verdict: str, flags: list, plex: list
             "reasons": extra.pop("reasons", []),
         },
         "plex": {"status": "read", "markers": plex, "unknown_kinds": []},
-        "reprise": {"skips": skips, "suggestions": [], "keeps": extra.pop("keeps", []), "to_review": 0, "approved": 0},
+        "reprise": {
+            "skips": skips,
+            "suggestions": [],
+            "owner_spans": extra.pop("owner_spans", []),
+            "keeps": extra.pop("keeps", []),
+            "to_review": 0,
+            "approved": 0,
+        },
         "published": False,
         "published_revision": None,
     }
@@ -144,6 +151,7 @@ class ReportApi:
     def __init__(self, page: Page) -> None:
         self.reports: list[dict] = []
         self.refusal: str | None = None
+        self.report = REPORT
         page.route(re.compile(r".*/api/reprise/(media\?|report|settings|clients|jobs|publications).*"), self._handle)
 
     def _handle(self, route: Route) -> None:
@@ -159,7 +167,7 @@ class ReportApi:
             self.reports.append(query)
             if self.refusal:
                 return _fulfill_json(route, {"error": self.refusal}, 400)
-            return _fulfill_json(route, REPORT)
+            return _fulfill_json(route, self.report)
         if url.path == "/api/reprise/settings":
             return _fulfill_json(route, {"writes_enabled": False, "publication_available": True})
         return _fulfill_json(route, {"items": []})
@@ -213,6 +221,34 @@ class TestReport:
         expect(authed_page.locator(".rp-report-row").nth(4)).to_contain_text(
             "Reprise couldn't read this file well enough to compare it."
         )
+
+    def test_a_skip_the_owner_set_is_named_in_the_row_and_has_its_own_filter(
+        self, authed_page: Page, api: ReportApi, app_url: str
+    ) -> None:
+        sentence = "Set by you: the intro skip (1:00 to 2:20)"
+        owned = {"kind": "intro", "start_ms": 60_000, "end_ms": 140_000, "origin": "owner"}
+        api.report = {
+            **REPORT,
+            "summary": {**REPORT["summary"], "counts": {"owner_span": 1}, "headline": "1 episode with a skip you set"},
+            "episodes": [
+                _row(
+                    1,
+                    "Biology 101",
+                    f"{sentence}.",
+                    "ok",
+                    [_flag("owner_span", "info", sentence, "intro")],
+                    [_m("intro", 60_000, 140_000)],
+                    [],
+                    owner_spans=[owned],
+                )
+            ],
+        }
+        authed_page.goto(f"{app_url}/reprise/report?show=Community&season=3")
+        row = authed_page.locator(".rp-report-row")
+        expect(row).to_have_count(1)
+        expect(row.locator(".rp-chip")).to_have_text(sentence)
+        expect(row.locator("dd").nth(1)).to_have_text("Intro\u00a01:00\u2060\u2013\u20602:20 (set by you)")
+        expect(authed_page.get_by_role("button", name=re.compile("Set by you"))).to_have_count(1)
 
     def test_choosing_a_show_runs_the_report_and_a_refusal_is_a_plain_sentence(
         self, authed_page: Page, api: ReportApi, app_url: str

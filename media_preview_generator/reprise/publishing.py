@@ -61,6 +61,32 @@ def _projection(ranges):
     return [(r.kind, r.start_ms, r.end_ms) for r in ranges]
 
 
+def _plex_skips(snapshot):
+    """``{(kind, start_ms, end_ms)}``: each intro or credits Plex serves right now that is the only one of its kind on
+    every item of the snapshot, with the same times on all of them. A kind with several markers is left out, and so is
+    everything when a row cannot be read (the plan refuses such a row)."""
+    tags = {t["id"] for t in snapshot["tags"] if t["tag_type"] == 12}
+    items = {m["id"] for m in snapshot["metadata_items"] if _live(m)}
+    held = {}  # (item, kind) -> the served (start_ms, end_ms) of each row
+    for row in snapshot["taggings"]:
+        if row["tag_id"] not in tags or row["metadata_item_id"] not in items:
+            continue
+        try:
+            fields, _ = plex_db.decode_extra_data(row["extra_data"])
+            served = plex_db._served_times(
+                MarkerType(row["text"]), row["time_offset"], row["end_time_offset"], fields.get("pv:final") == "1"
+            )
+        except (plex_db.PublishError, ValueError, TypeError):
+            return frozenset()
+        held.setdefault((row["metadata_item_id"], row["text"]), []).append(served)
+    same = set()
+    for kind in {kind for _, kind in held}:
+        per_item = [held.get((item, kind), []) for item in items]
+        if len(per_item[0]) == 1 and all(markers == per_item[0] for markers in per_item):
+            same.add((kind, *per_item[0][0]))
+    return frozenset(same)
+
+
 class ReprisePublisher:
     def __init__(self, store, registry, service, *, writes_enabled=False):
         self.store, self.registry, self.service = store, registry, service
@@ -219,6 +245,7 @@ class ReprisePublisher:
             raise PublicationConflict("Plex metadata is missing or deleted")
         if {m["metadata_item_id"] for m in media} != set(metadata):
             raise PublicationConflict("Plex metadata is missing or deleted")
+        plex_now = _plex_skips(snapshot)
         with self.store.marker_store._reading(snapshot=True) as conn:
             bindings = _rows(
                 conn,
@@ -290,7 +317,7 @@ class ReprisePublisher:
                     or "#" in bound.part_key
                 ):
                     raise ValueError("The part key is not an exact token-free playback path")
-                projected = plex_projection(result, bound, self.service.eligible_ranges(result, bound))
+                projected = plex_projection(result, bound, self.service.eligible_ranges(result, bound), plex_now)
                 projection = _projection(projected)
                 if wanted is None:
                     wanted = projection

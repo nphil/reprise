@@ -16,7 +16,8 @@ from datetime import UTC, datetime
 
 from loguru import logger
 
-from .models import SUGGESTION_ORIGINS, ReportRefused
+from .models import SUGGESTION_ORIGINS, ReportRefused, is_owner_span
+from .policy import clock
 from .service import _stale
 from .uniqueness import COMPARISON_KEY, is_one_of_a_kind, sentence
 
@@ -45,6 +46,7 @@ FLAGS = {
     ),
     "unconfirmed": ("attention", "UNCONFIRMED", "with only unconfirmed suggestions"),
     "one_of_a_kind": ("info", "UNIQUE", "where the intro or credits is one of a kind, so is not skipped"),
+    "owner_span": ("info", "SET_BY_YOU", "with a skip you set yourself"),
     "failed": ("problem", "FAILED", "where the analysis failed"),
     "stale": ("attention", "STALE", "with an out-of-date analysis"),
     "not_analyzed": ("attention", "NOT_ANALYZED", "not analyzed yet"),
@@ -101,21 +103,30 @@ def seconds_text(ms):
     return f"{value:.0f} s" if value >= 9.95 else f"{value:.1f} s".replace(".0 s", " s")
 
 
-def clock(ms):
-    """``m:ss`` (``h:mm:ss`` from an hour), the unit a person reads off a player."""
-    total = max(0, int(ms) // 1000)
-    hours, minutes, secs = total // 3600, total // 60 % 60, total % 60
-    return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes}:{secs:02d}"
+def _owned_kinds(ranges):
+    """The kinds the owner set an exact skip for (see ``is_owner_span``): that skip replaces every other skip of its
+    kind, so nothing else of that kind is compared with Plex."""
+    return {r.kind for r in ranges if is_owner_span(r) and r.review_status == "approved"}
+
+
+def _owner_spans(ranges):
+    return [r for r in ranges if is_owner_span(r) and r.review_status == "approved"]
 
 
 def _confirmed(ranges):
     """Reprise's confirmed skips, with pieces of one kind that touch exactly joined into one run (as they are sent to
-    Plex), so a marker is compared with the whole confirmed intro or credits, not its first piece."""
+    Plex), so a marker is compared with the whole confirmed intro or credits, not its first piece. A kind the owner set
+    an exact skip for has none: their span replaces what Reprise found."""
+    owned = _owned_kinds(ranges)
     pieces = sorted(
         (
             r
             for r in ranges
-            if r.action == "skip" and r.origin not in SUGGESTION_ORIGINS and r.review_status != "rejected"
+            if r.action == "skip"
+            and r.origin not in SUGGESTION_ORIGINS
+            and r.review_status != "rejected"
+            and not is_owner_span(r)
+            and r.kind not in owned
         ),
         key=lambda r: (r.kind, r.start_ms, r.end_ms),
     )
@@ -129,8 +140,16 @@ def _confirmed(ranges):
 
 
 def _suggested(ranges):
+    """The suggestions (Plex's or an online database's) not turned down. A kind the owner set an exact skip for has
+    none: their span replaces them."""
+    owned = _owned_kinds(ranges)
     return [
-        r for r in ranges if r.action == "skip" and r.origin in SUGGESTION_ORIGINS and r.review_status != "rejected"
+        r
+        for r in ranges
+        if r.action == "skip"
+        and r.origin in SUGGESTION_ORIGINS
+        and r.review_status != "rejected"
+        and r.kind not in owned
     ]
 
 
@@ -249,12 +268,18 @@ def classify(
         add("stale", (stale or {}).get("label") or "File changed")
     if status == "complete" and freshness == "current":
         confirmed, suggested, keeps = _confirmed(ranges), _suggested(ranges), _keeps(ranges)
+        spans = {r.kind: r for r in _owner_spans(ranges)}  # one per kind, by construction
+        for kind in PLEX_KINDS:
+            if kind in spans:
+                span = spans[kind]
+                add("owner_span", f"Set by you: the {kind} skip ({clock(span.start_ms)} to {clock(span.end_ms)})", kind)
         alone = set()  # the kinds shared by none of the episodes compared: not skipped, and nothing left to confirm
         for kind in PLEX_KINDS:
             facts = comparisons.get(kind)
             if (
                 facts is not None
                 and not any(r.kind == kind for r in confirmed)
+                and kind not in spans
                 and any(r.kind == kind for r in (*suggested, *keeps))
                 and is_one_of_a_kind(facts, sum(r.end_ms - r.start_ms for r in suggested if r.kind == kind))
             ):
@@ -279,7 +304,7 @@ def classify(
                         lost,
                     )
                 uncertain = _overlap(marker["start_ms"], end, unsure)
-                if uncertain > TOLERANCE_MS:
+                if uncertain > TOLERANCE_MS and kind not in spans:
                     add(
                         "plex_covers_unconfirmed",
                         f"Plex's {kind} skip covers {seconds_text(uncertain)} Reprise could not confirm",
@@ -400,9 +425,10 @@ def episode_row(item, result, current, why, plex, unknown_kinds, published_revis
         "reprise": {
             "skips": [_range_json(r) for r in _by_time(confirmed)],
             "suggestions": [_range_json(r) for r in _by_time(_suggested(ranges))],
+            "owner_spans": [_range_json(r) for r in _by_time(_owner_spans(ranges))],
             "keeps": [{**_range_json(r), "protected": _protected(r)} for r in _by_time(_keeps(ranges))],
             "to_review": sum(1 for r in confirmed if r.review_status == "proposed"),
-            "approved": sum(1 for r in confirmed if r.review_status == "approved"),
+            "approved": sum(1 for r in confirmed if r.review_status == "approved") + len(_owner_spans(ranges)),
         },
         "published": published,
         "published_revision": published_revision,
@@ -675,6 +701,8 @@ def _row_line(row):
     flags = " ".join(_flag_token(f) for f in row["flags"]) or "OK"
     state = "" if row["analysis"]["status"] in ("complete", "missing") else f"[{row['analysis']['status']}] "
     parts = [f"{row['label'] or '?'} {state}P {plex}", f"R {mine}"]
+    if row["reprise"]["owner_spans"]:
+        parts.append(f"O {_spans(row['reprise']['owner_spans'])}")
     if keeps:
         parts.append(f"K {keeps}")
     if unsure:
@@ -701,8 +729,9 @@ def render_text(report):
         lines.append("Add season=N for one line per episode.")
     else:
         lines.append(
-            "m:ss. P Plex, R Reprise (i intro, c credits), K scene you protected, U range Reprise could not confirm. "
-            "Under 1 s is not flagged."
+            "m:ss. P Plex, R Reprise (i intro, c credits), K scene you protected, U range Reprise could not confirm"
+            + (", O skip you set" if any(row["reprise"]["owner_spans"] for row in report["episodes"]) else "")
+            + ". Under 1 s is not flagged."
         )
         if report["plex"]["status"] != "read":
             lines.append("Plex: " + (report["plex"]["message"] or "not all episodes could be read") + ".")
