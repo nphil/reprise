@@ -13,6 +13,17 @@ from .verification_profile import PROFILE_SPEC
 MAX_REFERENCES = PROFILE_SPEC["candidate"]["max_references"]
 EXTRA_REFERENCES = PROFILE_SPEC["candidate"]["extra_references"]
 
+# What Plex says about an episode that changes with no change to the file or its place in the library: the intro and
+# credits markers it holds (Reprise's own publication rewrites them), the titles it shows and the address it was read
+# at. A binding is the rest. A change in these is no reason to doubt an analysis or a decision, so a binding's change
+# and a comparison's provenance both leave them out.
+VOLATILE_METADATA = frozenset(("candidates", "title", "show_title", "server_url"))
+
+
+def stable_metadata(metadata):
+    """A binding's metadata without ``VOLATILE_METADATA``: what says which file this is and where it sits."""
+    return {key: value for key, value in (metadata or {}).items() if key not in VOLATILE_METADATA}
+
 
 def _episode(bindings):
     """Return one unambiguous episode, or None when any active alias is unknown."""
@@ -37,6 +48,17 @@ def _episode(bindings):
     return next(iter(episodes)) if len(episodes) == 1 else None
 
 
+def _provenance(target_id, target_bindings, reference_id, reference_bindings, metadata_of):
+    def snapshot(bindings):
+        return sorted(
+            json.dumps([asdict(i), server, metadata_of(metadata)], sort_keys=True, separators=(",", ":"))
+            for i, server, metadata in bindings
+        )
+
+    payload = [_ADMISSION_REVISION, target_id, snapshot(target_bindings), reference_id, snapshot(reference_bindings)]
+    return hashlib.sha256(json.dumps(payload, separators=(",", ":")).encode()).hexdigest()
+
+
 def pair_provenance(target, target_bindings, reference, reference_bindings):
     """Hash all active provenance only when the two current files prove different episodes."""
     if target.id == reference.id or not is_current(target) or not is_current(reference) or same_file(target, reference):
@@ -48,15 +70,16 @@ def pair_provenance(target, target_bindings, reference, reference_bindings):
     right_aliases = {(i.plex_machine_identifier, i.rating_key) for i, _, _ in reference_bindings}
     if left_aliases & right_aliases:
         return None
+    return _provenance(target.id, target_bindings, reference.id, reference_bindings, stable_metadata)
 
-    def snapshot(bindings):
-        return sorted(
-            json.dumps([asdict(i), server, metadata], sort_keys=True, separators=(",", ":"))
-            for i, server, metadata in bindings
-        )
 
-    payload = [_ADMISSION_REVISION, target.id, snapshot(target_bindings), reference.id, snapshot(reference_bindings)]
-    return hashlib.sha256(json.dumps(payload, separators=(",", ":")).encode()).hexdigest()
+def restamp_provenance(stamp, target_id, target_bindings, reference_id, reference_bindings):
+    """What a comparison made before ``VOLATILE_METADATA`` left the provenance should be stamped with now: the stable
+    provenance of these bindings when ``stamp`` is the whole-metadata one of them, so nothing about either episode has
+    changed since, else None. Only the store's one-time repair uses it."""
+    if stamp != _provenance(target_id, target_bindings, reference_id, reference_bindings, dict):
+        return None
+    return _provenance(target_id, target_bindings, reference_id, reference_bindings, stable_metadata)
 
 
 def admit_references(target, references, store):

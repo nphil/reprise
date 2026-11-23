@@ -12,7 +12,7 @@ from datetime import datetime
 
 from loguru import logger
 
-from .admission import pair_provenance
+from .admission import pair_provenance, restamp_provenance, stable_metadata
 from .identity import is_current
 from .models import (
     ORIGIN_OWNER,
@@ -34,6 +34,10 @@ from .verification_profile import POLICY_VERSION, is_current_profile
 
 # The one-time repair of results that overlap an owner's lock (see ``RepriseStore._repair_locked_overlaps``).
 LOCK_REPAIR = "locked-overlap-1"
+# The one-time repairs that follow from a binding no longer counting what Plex changes by itself (see
+# ``RepriseStore._repair_owner_spans`` and ``RepriseStore._repair_provenance``).
+OWNER_SPAN_REPAIR = "owner-span-approval-1"
+PROVENANCE_REPAIR = "stable-provenance-1"
 
 DEFAULT_SCOPES = ("results:read", "jobs:read")
 ALLOWED_SCOPES = frozenset((*DEFAULT_SCOPES, "analysis:request"))
@@ -171,6 +175,8 @@ class RepriseStore:
             c.execute("CREATE INDEX IF NOT EXISTS reprise_bindings_version ON reprise_bindings(version_id, active)")
 
         self._repair_locked_overlaps()
+        self._repair_provenance()
+        self._repair_owner_spans()
 
     def _repair_locked_overlaps(self):
         """Once, cut back what an earlier re-analysis left overlapping an owner's lock: it kept the locked range and
@@ -212,32 +218,133 @@ class RepriseStore:
         except Exception as exc:
             logger.warning("Reprise could not repair results that overlap an owner's lock: {}", exc)
 
+    def _repair_provenance(self):
+        """Once, stamp the comparisons made before a binding's metadata left out what Plex changes by itself (see
+        ``stable_metadata``) with the provenance they carry now. One whose two episodes are exactly as they were
+        compared (the stamp it has still matches them) is as current as it was and keeps reading current; one that
+        changed since keeps its old stamp, which matches nothing, and reads as not current until it is analyzed
+        again."""
+        try:
+            with self.transaction() as c:
+                if c.execute("SELECT 1 FROM reprise_repairs WHERE name=?", (PROVENANCE_REPAIR,)).fetchone():
+                    return
+                c.execute("INSERT INTO reprise_repairs VALUES (?)", (PROVENANCE_REPAIR,))
+                bindings, stamped = {}, 0
+                for row in c.execute(
+                    'SELECT version_id,id,data FROM reprise_evidence_windows WHERE data LIKE \'%"admission_provenance":"%\''
+                ).fetchall():
+                    evidence = json.loads(row["data"])
+                    target_id, reference_id = row["version_id"], evidence.get("reference_version_id")
+                    stamp = (evidence.get("metrics") or {}).get("admission_provenance")
+                    if (
+                        str(evidence.get("verdict")).lower() != "match"
+                        or not reference_id
+                        or not isinstance(stamp, str)
+                    ):
+                        continue
+                    for version_id in (target_id, reference_id):
+                        if version_id not in bindings:
+                            bindings[version_id] = self._bindings_in_transaction(c, version_id)
+                    restamped = restamp_provenance(
+                        stamp, target_id, bindings[target_id], reference_id, bindings[reference_id]
+                    )
+                    if restamped is None:
+                        continue
+                    evidence["metrics"]["admission_provenance"] = restamped
+                    c.execute(
+                        "UPDATE reprise_evidence_windows SET data=? WHERE version_id=? AND id=?",
+                        (_json(evidence), target_id, row["id"]),
+                    )
+                    stamped += 1
+                if stamped:
+                    logger.info(
+                        "Reprise stamped {} comparisons with the provenance that ignores Plex's own changes", stamped
+                    )
+        except Exception as exc:
+            logger.warning("Reprise could not restamp the comparisons it made earlier: {}", exc)
+
+    def _repair_owner_spans(self):
+        """Once, give the owner's exact skips back what a library refresh took from them. Whenever Plex described an
+        episode differently (a marker Reprise had just sent was enough) it set every approval of the episode back to
+        proposed and set aside every override, the owner's exact skips included, though the file was the one they set
+        them for. Nothing else sets aside the override of an exact skip (setting, approving, rejecting or moving one
+        records its override afresh), so one that is set aside was taken from them: a skip that fell back to proposed
+        is approved again and every such override is restored. A result with a skip approved again gets a new
+        revision. Plex is not touched, and a result that is not current stays so until it is analyzed again."""
+        try:
+            with self.transaction() as c:
+                if c.execute("SELECT 1 FROM reprise_repairs WHERE name=?", (OWNER_SPAN_REPAIR,)).fetchone():
+                    return
+                c.execute("INSERT INTO reprise_repairs VALUES (?)", (OWNER_SPAN_REPAIR,))
+                approved = set()
+                for row in c.execute(
+                    "SELECT r.version_id,r.data FROM reprise_ranges r "
+                    "JOIN reprise_manual_overrides o ON o.version_id=r.version_id AND o.range_id=r.id "
+                    "WHERE o.quarantined=1 AND r.data LIKE ?",
+                    (f'%"origin":"{ORIGIN_OWNER}"%',),
+                ).fetchall():
+                    span = _range(json.loads(row["data"]))
+                    if not is_owner_span(span):
+                        continue
+                    if span.review_status == "proposed":
+                        c.execute(
+                            "UPDATE reprise_ranges SET data=? WHERE version_id=? AND id=?",
+                            (_json(asdict(replace(span, review_status="approved"))), row["version_id"], span.id),
+                        )
+                        approved.add(row["version_id"])
+                    c.execute(
+                        "UPDATE reprise_manual_overrides SET quarantined=0 WHERE version_id=? AND range_id=?",
+                        (row["version_id"], span.id),
+                    )
+                for version_id in approved:
+                    c.execute(
+                        "UPDATE reprise_decision_results SET revision=revision+1 WHERE version_id=?", (version_id,)
+                    )
+                if approved:
+                    logger.info(
+                        "Reprise approved again the exact skips a library refresh had set back, in {} results",
+                        len(approved),
+                    )
+        except Exception as exc:
+            logger.warning("Reprise could not restore the owner's exact skips: {}", exc)
+
     def transaction(self):
         return self.marker_store._tx()
 
     @staticmethod
     def _invalidate_binding_change(c, version_id):
-        affected = {version_id}
-        affected.update(
-            row["version_id"]
-            for row in c.execute("SELECT version_id,data FROM reprise_evidence_windows")
-            if json.loads(row["data"]).get("reference_version_id") == version_id
+        """What an analysis found about this file no longer holds, because the Plex binding it was made under changed
+        or is gone: the result reads as needing a new analysis, the approvals of what the analysis found fall back to
+        proposed and the owner's reviews of those proposals are set aside.
+
+        What the owner decided about the file itself stays, since the file is the one they decided it for: their
+        exact skips keep their approval, and these and every range they locked keep their overrides. A result that
+        compared with this file is not touched: once the comparison no longer holds it reads as not current by itself
+        (see ``pair_provenance``), and reads current again if it holds again."""
+        if not c.execute("SELECT 1 FROM reprise_decision_results WHERE version_id=?", (version_id,)).fetchone():
+            return
+        decided = set()
+        for row in c.execute("SELECT id,data FROM reprise_ranges WHERE version_id=?", (version_id,)).fetchall():
+            item = _range(json.loads(row["data"]))
+            if item.locked or is_owner_span(item):
+                decided.add(item.id)
+            if item.action == "skip" and item.review_status == "approved" and not is_owner_span(item):
+                c.execute(
+                    "UPDATE reprise_ranges SET data=? WHERE version_id=? AND id=?",
+                    (_json(asdict(replace(item, review_status="proposed"))), version_id, item.id),
+                )
+        for row in c.execute(
+            "SELECT range_id FROM reprise_manual_overrides WHERE version_id=?", (version_id,)
+        ).fetchall():
+            if row["range_id"] not in decided:
+                c.execute(
+                    "UPDATE reprise_manual_overrides SET quarantined=1 WHERE version_id=? AND range_id=?",
+                    (version_id, row["range_id"]),
+                )
+        c.execute(
+            "UPDATE reprise_decision_results SET policy_version=?,revision=revision+1 WHERE version_id=?",
+            ("binding-changed", version_id),
         )
-        for affected_id in affected:
-            if not c.execute("SELECT 1 FROM reprise_decision_results WHERE version_id=?", (affected_id,)).fetchone():
-                continue
-            c.execute("UPDATE reprise_manual_overrides SET quarantined=1 WHERE version_id=?", (affected_id,))
-            for row in c.execute("SELECT id,data FROM reprise_ranges WHERE version_id=?", (affected_id,)).fetchall():
-                item = _range(json.loads(row["data"]))
-                if item.action == "skip" and item.review_status == "approved":
-                    c.execute(
-                        "UPDATE reprise_ranges SET data=? WHERE version_id=? AND id=?",
-                        (_json(asdict(replace(item, review_status="proposed"))), affected_id, item.id),
-                    )
-            c.execute(
-                "UPDATE reprise_decision_results SET policy_version=?,revision=revision+1 WHERE version_id=?",
-                ("binding-changed", affected_id),
-            )
 
     def register_media(
         self, version: MediaVersion, identity: PlaybackIdentity, *, server_id: str, metadata: dict | None = None
@@ -270,28 +377,21 @@ class RepriseStore:
                 "SELECT metadata,identity,active,server_id FROM reprise_bindings WHERE machine=? AND rating_key=? AND media_id=? AND part_id=? AND audio_id=? AND version_id=?",
                 (*binding, identity.audio_stream_id, version.id),
             ).fetchone()
+            prior_metadata = json.loads(prior["metadata"]) if prior else {}
             if old and (
                 not prior
                 or not prior["active"]
                 or prior["server_id"] != server_id
                 or prior["identity"] != _json(asdict(identity))
-                or prior["metadata"] != _json(metadata or {})
+                or _json(stable_metadata(prior_metadata)) != _json(stable_metadata(metadata))
             ):
                 self._invalidate_binding_change(c, version.id)
             keys = ("remote_part_path", "mapping_fingerprint")
             if prior and (
                 not prior["active"]
                 or prior["server_id"] != server_id
-                or any(json.loads(prior["metadata"]).get(k) != (metadata or {}).get(k) for k in keys)
+                or any(prior_metadata.get(k) != (metadata or {}).get(k) for k in keys)
             ):
-                c.execute("UPDATE reprise_manual_overrides SET quarantined=1 WHERE version_id=?", (version.id,))
-                for row in c.execute("SELECT id,data FROM reprise_ranges WHERE version_id=?", (version.id,)).fetchall():
-                    item = _range(json.loads(row["data"]))
-                    if item.action == "skip" and item.review_status == "approved":
-                        c.execute(
-                            "UPDATE reprise_ranges SET data=? WHERE version_id=? AND id=?",
-                            (_json(asdict(replace(item, review_status="proposed"))), version.id, item.id),
-                        )
                 c.execute(
                     "UPDATE reprise_decision_results SET status=?,revision=revision+1,reasons=? WHERE version_id=?",
                     ("failed", _json(["Binding changed; reanalysis required"]), version.id),
@@ -305,7 +405,6 @@ class RepriseStore:
             ]
             for old_id in old_ids:
                 self._invalidate_binding_change(c, old_id)
-                c.execute("UPDATE reprise_manual_overrides SET quarantined=1 WHERE version_id=?", (old_id,))
             c.execute(
                 "UPDATE reprise_bindings SET active=0 WHERE machine=? AND rating_key=? AND media_id=? AND part_id=? AND version_id<>?",
                 (*binding, version.id),

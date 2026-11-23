@@ -6,6 +6,7 @@ protected, a skip they set or locked, and Plex's own limits do. The first tests 
 rest run the real store, the real publisher on a real Plex SQLite file and the real HTTP routes.
 """
 
+import json
 from dataclasses import asdict, replace
 
 import pytest
@@ -23,7 +24,13 @@ from media_preview_generator.reprise.models import (
 from media_preview_generator.reprise.policy import eligible_ranges
 from media_preview_generator.reprise.report import classify
 from media_preview_generator.reprise.review import plex_projection
-from media_preview_generator.reprise.store import NEEDS_OWNER_SPAN_ACKNOWLEDGMENT, RevisionConflict
+from media_preview_generator.reprise.store import (
+    NEEDS_OWNER_SPAN_ACKNOWLEDGMENT,
+    OWNER_SPAN_REPAIR,
+    RepriseStore,
+    RevisionConflict,
+    _json,
+)
 from media_preview_generator.reprise.verification_profile import PROFILE_FINGERPRINT, PROFILE_ID
 from media_preview_generator.web.routes.api_reprise import create_reprise_blueprint
 from tests.reprise.test_autosend import (
@@ -890,6 +897,187 @@ def test_an_analysis_that_fails_leaves_the_exact_skip_approved_and_takes_the_app
 
     lab.analyse(ep, intro_found(ep), confirmed(ep, "credits", 80_000, 90_000))
     assert eligible_now(lab, ep) == [("intro", 15_000, 30_000)]
+
+
+# ── a library refresh (the real store) ────────────────────────────────────────────────────────────────────────────
+
+PLEX_HOLDS = [{"kind": "intro", "start_ms": 8_000, "end_ms": 35_000, "source": "plex"}]
+
+
+def override_states(lab, ep):
+    """Which of the owner's overrides are in force (0) and which a refresh set aside (1), by range id."""
+    rows = lab.query("SELECT range_id,quarantined FROM reprise_manual_overrides WHERE version_id=?", ep.vid)
+    return {row["range_id"]: row["quarantined"] for row in rows}
+
+
+def set_back_by_a_refresh(lab, ep):
+    """What a refresh did before a binding ignored what Plex changes by itself: every approved skip is proposed
+    again, every override is set aside and the result reads as changed. The start-up repair is due again."""
+    with lab.store.transaction() as c:
+        for row in c.execute("SELECT id,data FROM reprise_ranges WHERE version_id=?", (ep.vid,)).fetchall():
+            item = json.loads(row["data"])
+            if item["action"] == "skip" and item["review_status"] == "approved":
+                c.execute(
+                    "UPDATE reprise_ranges SET data=? WHERE version_id=? AND id=?",
+                    (_json({**item, "review_status": "proposed"}), ep.vid, row["id"]),
+                )
+        c.execute("UPDATE reprise_manual_overrides SET quarantined=1 WHERE version_id=?", (ep.vid,))
+        c.execute(
+            "UPDATE reprise_decision_results SET policy_version=?,revision=revision+1 WHERE version_id=?",
+            ("binding-changed", ep.vid),
+        )
+        c.execute("DELETE FROM reprise_repairs WHERE name=?", (OWNER_SPAN_REPAIR,))
+
+
+@pytest.mark.parametrize("sent", ["an_exact_skip", "an_approved_finding"])
+def test_a_refresh_that_reads_back_what_reprise_sent_leaves_the_result_as_it_was_and_undo_still_works(lab, sent):
+    ep = episode(lab, intro_found, lambda ep: confirmed(ep, "credits", 80_000, 90_000))
+    before = lab.rows()
+    if sent == "an_exact_skip":
+        lab.owner_review(ep, [set_span("intro", 8_000, 35_000)])
+        change = send(lab, ep)
+    else:
+        change = lab.prepare_as_owner(ep, CREDITS)
+        lab.publisher.apply(change["id"], "owner")
+    written, result = lab.rows(), lab.store.get_result(ep.vid)
+    assert written != before
+    assert result.freshness == "current"
+
+    # The next refresh finds the marker Reprise wrote, and Plex has renamed the episode and moved.
+    lab.refresh(ep, candidates=PLEX_HOLDS, title="A new title", show_title="Another show", server_url="http://plex")
+
+    assert lab.store.get_result(ep.vid) == result  # as current and as approved, at the same revision
+    lab.publisher.undo(change["id"], "owner")
+    assert lab.rows() == before
+
+
+@pytest.mark.parametrize(
+    ("changed", "reads_as"),
+    [
+        pytest.param({"season": 2}, "plex_changed", id="plex_matched_another_episode"),
+        pytest.param({"library_id": "2"}, "library_changed", id="another_library"),
+        pytest.param({"remote_part_path": "/elsewhere/episode-1.mkv"}, "library_changed", id="another_path"),
+        pytest.param({"mapping_fingerprint": "another-mapping"}, "library_changed", id="another_path_mapping"),
+    ],
+)
+def test_a_real_binding_change_keeps_the_exact_skip_and_locks_and_sets_back_only_what_the_analysis_found(
+    lab, changed, reads_as
+):
+    ep = episode(
+        lab,
+        intro_found,
+        lambda ep: confirmed(ep, "credits", 80_000, 90_000),
+        lambda ep: confirmed(ep, "credits", 92_000, 96_000),
+    )
+    lab.owner_review(
+        ep,
+        [
+            set_span("intro", 8_000, 35_000),
+            {"range_id": CREDITS, "review_status": "approved", "locked": True},
+            {"range_id": "credits-92000", "review_status": "approved"},
+        ],
+    )
+    [owned] = owner_spans(lab, ep)
+
+    lab.refresh(ep, **changed)
+
+    now = lab.ranges(ep)
+    assert now[owned.id] == owned  # approved and locked, as the owner left it
+    assert (now[CREDITS].review_status, now[CREDITS].locked) == (
+        "proposed",
+        True,
+    )  # the lock stays, the approval does not
+    assert now["credits-92000"].review_status == "proposed"
+    assert override_states(lab, ep) == {owned.id: 0, CREDITS: 0, "credits-92000": 1}
+    result = lab.store.get_result(ep.vid)
+    assert (result.freshness, result.policy_version) == ("stale", "binding-changed")
+    assert lab.service.get_result(ep.vid)["stale"]["code"] == reads_as
+    assert eligible_now(lab, ep) == []  # nothing is served until it is analyzed again
+
+    lab.refresh(ep)  # Plex describes it as before
+    lab.analyse(ep, intro_found(ep), confirmed(ep, "credits", 80_000, 90_000), confirmed(ep, "credits", 92_000, 96_000))
+
+    assert eligible_now(lab, ep) == [("intro", 8_000, 35_000)]  # the exact skip alone: the rest needs approving again
+    assert lab.ranges(ep)[owned.id] == owned
+
+
+def test_a_replaced_file_still_starts_over(lab):
+    ep = episode(lab, intro_found, lambda ep: confirmed(ep, "credits", 80_000, 90_000))
+    lab.owner_review(ep, [set_span("intro", 8_000, 35_000), {"range_id": CREDITS, "review_status": "approved"}])
+
+    new = lab.replace_file(ep)
+
+    assert lab.store.get_result(ep.vid).freshness == "stale"  # the analysis was of the file that is gone
+    assert lab.ranges(ep)[CREDITS].review_status == "proposed"
+    assert override_states(lab, ep)[CREDITS] == 1
+    assert eligible_now(lab, ep) == []
+    assert lab.store.get_result(new.id) is None  # the new file has no analysis and so no skip
+
+
+def test_a_changed_reference_marks_the_comparison_as_changed_and_sets_nothing_back(lab):
+    ep = episode(lab, intro_found, lambda ep: confirmed(ep, "credits", 80_000, 90_000))
+    lab.owner_review(ep, [set_span("intro", 8_000, 35_000), {"range_id": CREDITS, "review_status": "approved"}])
+    [owned] = owner_spans(lab, ep)
+    result = lab.store.get_result(ep.vid)
+    assert lab.service.get_result(ep.vid)["stale"] is None
+    [(identity, server_id, metadata)] = lab.store.get_bindings(ep.reference.id)
+
+    lab.store.register_media(ep.reference, identity, server_id=server_id, metadata={**metadata, "episode": 98})
+
+    assert lab.service.get_result(ep.vid)["stale"]["code"] == "comparison_changed"
+    assert eligible_now(lab, ep) == []
+    assert lab.ranges(ep) == {r.id: r for r in result.ranges}  # every approval stands
+    assert override_states(lab, ep) == {owned.id: 0, CREDITS: 0}
+    assert lab.revision(ep) == result.result_revision
+
+    lab.store.register_media(ep.reference, identity, server_id=server_id, metadata=metadata)
+
+    assert lab.service.get_result(ep.vid)["stale"] is None  # the comparison holds again, and so does everything else
+    assert lab.store.get_result(ep.vid) == result
+
+
+def test_start_up_approves_the_exact_skip_again_and_one_analysis_makes_it_current_with_nothing_to_send(lab):
+    ep = episode(lab, intro_found, lambda ep: confirmed(ep, "credits", 80_000, 90_000))
+    lab.owner_review(ep, [set_span("intro", 8_000, 35_000)])
+    send(lab, ep)
+    written = lab.rows()
+    lab.owner_review(ep, [{"range_id": CREDITS, "review_status": "approved"}])
+    [owned] = owner_spans(lab, ep)
+    set_back_by_a_refresh(lab, ep)
+    revision = lab.revision(ep)
+    assert lab.ranges(ep)[owned.id].review_status == "proposed"
+
+    again = RepriseStore(lab.marker)  # the next start-up
+
+    assert lab.ranges(ep)[owned.id] == owned  # approved again, exactly as the owner had it
+    assert lab.ranges(ep)[CREDITS].review_status == "proposed"  # what the analysis found was never theirs to restore
+    assert override_states(lab, ep) == {owned.id: 0, CREDITS: 1}
+    assert again.get_result(ep.vid).result_revision == revision + 1
+    assert again.get_result(ep.vid).freshness == "stale"  # nothing is served until it is analyzed again
+    RepriseStore(lab.marker)  # once: the repair is on record
+    assert lab.revision(ep) == revision + 1
+    assert lab.query("SELECT 1 FROM reprise_repairs WHERE name=?", OWNER_SPAN_REPAIR)
+
+    lab.analyse(ep, intro_found(ep), confirmed(ep, "credits", 80_000, 90_000))
+
+    assert eligible_now(lab, ep) == [("intro", 8_000, 35_000)]
+    assert refused_send(lab, ep) == NOTHING_TO_SEND
+    assert lab.rows() == written  # none of it touched Plex
+
+
+def test_start_up_restores_the_override_of_an_exact_skip_that_was_turned_down_and_leaves_it_rejected(lab):
+    ep = episode(lab, intro_found)
+    lab.owner_review(ep, [set_span("intro", 8_000, 35_000)])
+    [owned] = owner_spans(lab, ep)
+    lab.owner_review(ep, [{"range_id": owned.id, "review_status": "rejected"}])
+    set_back_by_a_refresh(lab, ep)
+    revision = lab.revision(ep)
+
+    again = RepriseStore(lab.marker)
+
+    assert lab.ranges(ep)[owned.id].review_status == "rejected"
+    assert override_states(lab, ep)[owned.id] == 0
+    assert again.get_result(ep.vid).result_revision == revision  # nothing the owner can see changed
 
 
 # ── the report (the real store) ───────────────────────────────────────────────────────────────────────────────────

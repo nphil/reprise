@@ -8,6 +8,7 @@ import contextlib
 import json
 import os
 import sqlite3
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -443,6 +444,21 @@ class Lab:
             reference=reference,
             provenance=provenance,
         )
+
+    def refresh(self, ep, season=1, **seen):
+        """A library refresh reads ``ep`` from Plex again and registers its binding with what Plex says now: what it
+        said before with ``seen`` on top (its markers as ``candidates``, a new ``title``, another ``library_id``)."""
+        metadata = self._metadata(ep.path, season, ep.number, **seen)
+        self.store.register_media(ep.version, ep.identity, server_id="local", metadata=metadata)
+
+    def replace_file(self, ep):
+        """An upgrade replaces ``ep``'s file while Plex's part keeps its ids: the new file is registered under the
+        same binding. Returns the new version."""
+        ep.path.write_bytes(ep.path.read_bytes() + b"-upgraded")
+        version = media_version(str(ep.path), DURATION, _signature(ep.audio))
+        identity = replace(ep.identity, part_size_bytes=version.size_bytes)
+        self.store.register_media(version, identity, server_id="local", metadata=self._metadata(ep.path, 1, ep.number))
+        return version
 
     def analyse(self, ep, *parts):
         """Store a finished analysis of ``ep`` from ``(evidence, range)`` parts. Nothing is reviewed or approved."""

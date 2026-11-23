@@ -21,6 +21,7 @@ from urllib.parse import urlsplit
 
 from ..markers.models import Marker, MarkerType
 from ..markers.publishers import plex_db
+from .admission import stable_metadata
 from .identity import is_current
 from .models import PlaybackIdentity
 from .review import plex_projection
@@ -683,7 +684,7 @@ class ReprisePublisher:
                 if (
                     len(current) != 1
                     or current[0][1] != binding["server_id"]
-                    or current[0][2] != json.loads(binding["metadata"])
+                    or stable_metadata(current[0][2]) != stable_metadata(json.loads(binding["metadata"]))
                     or not self.service._valid_binding(version, *current[0])
                 ):
                     raise PublicationConflict("The bound library, path mapping, or authorization changed")

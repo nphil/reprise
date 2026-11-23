@@ -669,9 +669,14 @@ def test_an_analysis_that_no_longer_counts_says_why_and_analyzing_again_clears_i
     assert "file" not in stale["message"].lower()
     queued_analysis(service, target)  # the offered action is allowed and clears it
     assert stale_of(service, target) is None
-    # A refresh saw Plex describe the episode differently (other markers).
+    # A refresh saw Plex describe the episode with other markers and another title: nothing about the file changed.
     metadata = service.store.get_bindings(target.id)[0][2]
-    service.store.register_media(target, identity, server_id="server", metadata={**metadata, "candidates": []})
+    service.store.register_media(
+        target, identity, server_id="server", metadata={**metadata, "candidates": [], "title": "Renamed"}
+    )
+    assert stale_of(service, target) is None
+    # A refresh saw Plex match it as another episode.
+    service.store.register_media(target, identity, server_id="server", metadata={**metadata, "episode": 7})
     assert stale_of(service, target)["code"] == "plex_changed"
     queued_analysis(service, target)
     assert stale_of(service, target) is None
