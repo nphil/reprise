@@ -1873,3 +1873,155 @@ def test_ac3_service_declarations_on_every_frame_or_on_some_are_one_kind(ac3_nat
     result = media.native_audio_pcm(ac3_native_audio, 0, 0, 1000, lambda: False, lambda: False, 1)
     assert "audio service type" in result.declarations and "matrix encoding" not in result.declarations
     assert "downmix" in result.declarations
+
+
+def _surround(tmp_path, codec, layout="5.1(side)", channels=6):
+    """Three seconds of sound: AC-3 (its decoder gives float32) or 32-bit PCM, silent for its first half second (so
+    float32 holds the first samples and not the later ones)."""
+    path = tmp_path / f"sound-{codec}.mka"
+    signals = "|".join(f"if(lt(t\\,0.5)\\,0\\,0.1*sin(2*PI*{300 + 75 * i}*t))" for i in range(channels))
+    execute("-f", "lavfi", "-i", f"aevalsrc={signals}:s=48000:d=3:c={layout}", "-c:a", codec, "-y", str(path))
+    return media_version(str(path), 3000, "{}")
+
+
+def _stored_chunks(item, start, end, chunk_samples, around=None):
+    from media_preview_generator.reprise.media import native_audio_chunks
+
+    with native_audio_chunks(
+        item, 0, start, end, lambda: False, lambda: False, 1, chunk_samples=chunk_samples, to_end=True, around=around
+    ) as reader:
+        chunks = list(reader)
+    assert reader.declarations is not None
+    return [
+        (
+            chunk.data.tobytes(),
+            chunk.data.dtype.str,
+            chunk.data.shape,
+            chunk.data.flags.writeable,
+            chunk.data.flags.c_contiguous,
+            chunk.sample_rate,
+            chunk.channel_layout,
+            chunk.channel_ids,
+            chunk.support_start_ms,
+            chunk.support_end_ms,
+        )
+        for chunk in chunks
+    ]
+
+
+def _count_decodes(monkeypatch):
+    from media_preview_generator.reprise import media
+
+    decodes = []
+    original = media._native_audio_stream
+
+    def counted(*args):
+        decodes.append((args[2], args[3]))
+        return original(*args)
+
+    monkeypatch.setattr(media, "_native_audio_stream", counted)
+    return decodes
+
+
+# Windows inside the stretch, at the sound's start and past its end, on chunks of other sizes than the stretch's own.
+STORED_WINDOWS = [(0, 1000, 4800), (125, 1125, 4800), (Fraction(1, 3), Fraction(4501, 3), 7000), (2500, 4000, 4800)]
+
+
+@pytest.mark.parametrize(
+    "codec,layout,channels,kept", [("ac3", "5.1(side)", 6, "<f4"), ("pcm_s32le", "stereo", 2, "<f8")]
+)
+def test_reads_inside_a_kept_stretch_get_exactly_what_their_own_decode_gives(
+    tmp_path, monkeypatch, codec, layout, channels, kept
+):
+    """While an analysis runs, one decode of a stretch serves every read inside it: the same samples, bit for bit,
+    cut at the same boundaries, in chunks of the same sizes with the same supports, the cut at the sound's end too.
+    Float32 holds what a lossy decoder gives exactly; a 32-bit track is kept as float64 once a sample needs it."""
+    import numpy as np
+
+    from media_preview_generator.reprise import media
+
+    item = _surround(tmp_path, codec, layout, channels)
+    direct = [_stored_chunks(item, *window) for window in STORED_WINDOWS]
+    decodes = _count_decodes(monkeypatch)
+    monkeypatch.setattr(media, "_AUDIO_REGION_CHUNK", 4800)  # the stretch's own chunks: float64 needed midway
+    with media.audio_regions():
+        stored = [_stored_chunks(item, *window, around=(0, 4000)) for window in STORED_WINDOWS]
+        sound = media.native_audio_pcm(
+            item, 0, 125, 1125, lambda: False, lambda: False, 1, to_end=True, around=(0, 4000)
+        )
+        (region,) = media._audio_regions.kept
+        assert region.dtype.str == kept
+    assert stored == direct
+    assert decodes == [(0, 4000)]
+    expected = np.concatenate([np.frombuffer(chunk[0]).reshape(-1, channels) for chunk in direct[1]])
+    assert np.array_equal(sound.data, expected) and not sound.data.flags.writeable
+    assert sound.support_start_ms == 125 and sound.support_end_ms == 1125 and sound.declarations is not None
+    assert region.file.closed and not media._audio_regions.kept and not media._audio_regions.settled
+
+
+def test_a_read_no_kept_stretch_holds_decodes_itself(tmp_path, monkeypatch):
+    """Outside an analysis, past its stretch, or with a stretch that could not be decoded, a read decodes itself: the
+    stretch is not decoded again for every read that names it."""
+    from media_preview_generator.reprise import media
+
+    item = _surround(tmp_path, "ac3")
+    window = (125, 1125, 4800)
+    direct = _stored_chunks(item, *window)
+    decodes = _count_decodes(monkeypatch)
+    assert _stored_chunks(item, *window, around=(0, 4000)) == direct
+    assert decodes == [(125, 1125)]
+    decodes.clear()
+    with media.audio_regions():
+        assert _stored_chunks(item, *window, around=(0, 1000)) == direct
+    assert decodes == [(0, 1000), (125, 1125)]
+    decodes.clear()
+    attempts = []
+
+    def failing(*args):
+        attempts.append(args)
+        raise media.DecodeError("Native audio does not continuously cover the window")
+
+    monkeypatch.setattr(media, "_decode_region", failing)
+    with media.audio_regions():
+        assert _stored_chunks(item, *window, around=(0, 4000)) == direct
+        assert _stored_chunks(item, *window, around=(0, 4000)) == direct
+    assert len(attempts) == 1 and decodes == [(125, 1125), (125, 1125)]
+
+
+def test_reads_waiting_on_a_stretch_being_decoded_share_that_decode(tmp_path, monkeypatch):
+    """Two searches reading inside one stretch at once decode it once: the second waits for the first's decode."""
+    import threading
+
+    from media_preview_generator.reprise import media
+
+    item = _surround(tmp_path, "ac3")
+    windows = [(125, 1125, 4800), (1500, 2500, 4800)]
+    direct = [_stored_chunks(item, *window) for window in windows]
+    decodes = _count_decodes(monkeypatch)
+    started, release = threading.Event(), threading.Event()
+    original = media._decode_region
+
+    def held(*args):
+        started.set()
+        assert release.wait(30)
+        return original(*args)
+
+    monkeypatch.setattr(media, "_decode_region", held)
+    results = {}
+
+    def read(index):
+        results[index] = _stored_chunks(item, *windows[index], around=(0, 4000))
+
+    with media.audio_regions():
+        first = threading.Thread(target=read, args=(0,))
+        first.start()
+        assert started.wait(30)
+        second = threading.Thread(target=read, args=(1,))
+        second.start()
+        second.join(0.3)
+        assert second.is_alive()  # waiting on the first one's decode
+        release.set()
+        first.join(30)
+        second.join(30)
+    assert results == {0: direct[0], 1: direct[1]}
+    assert decodes == [(0, 4000)]

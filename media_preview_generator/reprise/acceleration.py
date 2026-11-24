@@ -27,7 +27,7 @@ import re
 import subprocess
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -52,18 +52,24 @@ _FAMILIES = {
 MIN_SIDE = 144
 MAX_SIDE = 4096
 CHECK_TIMEOUT_S = 30.0
-# A device whose check found nothing usable is checked again after this long (a busy or just-started GPU); a device
-# that passed is trusted for the life of the process.
+# A device whose check found nothing usable is checked again after this long (a busy or just-started GPU), and so is
+# one whose check the card had no memory for in part (``Verdict.short_of_memory``); what a check passed is trusted for
+# the life of the process.
 RETRY_AFTER_S = 600.0
-# This many consecutive GPU decodes that only the next device or the CPU could finish suspend the device for a while,
-# so a GPU without memory for a decoder stops costing a failed start per window.
+# This many consecutive GPU decodes that only the next device or the CPU could finish suspend the device for a while.
+# A decode the card had no memory for is not one of them (``record_fallback``).
 FAILURES_BEFORE_SUSPEND = 5
 SUSPEND_S = 600.0
 # The suffix of a family's withdrawn entry that stops only the reduction, not the decode.
 REDUCE = "+reduce"
-# Reductions of one family on one device that only a plain decode could finish, in a row, before the reduction is
-# withdrawn until the app restarts (a transient failure is forgotten by the next reduction that succeeds).
-REDUCTION_FAILURES_BEFORE_WITHDRAW = 3
+# Reductions of one family on one device that only a plain decode could finish, in a row, before the reduction pauses
+# for SUSPEND_S (a transient failure is forgotten by the next reduction that succeeds). Only a reduction whose frames
+# differ from the CPU's is withdrawn until the app restarts.
+REDUCTION_FAILURES_BEFORE_PAUSE = 3
+# FFmpeg's error for a CUDA context, decoder or frame the card had no memory for. The card is shared with other
+# programs, so it says the card was full at that moment, not that the device, its decode or its reduction is at fault:
+# it never suspends, pauses or withdraws any of them, and a device check it cut short is run again.
+_OUT_OF_MEMORY = re.compile(r"CUDA_ERROR_OUT_OF_MEMORY")
 # Video memory the GPU comparison may hold at once, in MiB (the owner's setting), and how much of the card's free
 # memory it always leaves to the other programs sharing the card.
 VRAM_SETTING = "reprise_gpu_vram_cap_mb"
@@ -113,12 +119,14 @@ class Accelerator:
 @dataclass(frozen=True)
 class Verdict:
     """What one device's check found: the codec families it decodes exactly as the CPU does, and those of them whose
-    reduced decode also equals the CPU's reduction."""
+    reduced decode also equals the CPU's reduction. ``short_of_memory``: part of the check failed because the card had
+    no memory for it, so what it did not pass is checked again after RETRY_AFTER_S."""
 
     families: frozenset[str]
     detail: str
     at: float
     reduced: frozenset[str] = frozenset()
+    short_of_memory: bool = False
 
 
 class _CheckFailed(Exception):
@@ -138,6 +146,7 @@ _failures: dict[str, int] = {}
 _suspended_until: dict[str, float] = {}
 _counts = {"gpu": 0, "cpu": 0, "fallbacks": 0, "reduced": 0}
 _reduction_failures: dict[tuple[str, str], int] = {}
+_reduction_paused_until: dict[tuple[str, str, str], float] = {}  # (ffmpeg, device, family): reduce again from then
 _last_problem: str | None = None
 _logged: set[tuple[str, str]] = set()
 _warm_thread: threading.Thread | None = None
@@ -326,29 +335,35 @@ def _check_reduced(accel: Accelerator, ffmpeg: str, family: str) -> None:
                 raise _CheckFailed(f"FFmpeg's record of reduced frame {number} at {cell} x {cell} samples differs")
 
 
-def _check(accel: Accelerator, ffmpeg: str) -> Verdict:
-    families: set[str] = set()
-    reduced: set[str] = set()
+def _check(accel: Accelerator, ffmpeg: str, known: Verdict | None = None) -> Verdict:
+    """The device's check; ``known`` is an earlier verdict, whose families and reductions stay passed and are not run
+    again."""
+    families: set[str] = set(known.families) if known else set()
+    reduced: set[str] = set(known.reduced) if known else set()
     problems: list[str] = []
+    short = False
     for family, (clip, pix) in REFERENCE.items():
-        try:
-            expected = _baseline(ffmpeg, family)
-            actual = _showinfo_frames(ffmpeg, CLIPS_DIR / clip, pix, accel.args)
-        except _CheckFailed as exc:
-            problems.append(f"{family}: {exc}")
-            continue
-        if actual != expected:
-            problems.append(f"{family}: decoded frames differ from the CPU's")
-            continue
-        families.add(family)
-        if accel.kind == "cuda" and reduction_enabled():
+        if family not in families:
+            try:
+                expected = _baseline(ffmpeg, family)
+                actual = _showinfo_frames(ffmpeg, CLIPS_DIR / clip, pix, accel.args)
+            except _CheckFailed as exc:
+                problems.append(f"{family}: {exc}")
+                short = short or bool(_OUT_OF_MEMORY.search(str(exc)))
+                continue
+            if actual != expected:
+                problems.append(f"{family}: decoded frames differ from the CPU's")
+                continue
+            families.add(family)
+        if accel.kind == "cuda" and reduction_enabled() and family not in reduced:
             try:
                 _check_reduced(accel, ffmpeg, family)
             except _CheckFailed as exc:
                 problems.append(f"{family} reduction: {exc}")
+                short = short or bool(_OUT_OF_MEMORY.search(str(exc)))
             else:
                 reduced.add(family)
-    return Verdict(frozenset(families), "; ".join(problems), _now(), frozenset(reduced))
+    return Verdict(frozenset(families), "; ".join(problems), _now(), frozenset(reduced), short)
 
 
 def _announce(accel: Accelerator, verdict: Verdict) -> None:
@@ -374,13 +389,16 @@ def _announce(accel: Accelerator, verdict: Verdict) -> None:
 
 
 def verify(accel: Accelerator, ffmpeg: str) -> Verdict:
-    """The device's check, run once (a failed one again after RETRY_AFTER_S); concurrent callers wait for it."""
+    """The device's check, run once (a failed one, or one the card had no memory for, again after RETRY_AFTER_S);
+    concurrent callers wait for it."""
     key = (ffmpeg, accel.device)
 
     def current() -> Verdict | None:
         with _lock:
             verdict = _verdicts.get(key)
-        fresh = verdict is not None and (verdict.families or _now() - verdict.at < RETRY_AFTER_S)
+        fresh = verdict is not None and (
+            (verdict.families and not verdict.short_of_memory) or _now() - verdict.at < RETRY_AFTER_S
+        )
         return verdict if fresh else None
 
     verdict = current()
@@ -390,12 +408,18 @@ def verify(accel: Accelerator, ffmpeg: str) -> Verdict:
         with gate:
             verdict = current()
             if verdict is None:
+                with _lock:
+                    known = _verdicts.get(key)
                 try:
-                    verdict = _check(accel, ffmpeg)
+                    verdict = _check(accel, ffmpeg, known)
                 except Exception as exc:  # a check that cannot run is a device that cannot be trusted yet
                     logger.debug("GPU decode check raised", exc_info=True)
                     detail = f"the check could not run ({type(exc).__name__}: {exc})"
-                    verdict = Verdict(frozenset(), detail, _now())
+                    verdict = (
+                        replace(known, detail=detail, at=_now())
+                        if known is not None
+                        else Verdict(frozenset(), detail, _now())
+                    )
                 with _lock:
                     _verdicts[key] = verdict
                 _announce(accel, verdict)
@@ -499,7 +523,14 @@ def reduction_enabled() -> bool:
 
 def _reducing(accel: Accelerator, ffmpeg: str, family: str) -> bool:
     with _lock:
-        return (ffmpeg, accel.device, family + REDUCE) not in _withdrawn
+        if (ffmpeg, accel.device, family + REDUCE) in _withdrawn:
+            return False
+        key = (ffmpeg, accel.device, family)
+        until = _reduction_paused_until.get(key)
+        if until is not None and _now() >= until:
+            del _reduction_paused_until[key]
+            until = None
+        return until is None
 
 
 def reduction_plan(
@@ -589,11 +620,16 @@ def record_gpu(accel: Accelerator, family: str | None, reduced: bool = False) ->
 
 
 def record_fallback(accel: Accelerator, reason: str) -> None:
-    """A decode on this device failed and the next device or the CPU finished it: the device's fault, not the file's."""
+    """A decode on this device failed and the next device or the CPU finished it: the device's fault, not the file's.
+    A decode the card had no memory for is not counted towards a suspension: the next window tries the card again,
+    which costs one FFmpeg start that fails, where a suspension would send every window to the CPU for SUSPEND_S."""
     with _lock:
         _counts["fallbacks"] += 1
-        _failures[accel.device] = _failures.get(accel.device, 0) + 1
-        suspend = _failures[accel.device] >= FAILURES_BEFORE_SUSPEND
+        if _OUT_OF_MEMORY.search(reason):
+            suspend = False
+        else:
+            _failures[accel.device] = _failures.get(accel.device, 0) + 1
+            suspend = _failures[accel.device] >= FAILURES_BEFORE_SUSPEND
         if suspend:
             _suspended_until[accel.device] = _now() + SUSPEND_S
     _problem(f"{accel.label}: {reason}")
@@ -610,15 +646,29 @@ def record_fallback(accel: Accelerator, reason: str) -> None:
 
 def record_reduction_failure(accel: Accelerator, ffmpeg: str, family: str | None, reason: str) -> None:
     """A reduced decode on this device failed and a plain decode finished the window. The device's decode is not at
-    fault, only its reduction, which is withdrawn after a few failures in a row."""
-    with _lock:
-        key = (accel.device, family or "")
-        _reduction_failures[key] = _reduction_failures.get(key, 0) + 1
-        give_up = _reduction_failures[key] >= REDUCTION_FAILURES_BEFORE_WITHDRAW
+    fault, only its reduction, which pauses for SUSPEND_S after a few failures in a row. A reduced decode the card had
+    no memory for is not counted: that says the shared card was full, and the plain decode that follows it on the same
+    card is the one that shows whether the device can decode (``record_fallback`` counts it if it fails otherwise)."""
     _problem(f"{accel.label}: GPU reduction failed: {reason}")
-    if give_up:
-        reason = f"{REDUCTION_FAILURES_BEFORE_WITHDRAW} failed reductions in a row ({reason})"
-        withdraw_reduced(accel, ffmpeg, family, reason)
+    if _OUT_OF_MEMORY.search(reason) or family is None:
+        return
+    with _lock:
+        key = (accel.device, family)
+        _reduction_failures[key] = _reduction_failures.get(key, 0) + 1
+        pause = _reduction_failures[key] >= REDUCTION_FAILURES_BEFORE_PAUSE
+        if pause:
+            del _reduction_failures[key]
+            _reduction_paused_until[(ffmpeg, accel.device, family)] = _now() + SUSPEND_S
+    if pause:
+        logger.warning(
+            "Reprise paused the GPU reduction of {} frames on {} for {:.0f} minutes after {} failed reductions in a "
+            "row; streams like it come to the CPU whole meanwhile. Last error: {}",
+            family,
+            accel.label,
+            SUSPEND_S / 60,
+            REDUCTION_FAILURES_BEFORE_PAUSE,
+            reason,
+        )
 
 
 # The GPU comparison of frame pairs (``cuda_compare``). One analysis holds a lease for its whole run, and its
@@ -816,6 +866,7 @@ def reset() -> None:
         _withdrawn.clear()
         _failures.clear()
         _reduction_failures.clear()
+        _reduction_paused_until.clear()
         _compare_counts.update(pairs=0, rechecked=0, fallbacks=0)
         _suspended_until.clear()
         _logged.clear()

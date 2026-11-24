@@ -838,13 +838,26 @@ def _canonical_sound(chunks, speed=Fraction(1), offset=Fraction(0), layout=None)
 
 
 def _audio_support(
-    target, reference, tracks, ref_tracks, start, end, sounds, cancel, pause, threads, *, ffmpeg_path=None
+    target,
+    reference,
+    tracks,
+    ref_tracks,
+    start,
+    end,
+    sounds,
+    cancel,
+    pause,
+    threads,
+    *,
+    ffmpeg_path=None,
+    around=(None, None),
 ):
     """The target times where every track's canonical sound is its reference track's, with the channels each track's
     sound is mixed from and the level its reference was brought to. ``sounds`` gives each track's sound clock and
     level (see ``_sound_offset``). A sound that ends inside the window (the picture often outlasts it by a few
     frames) is compared up to its end, or the end of the other's if that is earlier: nothing past either end is
-    support, and anything either holds that the other does not is simply not compared."""
+    support, and anything either holds that the other does not is simply not compared. ``around`` names the
+    stretches of the target and the reference the reads lie in (see ``decoder.AUDIO_REGION_BYTES``)."""
     safe = [(start, end)]
     checked, levels = {}, {}
     if not tracks:
@@ -864,6 +877,7 @@ def _audio_support(
             chunk_samples=track[2] * seconds,
             ffmpeg_path=ffmpeg_path,
             to_end=True,
+            around=around[0],
         ) as left:
             with _Reference(
                 decoder.native_audio_chunks(
@@ -877,6 +891,7 @@ def _audio_support(
                     chunk_samples=ref_track[2] * seconds,
                     ffmpeg_path=ffmpeg_path,
                     to_end=True,
+                    around=around[1],
                 )
             ) as right:
                 # Both sounds arrive on the target's canonical sample grid; what each holds that the other has not
@@ -934,6 +949,7 @@ def _sound_offset(
     threads,
     *,
     ffmpeg_path=None,
+    around=(None, None),
 ):
     """Where one track's sound lines up for a picture proposal, as ``(the sound's clock, level)``, or None when no
     sound within ``SOUND_SEARCH_MS`` of the offset ``near`` (ms) lines up well enough. The window is wide because
@@ -943,7 +959,8 @@ def _sound_offset(
     A bounded probe of the track's canonical sound is cross-correlated with the reference track's, read at the
     proposal's speed (see ``recurrence.sound_lag``): the lag, to a fraction of a sample, is the sound's offset, and
     the level is the factor that brings the reference's sound to the target's (two releases are rarely mastered at
-    one loudness). Neither is support: only the strict sound identity on that clock, at that level, is."""
+    one loudness). Neither is support: only the strict sound identity on that clock, at that level, is. ``around``:
+    see ``_audio_support``."""
     search, half = Fraction(SOUND_SEARCH_MS), Fraction(SOUND_PROBE_MS, 2)
     # The probe keeps away from the reference's ends so the whole search window exists there, when that leaves enough.
     start, end = max(lo, clock.back(search)), min(hi, clock.back(reference.duration_ms - search))
@@ -954,7 +971,16 @@ def _sound_offset(
     probe_start = max(start, min(centre - half, end - 2 * half))
     probe_end = min(end, probe_start + 2 * half)
     left = decoder.native_audio_pcm(
-        target, track[1], probe_start, probe_end, cancel, pause, threads, ffmpeg_path=ffmpeg_path, to_end=True
+        target,
+        track[1],
+        probe_start,
+        probe_end,
+        cancel,
+        pause,
+        threads,
+        ffmpeg_path=ffmpeg_path,
+        to_end=True,
+        around=around[0],
     )
     with _of_reference():
         right = decoder.native_audio_pcm(
@@ -967,6 +993,7 @@ def _sound_offset(
             threads,
             ffmpeg_path=ffmpeg_path,
             to_end=True,
+            around=around[1],
         )
     ours_at, ours = canonical.sound(left.data, left.channel_ids, left.sample_rate, left.support_start_ms)
     theirs_at, theirs = canonical.sound(
@@ -1208,6 +1235,13 @@ def _analyze(
                         hi = min(Fraction(te), clock.back(ref.duration_ms), hints[-1][0], clock.back(rh[-1][0]))
                         if hi - lo < verify.MIN_RUN_MS:
                             continue
+                        # Where every read of this proposal's sound lies (see decoder.AUDIO_REGION_BYTES): the
+                        # target's window, and the reference around the picture's match by twice as far as a sound's
+                        # own offset may lie from the picture's.
+                        around = (
+                            (Fraction(ts), Fraction(te)),
+                            (max(Fraction(0), clock.at(lo) - 2 * SOUND_SEARCH_MS), clock.at(hi) + 2 * SOUND_SEARCH_MS),
+                        )
                         # Every track's sound has its own clock: the first track's is looked for around the picture's
                         # offset, the others' around the first's. A track with none ends the proposal.
                         sounds: list[tuple[verify.Clock, float]] = []
@@ -1228,6 +1262,7 @@ def _analyze(
                                 pause,
                                 threads,
                                 ffmpeg_path=ffmpeg_path,
+                                around=around,
                             )
                             if found is None:
                                 break
@@ -1252,6 +1287,7 @@ def _analyze(
                                 pause,
                                 threads,
                                 ffmpeg_path=ffmpeg_path,
+                                around=around,
                             )
                             if shi - slo >= verify.MIN_RUN_MS
                             else ([], {}, {})
@@ -1715,7 +1751,7 @@ def analyze(
         "online": online,
         "movie": movie,
     }
-    with acceleration.compare_lease():
+    with acceleration.compare_lease(), decoder.audio_regions():
         draft = _analyze(media, candidates, references, **options)
         if draft.status != "failed" or not (
             any(window.source == PLEX_SOURCE for window in candidates) or (online or {}).get(media.id)

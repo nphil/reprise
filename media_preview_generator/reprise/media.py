@@ -1506,6 +1506,7 @@ class NativeAudioChunkReader:
         self.declarations = None
         self.exhausted = False
         self.exited = False
+        self.timing = None  # once verified: (first sample's time (s), rate, first sample, end sample, cut at end)
 
     def _put(self, value):
         while not self.stop.is_set() and (value[0] != "chunk" or not self.output_abort.is_set()):
@@ -1707,17 +1708,33 @@ def native_audio_chunks(
     chunk_samples=480000,
     ffmpeg_path=None,
     to_end=False,
+    around=None,
 ):
-    return NativeAudioChunkReader(
+    """A window's native chunks (see NativeAudioChunkReader). ``around`` names the stretch (ms) of the track a
+    ``to_end`` read lies in, which the running analyses decode once for every read inside it (see AUDIO_REGION_BYTES).
+    """
+    reader = NativeAudioChunkReader(
         media, stream_index, start_ms, end_ms, cancel_check, pause_check, threads, chunk_samples, ffmpeg_path, to_end
     )
+    return _StoredAudioChunks(reader, around) if around is not None and to_end else reader
 
 
 def native_audio_pcm(
-    media, stream_index, start_ms, end_ms, cancel_check, pause_check, threads, *, ffmpeg_path=None, to_end=False
+    media,
+    stream_index,
+    start_ms,
+    end_ms,
+    cancel_check,
+    pause_check,
+    threads,
+    *,
+    ffmpeg_path=None,
+    to_end=False,
+    around=None,
 ):
     """Collect a bounded native window after complete stream verification. With ``to_end`` a window that reaches
-    past the sound's own start or end is cut there (see NativeAudioChunkReader); the support says where."""
+    past the sound's own start or end is cut there (see NativeAudioChunkReader); the support says where. ``around``:
+    see ``native_audio_chunks``."""
     import numpy as np
 
     chunks = []
@@ -1731,6 +1748,7 @@ def native_audio_pcm(
         threads,
         ffmpeg_path=ffmpeg_path,
         to_end=to_end,
+        around=around,
     ) as reader:
         size = 0
         for chunk in reader:
@@ -1751,6 +1769,303 @@ def native_audio_pcm(
         chunks[-1].support_end_ms,
         reader.declarations,
     )
+
+
+# A native audio read decodes its track from the file's start: only that counts its samples exactly and gives the
+# decoder the state it has there (an AC-3 decoder's dither, for one, runs on from frame to frame), so a read late in an
+# episode decodes all the sound before it once more. An analysis reads the same few stretches of a track many times
+# (every proposal of every reference reads the target's window again, and the reference's around its match), so while
+# analyses run (``audio_regions``) a ``to_end`` read that names the stretch it lies in (``around``) has that whole
+# stretch decoded once, by the very same decode, into an unlinked temporary file, and takes its samples from there:
+# the same samples, cut at the same boundaries, with the same supports. A read that no stored stretch holds, or whose
+# stretch could not be decoded, decodes itself as before. The stretches go when the last running analysis ends.
+AUDIO_REGION_BYTES = 3 * 1024**3  # the disk the stretches kept for the running analyses may take
+_AUDIO_REGION_CHUNK = 480000  # samples per chunk while a stretch is decoded
+
+
+class _AudioRegion:
+    """A stretch of one track decoded from the file's start, in an unlinked temporary file: every channel's samples
+    from sample ``lo`` of the track's own count up to ``hi`` (where the sound ends, when ``ends``), as float32 when
+    that holds every one of them exactly (the decoders of lossy formats give float32), else as float64."""
+
+    def __init__(self, key, file, dtype, timing, ids, layout, declarations):
+        self.key, self.file, self.dtype = key, file, dtype
+        self.first, self.rate, self.lo, self.hi, self.ends = timing
+        self.ids, self.layout, self.declarations = ids, layout, declarations
+        self.size = (self.hi - self.lo) * len(ids) * dtype.itemsize
+        self.users = 0
+        self.dropped = False
+
+    def window(self, start_ms, end_ms):
+        """The samples ``[first, last)`` a ``to_end`` read of the window delivers, from its own decode, or None when
+        this stretch does not hold them all or the read fails (its own decode then says why)."""
+        start_ms, end_ms = Fraction(start_ms), Fraction(end_ms)
+        if not 0 <= start_ms < end_ms:
+            return None
+        first_sample, last_sample = _audio_window(start_ms, end_ms, self.first, self.rate, True)
+        if first_sample < self.lo or last_sample <= first_sample:
+            return None
+        if last_sample <= self.hi:
+            return first_sample, last_sample
+        # A read past where the sound ends is cut there, as this stretch was.
+        return (first_sample, self.hi) if self.ends and first_sample < self.hi else None
+
+    def samples(self, first_sample, last_sample):
+        """Samples ``[first_sample, last_sample)`` as their own decode delivers them: float64, read-only."""
+        import numpy as np
+
+        channels = len(self.ids)
+        size = (last_sample - first_sample) * channels * self.dtype.itemsize
+        at = (first_sample - self.lo) * channels * self.dtype.itemsize
+        parts = []
+        while size:
+            part = os.pread(self.file.fileno(), size, at)
+            if not part:
+                raise DecodeError("Stored native audio is incomplete")
+            parts.append(part)
+            size, at = size - len(part), at + len(part)
+        data = np.frombuffer(b"".join(parts), dtype=self.dtype).reshape(-1, channels)
+        if self.dtype.itemsize != 8:
+            data = data.astype("<f8")
+            data.setflags(write=False)
+        return data
+
+
+class _AudioRegions:
+    """The stretches kept for the running analyses (see AUDIO_REGION_BYTES), the least recently used first."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.analyses = 0
+        self.kept = []
+        self.size = 0
+        self.decoding = {}  # a stretch being decoded: the event set once that is over
+        self.settled = set()  # the stretches whose decode is over, kept or not
+
+    def _drop(self, region):
+        region.dropped = True
+        if not region.users:
+            region.file.close()
+
+    def release(self, region):
+        with self.lock:
+            region.users -= 1
+            if region.dropped and not region.users:
+                region.file.close()
+
+    def acquire(self, key, start_ms, end_ms, around, decode, cancel):
+        """A kept stretch that holds the read, with the read's samples in it (in use until ``release``), after
+        decoding ``around`` when none does; None when the read must decode itself."""
+        flight = (key, around)
+        while True:
+            with self.lock:
+                if not self.analyses:
+                    return None
+                for region in reversed(self.kept):
+                    window = region.window(start_ms, end_ms) if region.key == key else None
+                    if window is not None:
+                        self.kept.remove(region)
+                        self.kept.append(region)
+                        region.users += 1
+                        return region, window
+                if flight in self.settled:
+                    return None
+                event = self.decoding.get(flight)
+                owner = event is None
+                if owner:
+                    event = self.decoding[flight] = threading.Event()
+            if not owner:
+                # Another read is decoding this very stretch: wait for it, then look again.
+                while not event.wait(0.05):
+                    if cancel():
+                        raise Cancelled("Analysis cancelled")
+                continue
+            region, settled = None, True
+            try:
+                region = decode()
+            except Cancelled:
+                settled = False  # a read that is not cancelled decodes it again
+                raise
+            except (DecodeError, OSError):
+                pass  # each read decodes itself: what failed here fails it the same way, or not at all
+            finally:
+                with self.lock:
+                    del self.decoding[flight]
+                    if settled:
+                        self.settled.add(flight)
+                    if region is not None and not self.analyses:
+                        self._drop(region)
+                    elif region is not None:
+                        self.kept.append(region)
+                        self.size += region.size
+                        while self.size > AUDIO_REGION_BYTES and len(self.kept) > 1:
+                            evicted = self.kept.pop(0)
+                            self.size -= evicted.size
+                            self._drop(evicted)
+                event.set()
+
+
+_audio_regions = _AudioRegions()
+
+
+@contextlib.contextmanager
+def audio_regions():
+    """Keep the stretches of sound the reads name (``around``) for as long as an analysis runs: the last one to end
+    drops them all."""
+    with _audio_regions.lock:
+        _audio_regions.analyses += 1
+    try:
+        yield
+    finally:
+        with _audio_regions.lock:
+            _audio_regions.analyses -= 1
+            if not _audio_regions.analyses:
+                for region in _audio_regions.kept:
+                    _audio_regions._drop(region)
+                _audio_regions.kept, _audio_regions.size = [], 0
+                _audio_regions.settled.clear()
+
+
+def _decode_region(key, media, stream_index, lo, hi, cancel, pause, threads, ffmpeg_path):
+    """Decode the stretch ``[lo, hi]`` (ms) of a track for ``_AudioRegions``: the very decode a ``to_end`` read of it
+    makes, with every check it makes."""
+    import numpy as np
+
+    reader = NativeAudioChunkReader(
+        media, stream_index, lo, hi, cancel, pause, threads, _AUDIO_REGION_CHUNK, ffmpeg_path, True
+    )
+    file = tempfile.TemporaryFile()
+    try:
+        dtype, ids, layout = np.dtype("<f4"), None, None
+        with reader:
+            for chunk in reader:
+                ids, layout = chunk.channel_ids, chunk.channel_layout
+                if dtype.itemsize == 4:
+                    narrow = chunk.data.astype("<f4")
+                    if np.array_equal(narrow, chunk.data):
+                        file.write(narrow)
+                        continue
+                    # A sample float32 cannot hold: the stretch is kept as float64, what is written so far widened.
+                    file.flush()
+                    file.seek(0)
+                    held = np.frombuffer(file.read(), dtype="<f4").astype("<f8")
+                    file.seek(0)
+                    file.truncate()
+                    file.write(held)
+                    dtype = np.dtype("<f8")
+                file.write(chunk.data)
+        file.flush()
+        return _AudioRegion(key, file, dtype, reader.timing, ids, layout, reader.declarations)
+    except BaseException:
+        file.close()
+        raise
+
+
+class _StoredAudioChunks:
+    """A ``to_end`` read that names the stretch it lies in (see AUDIO_REGION_BYTES): served from that stretch when it
+    is kept or can be, else by its own decode (``direct``). Either way it reads like that reader."""
+
+    def __init__(self, direct, around):
+        self.direct, self.around = direct, (Fraction(around[0]), Fraction(around[1]))
+        self.region = None
+        self.declarations = None
+        self.exhausted = False
+
+    def __enter__(self):
+        media, stream_index, start_ms, end_ms, cancel, pause, threads = self.direct.args
+        lo, hi = self.around
+        key = (media, stream_index, threads, self.direct.ffmpeg_path)
+        found = None
+        if 0 <= lo < hi:
+            found = _audio_regions.acquire(
+                key,
+                start_ms,
+                end_ms,
+                self.around,
+                lambda: _decode_region(key, media, stream_index, lo, hi, cancel, pause, threads, key[3]),
+                cancel,
+            )
+        if found is not None and self.direct.chunk_samples * len(found[0].ids) * 8 > MAX_OUTPUT:
+            _audio_regions.release(found[0])  # its own decode refuses chunks this large
+            found = None
+        if found is None:
+            self.direct.__enter__()
+            return self
+        self.region, (self.next, self.last) = found
+        self.start = self.region.first + Fraction(self.next, self.region.rate)
+        self.count = 0
+        self.checked = False
+        return self
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.region is None:
+            return next(self.direct)
+        if self.exhausted:
+            raise StopIteration
+        while True:
+            if self.direct.cancel():
+                raise Cancelled("Analysis cancelled")
+            if not self.direct.pause():
+                break
+            time.sleep(0.05)
+        if not self.checked:
+            check_current(self.direct.args[0])  # as its own decode does before it starts
+            self.checked = True
+        if self.next >= self.last:
+            self.exhausted = True
+            raise StopIteration
+        region, end = self.region, min(self.next + self.direct.chunk_samples, self.last)
+        data = region.samples(self.next, end)
+        count = self.count + end - self.next
+        chunk = NativeAudioChunk(
+            data,
+            region.rate,
+            region.layout,
+            region.ids,
+            (self.start + Fraction(self.count, region.rate)) * 1000,
+            (self.start + Fraction(count, region.rate)) * 1000,
+        )
+        self.next, self.count = end, count
+        return chunk
+
+    def __exit__(self, exc_type, exc, tb):
+        if self.region is None:
+            try:
+                return self.direct.__exit__(exc_type, exc, tb)
+            finally:
+                self.declarations, self.exhausted = self.direct.declarations, self.direct.exhausted
+        _audio_regions.release(self.region)
+        if exc_type is not None:
+            return False
+        if not self.exhausted:
+            raise DecodeError("Native audio stream not exhausted or verified")
+        while self.direct.pause():
+            if self.direct.cancel():
+                raise Cancelled("Analysis cancelled")
+            time.sleep(0.05)
+        if self.direct.cancel():
+            raise Cancelled("Analysis cancelled")
+        check_current(self.direct.args[0])
+        if self.direct.cancel():
+            raise Cancelled("Analysis cancelled")
+        self.declarations = self.region.declarations
+        return False
+
+
+def _audio_window(start_ms, end_ms, first, rate, to_end):
+    """A window's samples ``[first_sample, last_sample)`` on inward sample boundaries, counted from the track's first
+    sample, which is at ``first`` (s)."""
+    start_fraction = (start_ms / 1000 - first) * rate
+    first_sample = -(-start_fraction.numerator // start_fraction.denominator)
+    if first_sample < 0 and to_end:
+        # The sound starts inside the window (a track often begins a frame or two after the picture does). The
+        # audit read the file from its start, so this is the track's very first sample: a clamp, as at its end.
+        first_sample = 0
+    end_fraction = (end_ms / 1000 - first) * rate
+    return first_sample, end_fraction.numerator // end_fraction.denominator
 
 
 def _native_audio_stream(media, stream_index, start_ms, end_ms, cancel_check, pause_check, threads, sink, ffmpeg_path):
@@ -1882,14 +2197,7 @@ def _native_audio_stream(media, stream_index, start_ms, end_ms, cancel_check, pa
         first_frame = next(audit, None)
         if first_frame is None or first is None:
             raise DecodeError("Missing native audio timing")
-        start_fraction = (start_ms / 1000 - first) * rate
-        first_sample = -(-start_fraction.numerator // start_fraction.denominator)
-        if first_sample < 0 and sink.to_end:
-            # The sound starts inside the window (a track often begins a frame or two after the picture does). The
-            # audit read the file from its start, so this is the track's very first sample: a clamp, as at its end.
-            first_sample = 0
-        end_fraction = (end_ms / 1000 - first) * rate
-        last_sample = end_fraction.numerator // end_fraction.denominator
+        first_sample, last_sample = _audio_window(start_ms, end_ms, first, rate, sink.to_end)
         if first_sample < 0 or last_sample <= first_sample:
             raise DecodeError("Native audio does not continuously cover the window")
         expected = (last_sample - first_sample) * channels * 8
@@ -2006,6 +2314,7 @@ def _native_audio_stream(media, stream_index, start_ms, end_ms, cancel_check, pa
             covered = count
         sink._finish_output((covered - first_sample) * channels * 8, channels)
         check_current(media)
+        sink.timing = (first, rate, first_sample, covered, covered < last_sample)
         return tuple(sorted(declarations))
     except BaseException:
         sink.output_abort.set()

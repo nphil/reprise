@@ -219,6 +219,51 @@ def test_a_passed_check_is_kept_and_a_crashing_check_is_a_failed_check(monkeypat
     assert failed.families == frozenset() and "RuntimeError: boom" in failed.detail
 
 
+# FFmpeg's error when the shared card has no memory left for a CUDA context.
+NO_MEMORY = (
+    "cu->cuCtxCreate(&hwctx->cuda_ctx, desired_flags, hwctx->internal->cuda_device) failed -> "
+    "CUDA_ERROR_OUT_OF_MEMORY: out of memory"
+)
+
+
+def test_a_check_the_shared_card_had_no_memory_for_is_run_again_and_keeps_what_passed(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(acceleration, "_now", lambda: now[0])
+    monkeypatch.setenv("REPRISE_GPU_REDUCE", "1")
+    full = [True]
+    decoded, reduced = [], []
+
+    def frames(ffmpeg, clip, pix, args):
+        if args:
+            decoded.append(clip.name)
+            if full[0] and clip.name.startswith("hevc"):
+                raise acceleration._CheckFailed("[AVHWDeviceContext @ 0x55d0c8a1b2c0] [error] " + NO_MEMORY)
+        return [(clip.name, "cpu")]
+
+    def check_reduced(accel, ffmpeg, family):
+        reduced.append(family)
+        if full[0]:
+            raise acceleration._CheckFailed("[AVHWDeviceContext @ 0x55d0c8a1b2c0] [error] " + NO_MEMORY)
+
+    monkeypatch.setattr(acceleration, "_showinfo_frames", frames)
+    monkeypatch.setattr(acceleration, "_check_reduced", check_reduced)
+    first = acceleration.verify(NVIDIA, "ffmpeg")
+    assert first.families == {"h264"} and first.reduced == frozenset() and first.short_of_memory
+    assert acceleration.verify(NVIDIA, "ffmpeg") is first  # not again before RETRY_AFTER_S
+    now[0] += acceleration.RETRY_AFTER_S + 1
+    still = acceleration.verify(NVIDIA, "ffmpeg")
+    assert still is not first and still.families == {"h264"} and still.short_of_memory  # nothing passed is lost
+    full[0] = False
+    now[0] += acceleration.RETRY_AFTER_S + 1
+    decoded.clear()
+    reduced.clear()
+    again = acceleration.verify(NVIDIA, "ffmpeg")
+    assert again.families == ALL and again.reduced == ALL and not again.short_of_memory
+    assert decoded == ["hevc-10bit.mkv"] and reduced == ["h264", "hevc"]  # what had passed was not run again
+    now[0] += 10 * acceleration.RETRY_AFTER_S
+    assert acceleration.verify(NVIDIA, "ffmpeg") is again
+
+
 def gpu(kind, device, name, vendor, **extra):
     return {"type": vendor, "device": device, "name": name, "acceleration": kind, "status": "ok", **extra}
 
@@ -296,14 +341,21 @@ def test_repeated_fallbacks_pause_a_device_then_it_returns(monkeypatch):
     now = [1000.0]
     monkeypatch.setattr(acceleration, "_now", lambda: now[0])
     for _ in range(acceleration.FAILURES_BEFORE_SUSPEND - 1):
-        acceleration.record_fallback(NVIDIA, "out of memory")
+        acceleration.record_fallback(NVIDIA, "Native decoder reported a diagnostic: [h264] [error] no frame!")
     assert not acceleration._suspended(NVIDIA)
     acceleration.record_gpu(NVIDIA, "h264")  # a success resets the run of failures
     for _ in range(acceleration.FAILURES_BEFORE_SUSPEND):
-        acceleration.record_fallback(NVIDIA, "out of memory")
+        acceleration.record_fallback(NVIDIA, "Native decoder reported a diagnostic: [h264] [error] no frame!")
     assert acceleration._suspended(NVIDIA) and not acceleration._suspended(INTEL)
     now[0] += acceleration.SUSPEND_S + 1
     assert not acceleration._suspended(NVIDIA)
+
+
+def test_decodes_the_shared_card_had_no_memory_for_never_pause_the_device():
+    for _ in range(2 * acceleration.FAILURES_BEFORE_SUSPEND):
+        acceleration.record_fallback(NVIDIA, "Native decoder reported a diagnostic: [CUDA] [error] " + NO_MEMORY)
+    assert not acceleration._suspended(NVIDIA)
+    assert acceleration.status()["windows"]["gpu_fallbacks"] == 2 * acceleration.FAILURES_BEFORE_SUSPEND
 
 
 def test_status_summary_for_every_situation(detection, monkeypatch):
@@ -633,14 +685,37 @@ def test_a_reduction_that_fails_half_way_is_repeated_whole_by_the_same_gpu_witho
     assert "GPU reduction failed" in status["last_problem"] and "scale_cuda failed" in status["last_problem"]
 
 
-def test_three_failed_reductions_in_a_row_withdraw_the_reduction_and_keep_the_decode(reducing, monkeypatch):
-    for _ in range(acceleration.REDUCTION_FAILURES_BEFORE_WITHDRAW):
+def test_three_failed_reductions_in_a_row_pause_the_reduction_and_keep_the_decode(reducing, monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(acceleration, "_now", lambda: now[0])
+    for _ in range(acceleration.REDUCTION_FAILURES_BEFORE_PAUSE):
         scripts = {(NVIDIA, True): [media.DecodeError("boom")], NVIDIA: [whole_frame(0)[0]]}
         Script(monkeypatch, scripts, plan=REDUCTION).frames([NVIDIA], reduce=True)
     assert acceleration.reduction_plan(*KEY, 1) is None and acceleration.eligible(*KEY)
     script = Script(monkeypatch, {NVIDIA: [whole_frame(0)[0]]}, plan=REDUCTION)
     script.frames([NVIDIA], reduce=True)
-    assert script.reducing == [False]  # a withdrawn reduction is not asked for again
+    assert script.reducing == [False]  # a paused reduction is not asked for
+    now[0] += acceleration.SUSPEND_S + 1
+    assert acceleration.reduction_plan(*KEY, 1) is not None  # and it is back once the pause is over
+    for _ in range(acceleration.REDUCTION_FAILURES_BEFORE_PAUSE - 1):
+        scripts = {(NVIDIA, True): [media.DecodeError("boom")], NVIDIA: [whole_frame(0)[0]]}
+        Script(monkeypatch, scripts, plan=REDUCTION).frames([NVIDIA], reduce=True)
+    assert acceleration.reduction_plan(*KEY, 1) is not None  # with a fresh count of failures
+
+
+def test_a_reduction_the_shared_card_had_no_memory_for_is_not_held_against_it(reducing, monkeypatch):
+    # Live (2026-11-23): another program filled the P40 and reduced decodes failed to create their CUDA context; the
+    # plain decodes after them succeeded, yet the reduction was withdrawn until the app restarted.
+    full = media.DecodeError(
+        "Native frame metadata failed: Native decoder reported a diagnostic: [CUDA] [error] " + NO_MEMORY
+    )
+    for _ in range(acceleration.REDUCTION_FAILURES_BEFORE_PAUSE + 2):
+        scripts = {(NVIDIA, True): [full], NVIDIA: [whole_frame(0)[0]]}
+        Script(monkeypatch, scripts, plan=REDUCTION).frames([NVIDIA], reduce=True)
+    assert acceleration.reduction_plan(*KEY, 1) is not None
+    status = acceleration.status()
+    assert status["windows"] == {"gpu": 5, "cpu": 0, "gpu_fallbacks": 0, "reduced": 0}
+    assert "CUDA_ERROR_OUT_OF_MEMORY" in status["last_problem"]
 
 
 def test_a_finished_reduction_ends_the_run_of_failures(reducing, monkeypatch):
