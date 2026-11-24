@@ -5,7 +5,7 @@
 # Review only by default: media is read-only and no Plex folder is shared. Lines marked (optional) stay off until you remove the "# " in front of them.
 services:
   reprise:
-    image: ${IMAGE:-ghcr.io/nphil/reprise@sha256:74e4d03311f40458df53fcfd491c7ee6d931d7332111a564a5624e79b3ed1ebe}
+    image: ${IMAGE:-ghcr.io/nphil/reprise@sha256:7c9a0e89a09841d30b5ff6d983a77f540933eabd50257ef14fe646d93b00920d}
     container_name: reprise
     restart: unless-stopped
     cpus: 1
