@@ -24,16 +24,30 @@ import time
 from loguru import logger
 
 from ..shutdown import is_shutting_down
-from . import recovery
+from . import autosend, recovery
 from .alerts import Alerts
-from .autosend import AutoSender, label_of
+from .autosend import AutoSender, LocalModelSender, label_of
 from .autostate import AutopilotState, Concerns
 from .service import AUTOPILOT_SOURCES
 
 SETTING_AUTO_SEND = "reprise_auto_send"
 SETTING_BACKFILL = "reprise_backfill"
 SETTING_ALERTS = "reprise_alerts_enabled"
+SETTING_AUTO_SEND_ENDINGS = "reprise_auto_send_endings"
+SETTING_AUTO_SEND_INTROS = "reprise_auto_send_intros"
 SETTINGS = {"auto_send": SETTING_AUTO_SEND, "backfill": SETTING_BACKFILL, "alerts": SETTING_ALERTS}
+# The switches that are off until the owner turns them on. The intro one is offered only while
+# ``autosend.INTRO_AUTOSEND_SAFE`` is true (see ``offered``).
+OFF_BY_DEFAULT = {"auto_send_endings": SETTING_AUTO_SEND_ENDINGS, "auto_send_intros": SETTING_AUTO_SEND_INTROS}
+
+
+def offered():
+    """``{name: setting key}`` of every switch the owner can see and change right now."""
+    found = {**SETTINGS, "auto_send_endings": SETTING_AUTO_SEND_ENDINGS}
+    if autosend.INTRO_AUTOSEND_SAFE:
+        found["auto_send_intros"] = SETTING_AUTO_SEND_INTROS
+    return found
+
 
 RECONCILE_EVERY_S = 30 * 60  # the safety net that finds what a webhook missed
 HEALTH_EVERY_S = 5 * 60
@@ -138,6 +152,15 @@ class Autopilot:
             clock=clock,
             backup=backup,
         )
+        self.local_sender = LocalModelSender(
+            service,
+            self.concerns,
+            self.state,
+            config_dir=config_dir,
+            kinds=self._local_kinds,
+            clock=clock,
+            backup=backup,
+        )
         self._nudges = {}
         self._nudge_lock = threading.Lock()
         self._note_lock = threading.Lock()
@@ -146,27 +169,38 @@ class Autopilot:
 
     # ── what the owner sees and changes ───────────────────────────────────────────────────────────────────────────
 
-    def _on(self, setting):
-        return _flag(self.service._setting(setting, True))
+    def _on(self, setting, default=True):
+        return _flag(self.service._setting(setting, default))
+
+    def _local_kinds(self):
+        """What the owner lets Reprise send from the local vision model by itself: ``("credits",)``, plus ``"intro"``
+        when that switch is offered and on."""
+        kinds = ["credits"] if self._on(SETTING_AUTO_SEND_ENDINGS, False) else []
+        if autosend.INTRO_AUTOSEND_SAFE and self._on(SETTING_AUTO_SEND_INTROS, False):
+            kinds.append("intro")
+        return tuple(kinds)
 
     def settings(self):
-        """The three switches (all on until the owner turns one off): ``{"auto_send", "backfill", "alerts"}``."""
-        return {name: self._on(setting) for name, setting in SETTINGS.items()}
+        """The switches the owner can change: ``{"auto_send", "backfill", "alerts"}`` (on until turned off) and
+        ``"auto_send_endings"`` (off until turned on). ``"auto_send_intros"`` is there too, but only while
+        ``autosend.INTRO_AUTOSEND_SAFE`` is true."""
+        return {name: self._on(setting, name not in OFF_BY_DEFAULT) for name, setting in offered().items()}
 
     def update_settings(self, values):
         """Change some of the switches; ``values`` maps a switch name to True or False. Anything else is refused."""
+        names = offered()
         if (
             not isinstance(values, dict)
             or not values
-            or set(values) - set(SETTINGS)
+            or set(values) - set(names)
             or any(type(value) is not bool for value in values.values())
         ):
-            raise ValueError("Choose on or off for each of: automatic sending, backfill, alerts.")
+            raise ValueError("Choose on or off for each of: automatic sending, backfill, alerts, endings.")
         store = getattr(self.service.registry, "settings", None)
         if store is None:
             raise ValueError("Reprise can't save settings right now.")
         for name, value in values.items():
-            store.set(SETTINGS[name], value)
+            store.set(names[name], value)
         return self.settings()
 
     def status(self):
@@ -174,11 +208,13 @@ class Autopilot:
         last = self.state.get("last_reconcile")
         alert = self.alerts.last()
         blocked = self.sender.blocked(self._clock()) if self._on(SETTING_AUTO_SEND) else None
+        endings_blocked = self.local_sender.blocked(self._clock()) if self._local_kinds() else None
         return {
             "queue_length": self._queue_length(),
             "last_reconcile": _iso(last) if last else None,
             "last_alert": {key: alert[key] for key in ("kind", "title", "at")} if alert else None,
             "auto_send_blocked": blocked,
+            "auto_send_endings_blocked": endings_blocked,
         }
 
     def send_test_alert(self):
@@ -217,6 +253,7 @@ class Autopilot:
             self._step("looking for new files", self._reconcile_if_due, now)
             self._step("planning the backfill", self._backfill_if_due, now)
             self._step("sending sure matches to Plex", self.sender.sweep, now)
+            self._step("sending the local model's high-confidence skips to Plex", self.local_sender.sweep, now)
             self._step("checking for problems", self._watch, now)
         finally:
             self._tick_lock.release()

@@ -1210,6 +1210,33 @@ class RepriseStore:
                 )
             return bool(moved)
 
+    def discard_owner_spans(self, media_version_id, expected_revision, actor):
+        """Remove the exact skips ``actor`` set (and their override rows), as if they had never been set: the automatic
+        sender's way back when a send it started did not reach Plex. A skip someone else set is never touched. Nothing
+        to remove returns ``None`` and changes nothing; a result that changed since ``expected_revision`` is the
+        owner's now and raises ``RevisionConflict``. Returns the stored result after the removal."""
+        with self.transaction() as c:
+            result = self._result(c, media_version_id)
+            mine = {
+                row["range_id"]
+                for row in c.execute(
+                    "SELECT range_id FROM reprise_manual_overrides WHERE version_id=? AND actor=? AND quarantined=0",
+                    (media_version_id, str(actor)),
+                )
+            }
+            spans = [r.id for r in (result.ranges if result else ()) if r.id in mine and is_owner_span(r)]
+            if not spans:
+                return None
+            if result.result_revision != expected_revision:
+                raise RevisionConflict("result changed")
+            for rid in spans:
+                c.execute("DELETE FROM reprise_ranges WHERE version_id=? AND id=?", (media_version_id, rid))
+                c.execute(
+                    "DELETE FROM reprise_manual_overrides WHERE version_id=? AND range_id=?", (media_version_id, rid)
+                )
+            c.execute("UPDATE reprise_decision_results SET revision=revision+1 WHERE version_id=?", (media_version_id,))
+            return self._result(c, media_version_id)
+
     def _new_client(self, c, name, scopes):
         if not isinstance(name, str) or not name.strip():
             raise ValueError("client name required")
