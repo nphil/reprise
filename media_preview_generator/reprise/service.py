@@ -373,6 +373,34 @@ def _film_title(item):
     return f"{title} ({year})" if title and isinstance(year, int) else title
 
 
+VISION_FALLBACK_MS = {"intro": 120000, "credits": 300000}  # the stretch to look at when no span was proposed for a kind
+VISION_TAIL_MS = 3000  # a confirmed credits skip ending this close to the file's end leaves no tail to look at
+
+
+def _vision_anchors(ranges, duration_ms, movie):
+    """``{kind: [(start_ms, end_ms)]}`` the local vision model should look around: for each kind with no skip the
+    comparison confirmed, the spans suggested for it (or a stand-in stretch at the usual place when there are none); for
+    a kind with confirmed pieces, only when they leave a gap between them or (credits) a tail after them. A kind the
+    owner set exactly is left alone, and a film has no intro."""
+    anchors = {}
+    for kind in ("credits",) if movie else ("intro", "credits"):
+        skips = sorted((r for r in ranges if r.kind == kind and r.action == "skip"), key=lambda r: r.start_ms)
+        if any(is_owner_span(r) for r in skips):
+            continue
+        confirmed = [r for r in skips if r.origin not in SUGGESTION_ORIGINS]
+        suggested = [r for r in skips if r.origin in SUGGESTION_ORIGINS]
+        gap = any(b.start_ms > a.end_ms for a, b in zip(confirmed, confirmed[1:], strict=False))
+        tail = kind == "credits" and bool(confirmed) and duration_ms - confirmed[-1].end_ms > VISION_TAIL_MS
+        if confirmed and not (gap or tail):
+            continue
+        spans = [(r.start_ms, r.end_ms) for r in (confirmed if confirmed else suggested)]
+        if not spans:
+            end = duration_ms if kind == "credits" else min(duration_ms, VISION_FALLBACK_MS[kind])
+            spans = [(max(0, duration_ms - VISION_FALLBACK_MS[kind]) if kind == "credits" else 0, end)]
+        anchors[kind] = spans
+    return anchors
+
+
 class RepriseService:
     def __init__(self, store, registry, job_manager):
         self.store, self.registry, self.job_manager = store, registry, job_manager
@@ -1768,6 +1796,40 @@ class RepriseService:
             raise ValueError("Invalid setting")
         online.set_switch(enabled)
 
+    def local_vision(self):
+        from . import localvision
+
+        return localvision.config()
+
+    def set_local_vision(self, enabled, base_url, model):
+        from . import localvision
+
+        if type(enabled) is not bool or type(base_url) is not str or type(model) is not str:
+            raise ValueError("Invalid setting")
+        return localvision.set_config(enabled, base_url, model)
+
+    def _with_local_model(self, draft, version, bindings, ffmpeg_path):
+        """The draft with the local vision model's advice added, when the owner turned that on. It looks only where the
+        comparison left a kind unconfirmed or cut short, only if the model is already loaded, and nothing here may fail
+        the analysis: any problem leaves the draft as it was."""
+        from . import localvision
+        from .analysis import with_local_model
+
+        try:
+            cfg = localvision.config()
+            if not cfg.enabled:
+                return draft
+            anchors = _vision_anchors(draft.ranges, version.duration_ms, bindings[0][2].get("kind") == "movie")
+            if not anchors:
+                return draft
+            verdicts = localvision.check(
+                cfg, lambda ms: localvision.grab(ffmpeg_path, version.canonical_path, ms), version.duration_ms, anchors
+            )
+            return with_local_model(draft, version, verdicts) if verdicts else draft
+        except Exception as exc:
+            logger.warning("The local vision check failed: {}", type(exc).__name__)
+            return draft
+
     def _online_lookups(self):
         """This job's online lookups (None when the switch is off or settings cannot be read): nothing here may fail an
         analysis, so a problem only means no online times."""
@@ -2190,6 +2252,7 @@ class RepriseService:
                 elif not any(self._valid_binding(version, *b) for b in bindings):
                     raise ValueError("Media changed during analysis")
                 else:
+                    draft = self._with_local_model(draft, version, bindings, ffmpeg_path)
                     reasons = [no_comparison_note if reason == NO_REFERENCES else reason for reason in draft.reasons]
 
                     def commit(aid=aid, draft=draft, version=version, reasons=reasons, index=index):

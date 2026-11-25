@@ -814,7 +814,21 @@
         catch (error) { fail(error); }
         finally { toggle.disabled = false; renderOnline(); }
     });
-    const renderSettings = () => { renderHardware(); renderVram(); renderOnline(); };
+    /* The optional local vision model check: a switch, and (while it is on) the address and model to use. */
+    function renderVision() {
+        const v = state.settings && state.settings.local_vision, box = $('rpVision'); box.hidden = !v; if (box.hidden) return;
+        $('rpVisionToggle').checked = v.enabled; $('rpVisionFields').hidden = !v.enabled;
+        if (document.activeElement !== $('rpVisionUrl')) $('rpVisionUrl').value = v.base_url;
+        if (document.activeElement !== $('rpVisionModel')) $('rpVisionModel').value = v.model;
+    }
+    async function saveVision(change, done) {
+        try { state.settings = await api('/api/reprise/settings', { method: 'PATCH', body: { local_vision: change } }); message(done); }
+        catch (error) { fail(error); }
+        finally { renderVision(); }
+    }
+    $('rpVisionToggle').addEventListener('change', event => saveVision({ enabled: event.target.checked }, event.target.checked ? 'A local model will check unconfirmed intros and credits.' : 'The local model check is off.'));
+    $('rpVisionSave').addEventListener('click', () => saveVision({ base_url: $('rpVisionUrl').value, model: $('rpVisionModel').value }, 'Saved.'));
+    const renderSettings = () => { renderHardware(); renderVram(); renderOnline(); renderVision(); };
     window.addEventListener('rp:settings', event => { state.settings = event.detail; renderSettings(); if (state.result) renderPublication(); });
 
     api('/api/reprise/settings').then(settings => { state.settings = settings; renderSettings(); if (state.result) { renderPublication(); loadHistory(state.item.id, reviewRequest); } }).catch(() => { /* the shell chip reports it */ });

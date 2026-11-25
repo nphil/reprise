@@ -13,6 +13,11 @@
         <div class="form-check form-switch rp-switch"><input class="form-check-input" id="rpOnlineToggle" type="checkbox" role="switch" aria-describedby="rpOnlineHelp"><label class="form-check-label" for="rpOnlineToggle">Look up intro times online (IntroDB, SkipDB)</label></div>
         <p class="rp-note" id="rpOnlineHelp">Reprise asks these public databases where an episode's intro and credits are (it sends the show's id, season, episode and the file's length, nothing else). Their times only tell it where to look and are offered as suggestions you must approve; they are never applied on their own.</p>
       </div>
+      <div class="rp-online" id="rpVision" hidden>
+        <div class="form-check form-switch rp-switch"><input class="form-check-input" id="rpVisionToggle" type="checkbox" role="switch" aria-describedby="rpVisionHelp"><label class="form-check-label" for="rpVisionToggle">Let a local AI model check unconfirmed intros and credits</label></div>
+        <p class="rp-note" id="rpVisionHelp">After an analysis, where Reprise could not confirm an intro or credits by comparing episodes, a vision model on your own network looks at a few small pictures from the episode and may suggest a span. It only uses a model that is already loaded, never changes what Reprise found, and its suggestions are never sent until you approve them. Off by default.</p>
+        <p class="rp-hardware" id="rpVisionFields" hidden><label>Address<input id="rpVisionUrl" type="url" autocomplete="off" spellcheck="false"></label> <label>Model<input id="rpVisionModel" type="text" autocomplete="off" spellcheck="false"></label> <button type="button" class="rp-btn quiet" id="rpVisionSave">Save</button></p>
+      </div>
     </div>
     <div class="rp-actions"><a class="rp-btn" id="rpReportLink" href="{{ url_for('main.reprise_report_page') }}"><i class="bi bi-clipboard-data" aria-hidden="true"></i>Plex report</a><button type="button" class="rp-btn" id="rpRefresh"><i class="bi bi-arrow-repeat" aria-hidden="true"></i>Refresh library</button></div>
   </header>

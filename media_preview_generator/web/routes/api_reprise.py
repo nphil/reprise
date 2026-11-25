@@ -409,20 +409,40 @@ def create_reprise_blueprint(service):
         autopilot = getattr(service, "autopilot", None)
         if request.method == "PATCH":
             data = _body(
-                {"writes_enabled", "gpu_decode", "online_lookups", "gpu_vram_cap_mb", "auto_send", "backfill", "alerts"}
+                {
+                    "writes_enabled",
+                    "gpu_decode",
+                    "online_lookups",
+                    "gpu_vram_cap_mb",
+                    "auto_send",
+                    "backfill",
+                    "alerts",
+                    "local_vision",
+                }
             )
+            asked_vision = "local_vision" in data
+            vision = data.pop("local_vision", None)
             asked_cap = "gpu_vram_cap_mb" in data
             cap = data.pop("gpu_vram_cap_mb", None)
             # The three automatic-work switches go to the autopilot; only the keys that were sent.
             automatic = {key: data.pop(key) for key in ("auto_send", "backfill", "alerts") if key in data}
             # The memory cap is a whole number of MiB inside the range the setting allows; the switches are booleans.
             low, high = acceleration.VRAM_CAP_RANGE_MB
-            if not (data or asked_cap or automatic) or any(
+            if not (data or asked_cap or automatic or asked_vision) or any(
                 type(value) is not bool for value in (*data.values(), *automatic.values())
             ):
                 raise ValueError("Invalid setting")
             if asked_cap and (type(cap) is not int or not low <= cap <= high):
                 raise ValueError("Invalid setting")
+            if asked_vision:
+                current = service.local_vision()
+                if type(vision) is not dict or not set(vision) <= {"enabled", "base_url", "model"}:
+                    raise ValueError("Invalid setting")
+                service.set_local_vision(
+                    vision.get("enabled", current.enabled),
+                    vision.get("base_url", current.base_url),
+                    vision.get("model", current.model),
+                )
             if automatic and autopilot is None:
                 return jsonify(error=no_autopilot), 400
             if "writes_enabled" in data:
@@ -450,6 +470,8 @@ def create_reprise_blueprint(service):
             gpu_vram_cap_mb=acceleration.vram_cap_mb(),
             # The owner's switch for asking public databases where an episode's intro and credits are.
             online_lookups=service.online_lookups_enabled(),
+            # The optional check of unconfirmed stretches by a local vision model: off unless turned on, advice only.
+            local_vision=asdict(service.local_vision()),
             # The background job that looks after the library by itself: its three switches and what it is doing now.
             autopilot=None if autopilot is None else {**autopilot.settings(), "status": autopilot.status()},
         )

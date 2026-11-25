@@ -28,7 +28,7 @@ import numpy as np
 from loguru import logger
 
 from ..gpu.ffmpeg_capabilities import ffmpeg_binary
-from . import acceleration, canonical, chapters, container_limits, gpu_pairs, scan_cache
+from . import acceleration, canonical, chapters, container_limits, gpu_pairs, localvision, scan_cache
 from . import media as decoder
 from . import recurrence as verify
 from .admission import EXTRA_REFERENCES, MAX_REFERENCES, admit_references
@@ -37,12 +37,14 @@ from .models import (
     ORIGIN_PLEX,
     REASON_ONLINE_SUGGESTION,
     REASON_PLEX_SUGGESTION,
+    SUGGESTION_ORIGINS,
     AnalysisDraft,
     CandidateWindow,
     DecisionRange,
     Evidence,
     MediaVersion,
     OnlineWindow,
+    is_owner_span,
 )
 from .uniqueness import COMPARISON_KEY, is_one_of_a_kind, sentence
 from .verification_profile import PROFILE_FINGERPRINT, PROFILE_ID, PROFILE_SPEC
@@ -271,6 +273,16 @@ def _fit_windows(windows, duration):
     return sorted(fitted, key=lambda w: (w.start_ms, w.end_ms, w.kind, w.source)), ignored
 
 
+def _by(who):
+    """Names for the sentence "Suggested by ...": the sources whose name is not a good phrase there are put in words."""
+    for name, phrase in (
+        (chapters.SOURCE_NAME, chapters.SOURCE_REASON),
+        (localvision.SOURCE_NAME, localvision.SOURCE_REASON),
+    ):
+        who = who.replace(name, phrase)
+    return who
+
+
 def _suggestion(media, window, names, tracks, movie=False):
     """A suggested window as a proposal: evidence that nothing confirmed it, and a skip only the owner can make
     eligible. Plex's marker (origin plex, also when an online database agrees with it) or online times (origin online);
@@ -339,13 +351,63 @@ def _suggestion(media, window, names, tracks, movie=False):
         False,
         ORIGIN_PLEX if plex else ORIGIN_ONLINE,
         REASON_PLEX_SUGGESTION if plex else REASON_ONLINE_SUGGESTION,
-        f"Suggested by {who.replace(chapters.SOURCE_NAME, chapters.SOURCE_REASON)} — not confirmed by Reprise.",
+        f"Suggested by {_by(who)} — not confirmed by Reprise.",
         (eid,),
         tuple(t[0] for t in tracks),
         False,
         names,
     )
     return evidence, suggestion
+
+
+def with_local_model(draft, media, verdicts):
+    """The draft with each local vision verdict (``localvision.Verdict``) added as an advisory suggestion.
+
+    A kind the owner set an exact skip for gets nothing. A verdict that agrees (within ``ONLINE_AGREE_MS`` at both ends)
+    with a skip the comparison found adds nothing; with a suggestion it only adds its name to it. Anything else is a
+    new approve-only suggestion carrying the frames' verdicts as evidence. No range the comparison made changes."""
+    ranges, evidence, reasons = list(draft.ranges), list(draft.evidence), list(draft.reasons)
+    tracks = _signature_tracks(media)
+    for kind, verdict in verdicts.items():
+        skips = [r for r in ranges if r.kind == kind and r.action == "skip"]
+        if any(is_owner_span(r) for r in skips):
+            continue
+        same = next(
+            (
+                r
+                for r in skips
+                if abs(r.start_ms - verdict.start_ms) <= ONLINE_AGREE_MS
+                and abs(r.end_ms - verdict.end_ms) <= ONLINE_AGREE_MS
+            ),
+            None,
+        )
+        if same is not None:
+            if same.origin in SUGGESTION_ORIGINS and localvision.SOURCE_NAME not in same.suggested_by:
+                names = (*(same.suggested_by or ("Plex",)), localvision.SOURCE_NAME)
+                ranges[ranges.index(same)] = replace(same, suggested_by=names)
+                reasons.append(f"A local vision model looking at frames put the {kind} in the same place.")
+            continue
+        window = CandidateWindow(kind, verdict.start_ms, verdict.end_ms, ONLINE_SOURCE)
+        found, suggestion = _suggestion(media, window, (localvision.SOURCE_NAME,), tracks)
+        counts = Counter(scene for _, scene, _ in verdict.frames)
+        found = replace(
+            found,
+            reason=f"A local vision model looked at {len(verdict.frames)} frames and read this stretch as the {kind}: {dict(counts)}.",
+            metrics={
+                **found.metrics,
+                "local_model": {
+                    "model": verdict.model,
+                    "frames": [{"at_ms": t, "scene": scene, "overlay_text": text} for t, scene, text in verdict.frames],
+                },
+            },
+        )
+        evidence.append(found)
+        ranges.append(suggestion)
+        reasons.append(
+            f"A local vision model suggested the {kind} ({_clock(verdict.start_ms)} to {_clock(verdict.end_ms)}). "
+            "It stays a suggestion until you approve it."
+        )
+    return replace(draft, evidence=tuple(evidence), ranges=tuple(ranges), reasons=tuple(reasons))
 
 
 def _carve(windows, around):
