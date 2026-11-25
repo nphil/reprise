@@ -3,7 +3,7 @@
  * Everything Reprise found that waits for the owner, from /api/reprise/approvals. Two ways through it:
  *   1. One click per season: "Approve & send N sure ones" (only the High-confidence suggestions), with Undo.
  *   2. One by one for the rest: a start picture and an end picture, then Skip it, Keep it or Adjust (keys S, K, A),
- *      moving on by itself, with Undo (U). At the end, "Send the N you approved".
+ *      moving on by itself, with Undo (U). At the end, "Send N episodes to Plex".
  * The pictures and the nudge/snap controls come from reprise-clip.js; the colours from the Lucent theme layer. */
 (function () {
   'use strict';
@@ -47,8 +47,9 @@
     const minutes = Math.floor(total / 60), rest = total % 60;
     return minutes + ' min' + (rest ? ' ' + rest + ' s' : '');
   }
+  const NOUN = { intro: ['intro', 'intros'], credits: ['set of credits', 'sets of credits'] };
   function kindsText(kinds) {
-    const parts = ['intro', 'credits'].filter(k => kinds && kinds[k]).map(k => plural(kinds[k], KIND[k].one, KIND[k].many));
+    const parts = ['intro', 'credits'].filter(k => kinds && kinds[k]).map(k => plural(kinds[k], NOUN[k][0], NOUN[k][1]));
     return parts.join(' and ');
   }
 
@@ -82,9 +83,10 @@
     let data = {};
     try { data = await response.json(); } catch (_) { /* an empty or non-JSON answer */ }
     if (!response.ok) {
+      const said = data.error || data.message || '';
       const error = new Error(response.status === 401
         ? 'You were signed out. Reload this page to sign in again.'
-        : data.error || data.message || 'Something went wrong (' + response.status + ').');
+        : /refresh and try again/i.test(said) ? 'This changed while you were looking at it.' : said || 'Something went wrong (' + response.status + ').');
       error.status = response.status;
       throw error;
     }
@@ -142,7 +144,7 @@
   function renderSkeleton() {
     subEl.textContent = 'Looking for what is waiting…';
     queueEl.replaceChildren(...[0, 1].map(() => {
-      const panel = el('div', 'lu-panel ap-show');
+      const panel = el('div', 'lu-panel');
       const rows = el('div', 'ap-skel');
       for (const width of ['38%', '72%', '54%']) { const line = el('span', 'lu-skel'); line.style.width = width; rows.append(line); }
       panel.append(rows);
@@ -185,7 +187,7 @@
     const parts = [];
     if (totals.sure) parts.push(plural(totals.sure, 'skip') + ' Reprise is sure about');
     if (totals.needs) parts.push(totals.needs + ' for you to look at');
-    if (totals.ready) parts.push(totals.ready + ' approved, not sent yet');
+    if (totals.ready) parts.push(plural(totals.ready, 'episode') + ' approved, not sent yet');
     subEl.textContent = parts.length ? parts.join(' · ') : 'Nothing is waiting for you.';
     pending.clear();
     if (!queue.shows.length) { queueEl.replaceChildren(emptyState()); return; }
@@ -298,8 +300,8 @@
     }
     if (season.ready) {
       const detail = el('div', 'lu-col lu-grow');
-      detail.append(el('b', 'lu-h', season.ready + ' approved, not sent yet'), el('span', 'lu-cap lu-muted', 'These are yours, but Plex does not have them yet.'), planSlot(key, 'ready'));
-      const send = button('Send the ' + season.ready + ' you approved', { icon: 'send' });
+      detail.append(el('b', 'lu-h', plural(season.ready, 'episode') + ' approved, not sent yet'), el('span', 'lu-cap lu-muted', 'These are yours, but Plex does not have them yet.'), planSlot(key, 'ready'));
+      const send = button('Send ' + plural(season.ready, 'episode') + ' to Plex', { icon: 'send' });
       if (sending.enabled) send.addEventListener('click', () => act(send, () => sendApproved(season)));
       else { send.disabled = true; send.title = sending.message; }
       row.append(doing('send', 'lu-inf', detail, send));
@@ -471,6 +473,7 @@
     if (fromButton && history.state && history.state.review) { history.back(); return; }   // popstate finishes the job
     teardownClips();
     state.review = null;
+    reviewEl.replaceChildren();
     showView('queue');
     titleEl.focus({ preventScroll: true });
     loadQueue({ quiet: true });
@@ -652,8 +655,9 @@
       rv.revs.set(id, answer.revision);
       rv.history.pop();
       rv.index = last.index;
-      rv.adjusting = Boolean(last.item.edit && (last.item.edit.start_ms !== last.item.start_ms || last.item.edit.end_ms !== last.item.end_ms));
-      last.item.edit = null;
+      const moved = Boolean(last.item.edit && (last.item.edit.start_ms !== last.item.start_ms || last.item.edit.end_ms !== last.item.end_ms));
+      rv.adjusting = moved;   // what you adjusted is still there to change again
+      if (!moved) last.item.edit = null;
       toast('Undone. Choose again.', { ms: 3500 });
       renderReview();
     } catch (error) {
@@ -686,7 +690,7 @@
     if (state.review !== rv || rv.index < rv.items.length) return;   // undone while this was loading
     state.plans.set(keyOf(rv.show, rv.season), plan);
     const skipped = rv.history.filter(h => h.decision === 'skip').length, kept = rv.history.filter(h => h.decision === 'keep').length;
-    const waiting = plan.ready.reduce((n, e) => n + e.skips.length, 0);
+    const waiting = plan.ready.length;
 
     const box = el('div', 'lu-panel ap-done lu-enter');
     const heading = el('h2', 'lu-title', 'All done with ' + rv.label); heading.tabIndex = -1;
@@ -700,12 +704,12 @@
     const actions = el('div', 'ap-done-actions');
     if (waiting) {
       const detail = el('div', 'lu-col lu-grow');
-      detail.append(el('b', 'lu-h', plural(waiting, 'skip') + (waiting === 1 ? ' is' : ' are') + ' approved and not in Plex yet'));
+      detail.append(el('b', 'lu-h', plural(waiting, 'episode') + (waiting === 1 ? ' is' : ' are') + ' approved and not in Plex yet'));
       const plan_ = el('ul', 'ap-plan');
       for (const line of plan.changes.ready.lines) plan_.append(el('li', null, line));
       if (plan.plex.status !== 'read') plan_.append(el('li', null, 'Plex could not be fully checked' + (plan.plex.message ? ': ' + plan.plex.message : '.')));
       detail.append(plan_);
-      const send = button('Send ' + waiting + ' to Plex', { cls: 'lu-primary', icon: 'send' });
+      const send = button('Send ' + plural(waiting, 'episode') + ' to Plex', { cls: 'lu-primary', icon: 'send' });
       if (plan.sending.enabled) {
         send.addEventListener('click', () => act(send, async () => {
           const result = await api('/approvals/send', { show: rv.show, season: rv.season, scope: 'approved', to_plex: true });

@@ -1,20 +1,20 @@
 /* Reprise · To approve. Layout for this one page; every colour, radius, button and surface comes from reprise-lucent.css. */
 
 .ap-notice:not(:empty) { margin: 0 0 var(--lu-space-5); }
-.ap-queue, .ap-review { display: grid; gap: var(--lu-space-5); }
+.ap-queue, .ap-review { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--lu-space-5); }
 .ap-review { gap: var(--lu-space-4); }
 .ap[data-view="review"] #apSub { display: none; }
 .ap [tabindex="-1"]:focus-visible { outline: none; }
 
 /* ── The queue: one panel per show, one row per season ─────────────────────────────────────────────────────── */
-.ap-skel { display: grid; gap: var(--lu-space-3); padding: var(--lu-space-5); }
+.ap-skel { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--lu-space-3); padding: var(--lu-space-5); }
 .ap-seasons { border-top: 1px solid var(--lu-material-edge); }
-.ap-season { display: grid; gap: var(--lu-space-5); padding: var(--lu-space-4) var(--lu-space-5) var(--lu-space-5); }
+.ap-season { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--lu-space-5); padding: var(--lu-space-4) var(--lu-space-5) var(--lu-space-5); }
 .ap-season-head { display: flex; align-items: baseline; gap: var(--lu-space-3); }
 .ap-do { display: flex; align-items: center; gap: var(--lu-space-4); }
 .ap-what { display: flex; align-items: flex-start; gap: var(--lu-space-3); flex: 1 1 0; min-width: 0; }
 .ap-do > .lu-btn { flex: none; }
-.ap-plan { display: grid; gap: 2px; margin: var(--lu-space-2) 0 0; padding: 0; list-style: none; color: var(--lu-ink-2); font: 400 var(--lu-type-label)/1.4 var(--lu-font); }
+.ap-plan { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; margin: var(--lu-space-2) 0 0; padding: 0; list-style: none; color: var(--lu-ink-2); font: 400 var(--lu-type-label)/1.4 var(--lu-font); }
 .ap-plan:empty { display: none; }
 .ap-plan-wait .lu-skel { width: 58%; height: .9em; }
 
@@ -37,7 +37,7 @@
 .ap-top > .lu-btn { padding: 0 var(--lu-space-4); }
 .ap-keys { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: var(--lu-space-2) var(--lu-space-4); justify-items: start; padding: var(--lu-space-4) var(--lu-space-5); }
 .ap-keys .lu-kbd { display: inline-grid; min-width: 34px; }
-.ap-card { display: grid; gap: var(--lu-space-4); padding: var(--lu-space-5); }
+.ap-card { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--lu-space-4); padding: var(--lu-space-5); }
 .ap-card-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--lu-space-2) var(--lu-space-4); }
 .ap-badges { display: flex; flex-wrap: wrap; align-items: center; gap: var(--lu-space-2); }
 .ap-reason { max-width: 68ch; }
@@ -58,7 +58,7 @@
 .ap-review.is-busy .ap-buttons { opacity: .6; pointer-events: none; }
 .ap-top .lu-iconbtn:disabled { opacity: .4; cursor: not-allowed; }
 
-.ap-wait { display: grid; gap: var(--lu-space-3); padding: var(--lu-space-6) var(--lu-space-5); }
+.ap-wait { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--lu-space-3); padding: var(--lu-space-6) var(--lu-space-5); }
 .ap-done { display: grid; justify-items: center; gap: var(--lu-space-4); padding: var(--lu-space-8) var(--lu-space-5); text-align: center; }
 .ap-done .lu-col { align-items: center; gap: var(--lu-space-2); }
 .ap-done .ap-do { width: min(600px, 100%); padding: var(--lu-space-4); border-radius: var(--lu-radius-row); background: var(--lu-material-well); text-align: left; }
