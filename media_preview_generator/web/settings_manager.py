@@ -19,6 +19,8 @@ from loguru import logger
 
 # Present (True) only while processing is paused because a settings save left no workers.
 _AUTO_PAUSED_KEY = "processing_auto_paused"
+# Who may hold processing: the owner ("manual"), the quiet-hours window, and Reprise while Plex is playing.
+PROCESSING_PAUSE_OWNERS = frozenset({"manual", "quiet_hours", "plex_playing"})
 
 
 class WorkerGroupsConflict(ValueError):
@@ -685,10 +687,10 @@ class SettingsManager:
 
     @property
     def processing_paused(self) -> bool:
-        """Whether a manual or quiet-hours global hold pauses processing."""
+        """Whether a manual, quiet-hours or Plex-playback global hold pauses processing."""
         reasons = self.get("processing_pause_reasons")
         if isinstance(reasons, list):
-            return bool(set(reasons) & {"manual", "quiet_hours"})
+            return bool(set(reasons) & PROCESSING_PAUSE_OWNERS)
         return bool(self.get("processing_paused", False))
 
     @processing_paused.setter
@@ -700,7 +702,7 @@ class SettingsManager:
         """Pause owners; resource availability is deliberately not a global pause."""
         reasons = self.get("processing_pause_reasons")
         if isinstance(reasons, list):
-            return sorted(set(reasons) & {"manual", "quiet_hours"})
+            return sorted(set(reasons) & PROCESSING_PAUSE_OWNERS)
         if self.get("processing_paused", False) and not self.processing_auto_paused:
             return ["manual"]
         return []
@@ -711,7 +713,7 @@ class SettingsManager:
         Writes nothing (no save, no backup) when the stored pause state already matches, since the quiet-hours
         recheck calls this every minute.
         """
-        if reason not in {"manual", "quiet_hours"}:
+        if reason not in PROCESSING_PAUSE_OWNERS:
             raise ValueError("Unknown processing pause reason")
         with self._lock:
             previous = self.processing_paused

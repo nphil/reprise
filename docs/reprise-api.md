@@ -86,6 +86,9 @@ Reprise can read new files, work through the rest of the library and send sure m
   "backfill": true,
   "alerts": true,
   "auto_send_endings": false,
+  "pause_while_watching": true,
+  "pause_mode": "any",
+  "pause_resume_minutes": 2,
   "status": {
     "queue_length": 12,
     "last_reconcile": "2026-11-22T09:30:00Z",
@@ -100,12 +103,16 @@ Reprise can read new files, work through the rest of the library and send sure m
 - `auto_send_intros` (default `false`): the same for intros. It is **offered only while Reprise considers the local model's intros safe to send** (a code switch, off today): until then the key is absent from `GET`, and sending it in a `PATCH` is `400` like any unknown key, and no intro is ever sent from the local model.
 - `backfill` (default `true`): analyse the rest of the library gradually, in the background.
 - `alerts` (default `true`): send phone alerts.
+- `pause_while_watching` (default `true`): pause Reprise's processing while someone is watching Plex. Once a minute Reprise reads Plex's `/status/sessions` (every enabled Plex server; local and remote streams; music and photos never count) and, while a video is playing, adds a `plex_playing` hold to the same global pause that quiet hours and **Pause all** use: nothing new is started, work in progress waits where it is and carries on from the same place, a change to Plex that is being written finishes first, and automatic sending to Plex waits. The hold is lifted `pause_resume_minutes` after the last stream stops. It only ever adds or removes its own hold, so a pause the owner made is never undone by it (`GET /api/jobs/processing/state` lists the holds in `reasons`: `manual`, `quiet_hours`, `plex_playing`). A stream left paused for 15 minutes stops counting. If Plex cannot be asked for 3 minutes it is treated as not playing, and `status.playback` says so; Plex being down never starts a pause.
+- `pause_mode` (default `"any"`): `"any"` pauses for any video playback, `"transcodes"` only for a stream Plex is converting (picture or sound).
+- `pause_resume_minutes` (default `2`): a whole number from `0` (as soon as Plex is quiet) to `120`.
+- `status.playback`: `{"enabled", "paused", "message", "plex_unreachable", "resume_at"}`. `message` is the plain sentence the Settings page shows ("Paused while Plex is playing. Resumes about 2 minutes after it stops.", "Plex has stopped playing. Resuming in about a minute.", or the sentence about Plex not answering), or `null`; `resume_at` is the Unix time of the planned resume while the wait is running, otherwise `null`.
 - `status.queue_length`: files waiting in the jobs Reprise queued by itself, counting files a job has not listed yet.
 - `status.last_reconcile`: the last time Reprise looked at Plex's listing for new or changed files, ISO 8601 in UTC, or `null` if it has not yet.
 - `status.last_alert`: the latest alert actually sent, `{kind, title, at}`, or `null`. `kind` is `problem`, `resolved` (the "fixed" follow-up) or `test`; `at` is ISO 8601 in UTC.
 - `status.auto_send_blocked`: one plain sentence saying why nothing is being sent automatically right now (sending to Plex is off, an earlier write needs checking, Plex's database could not be backed up, or sending is paused after a refusal), or `null` while it can send. It is also `null` when `auto_send` is off.
 
-`PATCH` accepts `{"auto_send": true | false}`, `{"auto_send_endings": …}`, `{"backfill": …}` and `{"alerts": …}` (and `auto_send_intros` while it is offered), alone or together with the other keys, and every value must be a boolean. Anything else, an unknown key or an empty body is `400` with `{"error": "Invalid request or operation"}`. Without automatic mode (`autopilot` is `null`) it is `400` with `{"error": "Automatic work is not available right now."}` and nothing in the same request is changed. The answer is the same body as `GET`, after the change.
+`PATCH` accepts `{"auto_send": true | false}`, `{"auto_send_endings": …}`, `{"backfill": …}`, `{"alerts": …}` and `{"pause_while_watching": …}` (and `auto_send_intros` while it is offered), alone or together with the other keys, and every value must be a boolean; `pause_mode` must be `"any"` or `"transcodes"` and `pause_resume_minutes` a whole number from 0 to 120. Switching `pause_while_watching` off lifts a playback pause at once. Anything else, an unknown key or an empty body is `400` with `{"error": "Invalid request or operation"}`. Without automatic mode (`autopilot` is `null`) it is `400` with `{"error": "Automatic work is not available right now."}` and nothing in the same request is changed. The answer is the same body as `GET`, after the change.
 
 Owner `POST /api/reprise/alerts/test` takes no body and sends one test message to the phone, whether or not `alerts` is on. It answers `200` with `{"sent": true, "message": "Test alert sent. Check your phone."}`, or `{"sent": false, "message": "<one plain sentence>"}` when it could not (no token file, the alert server refused it with a code, or it could not be reached). Without automatic mode it is `400` with the same error as above. The token is read from `ntfy-token` in the config folder at the moment of sending and is never returned or logged.
 

@@ -20,6 +20,7 @@
 /* Phone alerts: the two quiet-hour times sit side by side and wrap on a narrow screen. */
 #repriseSharing .rp-quiet-times { display: flex; flex-wrap: wrap; gap: 12px; }
 #repriseSharing .rp-quiet-times label { flex: 0 1 10rem; }
+#repriseSharing .rp-auto-row .rp-quiet-times label { flex-basis: 13rem; }
 #repriseSharing .rp-quiet { margin: 0; }
 #repriseSharing #rpNotifyStatus { padding-top: 12px; border-top: 1px solid var(--lu-edge-soft); }
 

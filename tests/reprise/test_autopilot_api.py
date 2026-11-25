@@ -33,7 +33,10 @@ class FakeAutopilot:
         return dict(self.values)
 
     def update_settings(self, values):
-        if set(values) - set(self.values) or any(type(v) is not bool for v in values.values()):
+        choices = {"pause_mode", "pause_resume_minutes"}
+        if set(values) - set(self.values) - choices or any(
+            type(v) is not bool for k, v in values.items() if k not in choices
+        ):
             raise ValueError("Invalid setting")
         self.updates.append(dict(values))
         self.values.update(values)
@@ -112,6 +115,33 @@ def test_the_intro_switch_reaches_the_autopilot_when_it_is_offered(env):
     service.autopilot.values["auto_send_intros"] = False
     assert client.patch("/api/reprise/settings", json={"auto_send_intros": True}).status_code == 200
     assert service.autopilot.updates == [{"auto_send_intros": True}]
+
+
+def test_the_pause_choices_reach_the_autopilot(env):
+    client, service, _online = env
+    body = {"pause_while_watching": False, "pause_mode": "transcodes", "pause_resume_minutes": 10}
+    service.autopilot.values["pause_while_watching"] = True
+    assert client.patch("/api/reprise/settings", json=body).status_code == 200
+    assert service.autopilot.updates == [body]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"pause_mode": "sometimes"},
+        {"pause_mode": 1},
+        {"pause_resume_minutes": -1},
+        {"pause_resume_minutes": 121},
+        {"pause_resume_minutes": "2"},
+        {"pause_resume_minutes": True},
+        {"pause_resume_minutes": 2.5},
+    ],
+)
+def test_a_bad_pause_choice_is_refused_before_anything_is_applied(env, body):
+    client, service, online = env
+    answer = client.patch("/api/reprise/settings", json={"online_lookups": True, **body})
+    assert answer.status_code == 400
+    assert service.autopilot.updates == [] and online["on"] is False
 
 
 def test_several_switches_are_applied_together(env):
@@ -227,7 +257,10 @@ def test_the_real_app_starts_automatic_mode_and_its_sharing_page_holds_the_panel
     # Everything is on until the owner turns a switch off; each switch is kept in its own setting.
     assert (shown["auto_send"], shown["backfill"], shown["alerts"]) == (True, True, True)
     # A new install has not allowed sending to Plex yet, and the page says so.
-    assert {k: v for k, v in shown["status"].items() if k != "notifications"} == {
+    assert shown["status"]["playback"]["message"] is None
+    assert shown["pause_while_watching"] is True and shown["pause_mode"] == "any"
+    assert shown["pause_resume_minutes"] == 2
+    assert {k: v for k, v in shown["status"].items() if k not in ("notifications", "playback")} == {
         "queue_length": 0,
         "last_reconcile": None,
         "last_alert": None,

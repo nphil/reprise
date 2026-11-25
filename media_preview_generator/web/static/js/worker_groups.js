@@ -708,10 +708,15 @@
         ensureDashboard();
         const hold = document.getElementById('workerGroupHold');
         hold.hidden = !snapshot.processing_paused;
-        const owners = (snapshot.pause_reasons || []).map(reason => reason === 'quiet_hours' ? 'global pause schedule' : 'manual pause');
-        const resumeHint = owners.includes('global pause schedule')
-            ? owners.includes('manual pause') ? 'Resume processing and wait for the pause schedule to end.' : 'Processing resumes when the pause schedule ends.'
-            : 'Resume processing to use available groups.';
+        const labels = { quiet_hours: 'global pause schedule', plex_playing: 'Plex is playing', manual: 'manual pause' };
+        const owners = (snapshot.pause_reasons || []).map(reason => labels[reason] || 'manual pause');
+        const manual = owners.includes('manual pause'), schedule = owners.includes('global pause schedule'), playing = owners.includes('Plex is playing');
+        const automatic = schedule ? 'wait for the pause schedule to end' : playing ? 'wait for Plex to stop playing' : '';
+        const resumeHint = manual || !owners.length
+            ? (automatic ? `Resume processing and ${automatic}.` : 'Resume processing to use available groups.')
+            : schedule && !playing ? 'Processing resumes when the pause schedule ends.'
+            : playing && !schedule ? 'Processing resumes by itself a little after Plex stops playing.'
+            : 'Processing resumes by itself when the pause schedule ends and Plex stops playing.';
         hold.textContent = 'Processing paused' + (owners.length ? ': ' + owners.join(' and ') : '') + '. ' + resumeHint;
         const present = new Set();
         const presentMembers = new Set();

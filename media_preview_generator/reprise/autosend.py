@@ -133,10 +133,13 @@ class AutoSender:
 
     TABLE = _ATTEMPTS_TABLE  # where this sender writes down what it decided (a fixed name, never request data)
 
-    def __init__(self, service, concerns, state, *, config_dir, enabled=lambda: True, clock=time.time, backup=None):
+    def __init__(
+        self, service, concerns, state, *, config_dir, enabled=lambda: True, clock=time.time, backup=None, hold=None
+    ):
         self.service, self.concerns, self.state = service, concerns, state
         self.config_dir = config_dir
         self._enabled = enabled
+        self._hold = hold or (lambda: None)  # a sentence while something (Plex playing) asks sending to wait
         self._clock = clock
         self._backup = backup or plexbackup.ensure_daily_backup
         self._backup_retry_at, self._backup_error = 0.0, ""
@@ -155,6 +158,8 @@ class AutoSender:
             return "Sending to Plex is switched off, so nothing is sent."
         if publisher.unfinished_writes():
             return "A change to Plex was cut off and has to be checked first."
+        if held := self._hold():
+            return held
         if now < self._backup_retry_at:
             return "Waiting: Reprise could not back up Plex's database."
         pause = self.state.get("send_pause")
@@ -620,7 +625,7 @@ class LocalModelSender(AutoSender):
 
     TABLE = _LOCAL_ATTEMPTS_TABLE
 
-    def __init__(self, service, concerns, state, *, config_dir, kinds, clock=time.time, backup=None):
+    def __init__(self, service, concerns, state, *, config_dir, kinds, clock=time.time, backup=None, hold=None):
         self._kinds = kinds
         self._alerted = False
         super().__init__(
@@ -631,6 +636,7 @@ class LocalModelSender(AutoSender):
             enabled=lambda: bool(self._offered()),
             clock=clock,
             backup=backup,
+            hold=hold,
         )
 
     def _offered(self):

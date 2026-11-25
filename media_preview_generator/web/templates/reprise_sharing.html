@@ -39,6 +39,15 @@
       <p class="rp-note" id="rpBackfillHelp">Reprise slowly analyzes episodes it has not looked at yet, most-watched shows first. New files always go first.</p>
     </div>
     <div class="rp-auto-row">
+      <div class="form-check form-switch rp-switch"><input class="form-check-input" id="rpPauseWatching" type="checkbox" role="switch" aria-describedby="rpPauseWatchingHelp rpPauseWatchingNote"><label class="form-check-label" for="rpPauseWatching">Pause while someone is watching Plex</label></div>
+      <p class="rp-note" id="rpPauseWatchingHelp">While Plex is playing a video, Reprise starts nothing new and holds the work it has in progress where it is, so the stream has the machine to itself. It carries on by itself afterwards, and nothing is lost. A pause you make yourself is never undone by this.</p>
+      <div class="rp-quiet-times">
+        <label>What counts<select class="form-select" id="rpPauseMode"><option value="any">Any playback</option><option value="transcodes">Only transcodes</option></select></label>
+        <label>Resume after it stops<select class="form-select" id="rpPauseMinutes"><option value="0">Right away</option><option value="1">1 minute</option><option value="2">2 minutes</option><option value="5">5 minutes</option><option value="10">10 minutes</option><option value="15">15 minutes</option><option value="30">30 minutes</option></select></label>
+      </div>
+      <p class="rp-note" id="rpPauseWatchingNote" role="status" aria-live="polite" hidden></p>
+    </div>
+    <div class="rp-auto-row">
       <div class="form-check form-switch rp-switch"><input class="form-check-input" id="rpAlerts" type="checkbox" role="switch" aria-describedby="rpAlertsHelp"><label class="form-check-label" for="rpAlerts">Send me an alert when something needs attention</label></div>
       <p class="rp-note" id="rpAlertsHelp">A short message to your phone. One message per problem, never one per file.</p>
       <div class="rp-actions"><button type="button" class="rp-btn" id="rpTestAlert">Send test alert</button><span id="rpAlertResult" class="rp-note" role="status" aria-live="polite"></span></div>

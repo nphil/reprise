@@ -48,7 +48,8 @@
 
     // Automatic work: the switches of the background job and a line about what it is doing. The panel stays hidden when Reprise has no such job.
     // The intro switch only exists while the server offers it (its setting is then in the answer).
-    const AUTO_SWITCHES = { rpAutoSend: 'auto_send', rpAutoSendEndings: 'auto_send_endings', rpBackfill: 'backfill', rpAlerts: 'alerts' };
+    const AUTO_SWITCHES = { rpAutoSend: 'auto_send', rpAutoSendEndings: 'auto_send_endings', rpBackfill: 'backfill', rpPauseWatching: 'pause_while_watching', rpAlerts: 'alerts' };
+    const AUTO_CHOICES = { rpPauseMode: 'pause_mode', rpPauseMinutes: 'pause_resume_minutes' };
     function ago(iso) {
         const then = Date.parse(iso);
         if (!iso || Number.isNaN(then)) return null;
@@ -76,7 +77,13 @@
         if (!autopilot) return;
         introSwitch('auto_send_intros' in autopilot);
         for (const [id, key] of Object.entries({ ...AUTO_SWITCHES, rpAutoSendIntros: 'auto_send_intros' })) if ($(id)) $(id).checked = !!autopilot[key];
+        $('rpPauseMode').value = autopilot.pause_mode || 'any';
+        const minutes = String(autopilot.pause_resume_minutes ?? 2), minutesBox = $('rpPauseMinutes');
+        if (![...minutesBox.options].some(option => option.value === minutes)) minutesBox.add(new Option(`${minutes} minutes`, minutes));
+        minutesBox.value = minutes;
         const status = autopilot.status || {};
+        const watching = status.playback || {}, watchNote = $('rpPauseWatchingNote');
+        watchNote.textContent = watching.message || ''; watchNote.hidden = !watching.message;
         const blocked = $('rpAutoSendNote');
         blocked.textContent = status.auto_send_blocked || ''; blocked.hidden = !status.auto_send_blocked;
         const last = status.last_alert;
@@ -95,6 +102,17 @@
         });
     }
     for (const [id, key] of Object.entries(AUTO_SWITCHES)) bindSwitch($(id), key);
+    for (const [id, key] of Object.entries(AUTO_CHOICES)) {
+        const box = $(id);
+        box.addEventListener('change', async () => {
+            box.disabled = true;
+            try { showSettings(await api('/api/reprise/settings', { method: 'PATCH', body: { [key]: key === 'pause_mode' ? box.value : Number(box.value) } })); }
+            catch (error) {
+                fail(error);
+                try { showSettings(await api('/api/reprise/settings')); } catch (_) { /* the choice already went back to what it was */ }
+            } finally { box.disabled = false; }
+        });
+    }
     $('rpTestAlert').addEventListener('click', async event => {
         const send = event.currentTarget, result = $('rpAlertResult');
         send.disabled = true; result.textContent = 'Sending a test alert…';

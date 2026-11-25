@@ -29,6 +29,20 @@ from .alerts import Alerts
 from .autosend import AutoSender, LocalModelSender, label_of
 from .autostate import AutopilotState, Concerns
 from .nudges import Notifier
+from .playback import (
+    MAX_RESUME_MINUTES,
+    POLL_MODES,
+    PlaybackPause,
+)
+from .playback import (
+    SETTING_ENABLED as SETTING_PAUSE_WATCHING,
+)
+from .playback import (
+    SETTING_MODE as SETTING_PAUSE_MODE,
+)
+from .playback import (
+    SETTING_RESUME_MINUTES as SETTING_PAUSE_MINUTES,
+)
 from .service import AUTOPILOT_SOURCES
 
 SETTING_AUTO_SEND = "reprise_auto_send"
@@ -36,10 +50,24 @@ SETTING_BACKFILL = "reprise_backfill"
 SETTING_ALERTS = "reprise_alerts_enabled"
 SETTING_AUTO_SEND_ENDINGS = "reprise_auto_send_endings"
 SETTING_AUTO_SEND_INTROS = "reprise_auto_send_intros"
-SETTINGS = {"auto_send": SETTING_AUTO_SEND, "backfill": SETTING_BACKFILL, "alerts": SETTING_ALERTS}
+SETTINGS = {
+    "auto_send": SETTING_AUTO_SEND,
+    "backfill": SETTING_BACKFILL,
+    "alerts": SETTING_ALERTS,
+    "pause_while_watching": SETTING_PAUSE_WATCHING,
+}
+# The two choices that go with the pause-while-watching switch: which playback counts, and the wait before resuming.
+CHOICES = {"pause_mode": SETTING_PAUSE_MODE, "pause_resume_minutes": SETTING_PAUSE_MINUTES}
 # The switches that are off until the owner turns them on. The intro one is offered only while
 # ``autosend.INTRO_AUTOSEND_SAFE`` is true (see ``offered``).
 OFF_BY_DEFAULT = {"auto_send_endings": SETTING_AUTO_SEND_ENDINGS, "auto_send_intros": SETTING_AUTO_SEND_INTROS}
+
+
+def choice_ok(name, value):
+    """Whether ``value`` is allowed for the choice ``name`` (one of ``CHOICES``)."""
+    if name == "pause_mode":
+        return isinstance(value, str) and value in POLL_MODES
+    return type(value) is int and 0 <= value <= MAX_RESUME_MINUTES
 
 
 def offered():
@@ -152,6 +180,7 @@ class Autopilot:
             enabled=lambda: self._on(SETTING_AUTO_SEND),
             clock=clock,
             backup=backup,
+            hold=lambda: self.playback.send_hold(),
         )
         self.local_sender = LocalModelSender(
             service,
@@ -161,8 +190,10 @@ class Autopilot:
             kinds=self._local_kinds,
             clock=clock,
             backup=backup,
+            hold=lambda: self.playback.send_hold(),
         )
         self.notifier = Notifier(service, alerts, clock=clock)
+        self.playback = PlaybackPause(service, clock=clock)
         self._nudges = {}
         self._nudge_lock = threading.Lock()
         self._note_lock = threading.Lock()
@@ -183,26 +214,34 @@ class Autopilot:
         return tuple(kinds)
 
     def settings(self):
-        """The switches the owner can change: ``{"auto_send", "backfill", "alerts"}`` (on until turned off) and
-        ``"auto_send_endings"`` (off until turned on). ``"auto_send_intros"`` is there too, but only while
-        ``autosend.INTRO_AUTOSEND_SAFE`` is true."""
-        return {name: self._on(setting, name not in OFF_BY_DEFAULT) for name, setting in offered().items()}
+        """The switches the owner can change: ``{"auto_send", "backfill", "alerts", "pause_while_watching"}`` (on until
+        turned off) and ``"auto_send_endings"`` (off until turned on). ``"auto_send_intros"`` is there too, but only
+        while ``autosend.INTRO_AUTOSEND_SAFE`` is true. ``"pause_mode"`` (``any`` or ``transcodes``) and
+        ``"pause_resume_minutes"`` say what counts as watching and how long after it stops Reprise carries on."""
+        found = {name: self._on(setting, name not in OFF_BY_DEFAULT) for name, setting in offered().items()}
+        found["pause_mode"] = self.playback.mode()
+        found["pause_resume_minutes"] = self.playback.resume_minutes()
+        return found
 
     def update_settings(self, values):
-        """Change some of the switches; ``values`` maps a switch name to True or False. Anything else is refused."""
+        """Change some of the settings; ``values`` maps a switch name to True or False, ``pause_mode`` to ``any`` or
+        ``transcodes`` and ``pause_resume_minutes`` to a whole number of minutes. Anything else is refused."""
         names = offered()
         if (
             not isinstance(values, dict)
             or not values
-            or set(values) - set(names)
-            or any(type(value) is not bool for value in values.values())
+            or set(values) - set(names) - set(CHOICES)
+            or any(type(value) is not bool for name, value in values.items() if name in names)
+            or any(not choice_ok(name, value) for name, value in values.items() if name in CHOICES)
         ):
-            raise ValueError("Choose on or off for each of: automatic sending, backfill, alerts, endings.")
+            raise ValueError("Choose on or off for each of: automatic sending, backfill, alerts, endings, pausing.")
         store = getattr(self.service.registry, "settings", None)
         if store is None:
             raise ValueError("Reprise can't save settings right now.")
         for name, value in values.items():
-            store.set(names[name], value)
+            store.set(names.get(name) or CHOICES[name], value)
+        if values.get("pause_while_watching") is False:
+            self.playback.check(self._clock(), [])  # switched off: the hold is lifted now, not at the next pass
         return self.settings()
 
     def status(self):
@@ -216,6 +255,7 @@ class Autopilot:
             "last_alert": {key: alert[key] for key in ("kind", "title", "at")} if alert else None,
             "auto_send_blocked": blocked,
             "notifications": self.notifier.status(),
+            "playback": self.playback.status(self._clock()),
         }
 
     def send_test_alert(self):
@@ -251,6 +291,7 @@ class Autopilot:
             return
         try:
             now = self._clock() if now is None else now
+            self._step("checking whether anyone is watching Plex", self._check_playback, now)
             self._step("looking for new files", self._reconcile_if_due, now)
             self._step("planning the backfill", self._backfill_if_due, now)
             self._step("sending sure matches to Plex", self.sender.sweep, now)
@@ -259,6 +300,9 @@ class Autopilot:
             self._step("checking for problems", self._watch, now)
         finally:
             self._tick_lock.release()
+
+    def _check_playback(self, now):
+        self.playback.check(now, self._plex_servers())
 
     @staticmethod
     def _step(what, action, now):

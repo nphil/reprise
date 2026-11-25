@@ -143,6 +143,8 @@ class FakePlex:
         self.libraries = libraries
         self.rows = {}  # library id -> the rows its listing returns
         self.looks = 0  # how many library listings were started
+        self.sessions = []  # what Plex says is being played (``/status/sessions``)
+        self.session_looks = 0
         self.listed = []  # the library ids whose listing was started
         self._broken = None
 
@@ -161,6 +163,9 @@ class FakePlex:
             raise self._broken[1]
         if path == "/":
             return Reply({"machineIdentifier": MACHINE})
+        if path == "/status/sessions":
+            self.session_looks += 1
+            return Reply({"size": len(self.sessions), "Metadata": list(self.sessions)})
         library_id = path.split("/")[3]  # /library/sections/<id>/all
         rows = self.rows.get(library_id, [])
         start = int(kwargs["params"]["X-Plex-Container-Start"])
@@ -933,8 +938,14 @@ def test_new_imports_go_ahead_of_the_backfill(env):
 # ── the switches ──────────────────────────────────────────────────────────────────────────────────────────────────
 
 
-THREE_ON = {"auto_send": True, "backfill": True, "alerts": True}
-UNTOUCHED = {**THREE_ON, "auto_send_endings": False, "auto_send_intros": False}  # the switches as first offered
+THREE_ON = {"auto_send": True, "backfill": True, "alerts": True, "pause_while_watching": True}
+UNTOUCHED = {
+    **THREE_ON,
+    "auto_send_endings": False,
+    "auto_send_intros": False,
+    "pause_mode": "any",
+    "pause_resume_minutes": 2,
+}  # the switches as first offered
 
 
 def test_three_switches_are_on_and_the_endings_and_intros_switches_off_until_the_owner_changes_them(env):
@@ -946,8 +957,11 @@ def test_changed_switches_are_saved_and_survive_a_restart(env, settings):
         "auto_send": False,
         "backfill": True,
         "alerts": False,
+        "pause_while_watching": True,
         "auto_send_endings": True,
         "auto_send_intros": False,
+        "pause_mode": "any",
+        "pause_resume_minutes": 2,
     }
     saved = SettingsManager(env.dir)  # a fresh read of the saved file, as after a restart
     assert saved.get(SETTING_AUTO_SEND) is False and saved.get(SETTING_ALERTS) is False
@@ -1277,3 +1291,282 @@ def test_no_secret_reaches_the_logs_the_alerts_the_status_or_the_database(env, l
         assert PLEX_SECRET not in call["headers"]["Title"] + call["data"].decode()
     shown = "\n".join(logs) + json.dumps(env.autopilot.status()) + database_text(env)
     assert TOKEN not in shown and PLEX_SECRET not in shown
+
+
+# ── pausing while Plex is playing ─────────────────────────────────────────────────────────────────────────────────
+
+WATCHING = "Paused while Plex is playing. Resumes about 2 minutes after it stops."
+MINUTE = 60
+
+
+def stream(session_id="1", state="playing", *, transcode=None, kind="movie"):
+    """One entry of Plex's ``/status/sessions``; ``transcode`` is ``(video decision, audio decision)`` or None."""
+    row = {"type": kind, "Session": {"id": session_id}, "Player": {"state": state, "local": True}}
+    if transcode:
+        row["TranscodeSession"] = {"videoDecision": transcode[0], "audioDecision": transcode[1]}
+    return row
+
+
+@pytest.fixture
+def watch(env, settings):
+    """The autopilot with the app's real saved pause state; ``resumed`` counts how often work was started again."""
+    resumed = []
+    env.autopilot.playback._drain = lambda: resumed.append(1)
+    return SimpleNamespace(resumed=resumed, status=lambda: env.autopilot.status()["playback"])
+
+
+def held(settings):
+    return settings.processing_pause_reasons
+
+
+def test_playback_pauses_the_work_and_it_resumes_after_the_delay(env, settings, watch):
+    env.plex.sessions = [stream()]
+    tick_at(env, START)
+    assert settings.processing_paused and held(settings) == ["plex_playing"]
+    assert watch.status() == {
+        "enabled": True,
+        "paused": True,
+        "message": WATCHING,
+        "plex_unreachable": False,
+        "resume_at": None,
+    }
+    tick_at(env, START + MINUTE)  # still playing: nothing changes
+    assert held(settings) == ["plex_playing"] and watch.resumed == []
+    env.plex.sessions = []
+    tick_at(env, START + 2 * MINUTE)  # the first quiet look starts the two minutes
+    assert settings.processing_paused and watch.resumed == []
+    assert watch.status()["message"] == "Plex has stopped playing. Resuming in about 2 minutes."
+    assert watch.status()["resume_at"] == START + 4 * MINUTE
+    tick_at(env, START + 3 * MINUTE)
+    assert settings.processing_paused and watch.status()["message"].endswith("Resuming in about a minute.")
+    tick_at(env, START + 4 * MINUTE - 1)
+    assert settings.processing_paused and watch.resumed == []
+    tick_at(env, START + 4 * MINUTE)
+    assert not settings.processing_paused and held(settings) == [] and watch.resumed == [1]
+    assert watch.status()["message"] is None and watch.status()["paused"] is False
+    tick_at(env, START + 5 * MINUTE)  # nothing more to do
+    assert watch.resumed == [1]
+
+
+def test_playback_that_starts_again_before_the_delay_is_over_keeps_the_pause(env, settings, watch):
+    env.plex.sessions = [stream()]
+    tick_at(env, START)
+    env.plex.sessions = []
+    tick_at(env, START + MINUTE)
+    env.plex.sessions = [stream("2")]
+    tick_at(env, START + 2 * MINUTE)
+    env.plex.sessions = []
+    tick_at(env, START + 3 * MINUTE)  # the wait starts over
+    tick_at(env, START + 3 * MINUTE + 119)
+    assert settings.processing_paused and watch.resumed == []
+    tick_at(env, START + 3 * MINUTE + 120)
+    assert not settings.processing_paused and watch.resumed == [1]
+
+
+def test_the_resume_delay_is_the_owner_s_choice(env, settings, watch):
+    env.autopilot.update_settings({"pause_resume_minutes": 0})
+    env.plex.sessions = [stream()]
+    tick_at(env, START)
+    assert watch.status()["message"] == "Paused while Plex is playing. Resumes as soon as it stops."
+    env.plex.sessions = []
+    tick_at(env, START + MINUTE)
+    assert not settings.processing_paused and watch.resumed == [1]
+    env.autopilot.update_settings({"pause_resume_minutes": 10})
+    env.plex.sessions = [stream()]
+    tick_at(env, START + 2 * MINUTE)
+    assert watch.status()["message"].endswith("Resumes about 10 minutes after it stops.")
+    env.plex.sessions = []
+    tick_at(env, START + 3 * MINUTE)
+    tick_at(env, START + 12 * MINUTE)
+    assert settings.processing_paused
+    tick_at(env, START + 13 * MINUTE)
+    assert not settings.processing_paused
+
+
+@pytest.mark.parametrize("remote", [True, False])
+def test_local_and_remote_streams_both_count(env, settings, remote):
+    row = stream()
+    row["Player"]["local"] = not remote
+    env.plex.sessions = [row]
+    tick_at(env, START)
+    assert held(settings) == ["plex_playing"]
+
+
+def test_music_and_photos_never_pause_the_work(env, settings):
+    env.plex.sessions = [stream("1", kind="track"), stream("2", kind="photo")]
+    tick_at(env, START)
+    assert not settings.processing_paused
+
+
+def test_only_transcodes_ignores_streams_plex_sends_as_they_are(env, settings, watch):
+    env.autopilot.update_settings({"pause_mode": "transcodes"})
+    env.plex.sessions = [
+        stream("1"),
+        stream("2", transcode=("copy", "copy")),
+        stream("3", transcode=("directplay", "copy")),
+    ]
+    tick_at(env, START)
+    assert not settings.processing_paused
+    env.plex.sessions.append(stream("4", transcode=("transcode", "copy")))
+    tick_at(env, START + MINUTE)
+    assert held(settings) == ["plex_playing"]
+    env.plex.sessions = [stream("5", transcode=("copy", "transcode"))]  # only its sound is converted
+    tick_at(env, START + 2 * MINUTE)
+    assert held(settings) == ["plex_playing"] and watch.status()["message"] == WATCHING
+    env.autopilot.update_settings({"pause_mode": "any"})
+    env.plex.sessions = [stream("1")]  # a plain stream counts again
+    tick_at(env, START + 3 * MINUTE)
+    assert held(settings) == ["plex_playing"] and watch.status()["message"] == WATCHING
+
+
+def test_a_stream_left_paused_for_a_long_time_stops_counting(env, settings, watch):
+    env.plex.sessions = [stream("1", "paused")]
+    tick_at(env, START)
+    assert held(settings) == ["plex_playing"]  # a short pause may be over any moment
+    tick_at(env, START + 15 * MINUTE - 1)
+    assert watch.status()["message"] == WATCHING
+    tick_at(env, START + 15 * MINUTE)  # left paused for a quarter of an hour: not watching any more
+    assert watch.status()["message"].startswith("Plex has stopped playing")
+    tick_at(env, START + 17 * MINUTE)
+    assert not settings.processing_paused and watch.resumed == [1]
+
+
+def test_a_manual_pause_is_never_undone_by_the_automatic_resume(env, settings, watch):
+    settings.processing_paused = True  # the owner pauses everything first
+    env.plex.sessions = [stream()]
+    tick_at(env, START)
+    assert held(settings) == ["manual", "plex_playing"]
+    env.plex.sessions = []
+    tick_at(env, START + MINUTE)
+    tick_at(env, START + 3 * MINUTE)
+    assert held(settings) == ["manual"] and settings.processing_paused
+    assert watch.resumed == []  # nothing was started again: the owner's pause still holds
+
+
+def test_the_owner_pressing_resume_while_plex_plays_leaves_only_the_playback_pause(env, settings, watch):
+    env.plex.sessions = [stream()]
+    tick_at(env, START)
+    settings.processing_paused = True
+    settings.processing_paused = False  # Pause all, then Resume, while Plex is still playing
+    assert held(settings) == ["plex_playing"]
+    tick_at(env, START + MINUTE)
+    assert settings.processing_paused
+
+
+def test_playback_never_adds_a_pause_to_a_pause_the_owner_already_resumed(env, settings, watch):
+    tick_at(env, START)  # nobody is watching
+    assert not settings.processing_paused and env.plex.session_looks == 1
+    assert watch.status()["message"] is None
+
+
+def test_a_hold_that_survived_a_restart_is_lifted_once_plex_is_quiet(env, settings, watch):
+    settings.set_processing_pause_reason("plex_playing", True)  # saved before the app stopped
+    tick_at(env, START)  # the first look after the restart finds Plex quiet and starts the wait
+    assert settings.processing_paused
+    tick_at(env, START + 2 * MINUTE)
+    assert not settings.processing_paused and watch.resumed == [1]
+
+
+def test_with_the_switch_off_plex_is_not_even_asked(env, settings, watch):
+    env.autopilot.update_settings({"pause_while_watching": False})
+    env.plex.sessions = [stream()]
+    tick_at(env, START)
+    assert not settings.processing_paused and env.plex.session_looks == 0
+    assert watch.status() == {
+        "enabled": False,
+        "paused": False,
+        "message": None,
+        "plex_unreachable": False,
+        "resume_at": None,
+    }
+
+
+def test_switching_it_off_while_paused_resumes_at_once_but_keeps_a_manual_pause(env, settings, watch):
+    env.plex.sessions = [stream()]
+    tick_at(env, START)
+    env.autopilot.update_settings({"pause_while_watching": False})
+    assert not settings.processing_paused and watch.resumed == [1]
+    settings.processing_paused = True
+    settings.set_processing_pause_reason("plex_playing", True)
+    env.autopilot.update_settings({"pause_while_watching": False})
+    assert held(settings) == ["manual"] and watch.resumed == [1]
+
+
+def test_an_unreachable_plex_never_starts_a_pause_and_the_status_says_so(env, settings, watch):
+    env.plex.fail("/status")
+    for when in (START, START + MINUTE, START + 3 * MINUTE, START + 10 * MINUTE):
+        tick_at(env, when)
+    assert not settings.processing_paused
+    assert "can't reach Plex" in watch.status()["message"] and watch.status()["plex_unreachable"] is True
+
+
+def test_a_pause_is_lifted_when_plex_stays_unreachable_and_the_status_says_so(env, settings, watch):
+    env.plex.sessions = [stream()]
+    tick_at(env, START)
+    env.plex.fail("/status")
+    tick_at(env, START + MINUTE)  # not answering yet: the pause stays, nothing is claimed
+    tick_at(env, START + 3 * MINUTE)
+    assert held(settings) == ["plex_playing"] and watch.status()["message"] == WATCHING
+    tick_at(env, START + 4 * MINUTE)  # three minutes without an answer: treated as not playing
+    assert settings.processing_paused and watch.status()["plex_unreachable"] is True
+    assert watch.status()["message"].startswith("Reprise can't reach Plex")
+    assert watch.status()["message"].endswith("Resuming in about 2 minutes.")
+    tick_at(env, START + 6 * MINUTE)
+    assert not settings.processing_paused and watch.resumed == [1]
+    env.plex.sessions = []
+    env.plex.heal()
+    tick_at(env, START + 7 * MINUTE)
+    assert watch.status()["plex_unreachable"] is False and watch.status()["message"] is None
+
+
+def test_sending_to_plex_waits_while_the_work_is_paused_for_playback(env, settings, watch):
+    env.service.publisher = SimpleNamespace(writes_enabled=True, unfinished_writes=lambda: [])
+    assert env.autopilot.sender.blocked(START) is None
+    env.plex.sessions = [stream()]
+    tick_at(env, START)
+    assert env.autopilot.sender.blocked(START) == "Waiting: Reprise is paused while Plex is playing."
+    assert env.autopilot.status()["auto_send_blocked"] == "Waiting: Reprise is paused while Plex is playing."
+    env.autopilot.update_settings({"auto_send_endings": True})
+    assert env.autopilot.local_sender.blocked(START).startswith("Waiting")
+    assert env.autopilot.sender.sweep(START) == 0 and env.autopilot.local_sender.sweep(START) == 0
+    env.plex.sessions = []
+    tick_at(env, START + MINUTE)
+    tick_at(env, START + 3 * MINUTE)
+    assert env.autopilot.sender.blocked(START + 3 * MINUTE) is None
+
+
+def test_the_backfill_is_not_planned_while_the_work_is_paused_for_playback(env, settings, watch, backfill):
+    backfill.rows = [{"version_id": "v1", "metadata": {"title": "Film", "kind": "movie"}, "server_id": SERVER}]
+    env.plex.sessions = [stream()]
+    tick_at(env, START)
+    assert backfill.jobs == []
+    env.plex.sessions = []
+    tick_at(env, START + MINUTE)
+    tick_at(env, START + 3 * MINUTE)
+    assert len(backfill.jobs) == 1
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"pause_mode": "sometimes"},
+        {"pause_mode": 1},
+        {"pause_resume_minutes": -1},
+        {"pause_resume_minutes": 121},
+        {"pause_resume_minutes": "2"},
+        {"pause_resume_minutes": True},
+        {"pause_resume_minutes": 2.5},
+        {"pause_while_watching": "yes"},
+    ],
+)
+def test_a_bad_pause_choice_is_refused_and_saves_nothing(env, settings, values):
+    with pytest.raises(ValueError, match="Choose on or off"):
+        env.autopilot.update_settings({"alerts": False, **values})
+    assert env.autopilot.settings() == UNTOUCHED
+
+
+def test_the_pause_choices_are_saved(env, settings):
+    saved = env.autopilot.update_settings({"pause_mode": "transcodes", "pause_resume_minutes": 15})
+    assert saved["pause_mode"] == "transcodes" and saved["pause_resume_minutes"] == 15
+    fresh = SettingsManager(env.dir)
+    assert fresh.get("reprise_pause_mode") == "transcodes" and fresh.get("reprise_pause_resume_minutes") == 15

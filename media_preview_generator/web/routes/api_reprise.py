@@ -607,6 +607,7 @@ def create_reprise_blueprint(service):
                     "online_lookups",
                     "gpu_vram_cap_mb",
                     *switches,
+                    *automatic_work.CHOICES,
                     "local_vision",
                 }
             )
@@ -615,11 +616,17 @@ def create_reprise_blueprint(service):
             asked_cap = "gpu_vram_cap_mb" in data
             cap = data.pop("gpu_vram_cap_mb", None)
             # The automatic-work switches go to the autopilot; only the keys that were sent.
-            automatic = {key: data.pop(key) for key in switches if key in data}
+            # The two choices beside the pause-while-watching switch are checked just below.
+            automatic = {key: data.pop(key) for key in (*switches, *automatic_work.CHOICES) if key in data}
             # The memory cap is a whole number of MiB inside the range the setting allows; the switches are booleans.
             low, high = acceleration.VRAM_CAP_RANGE_MB
             if not (data or asked_cap or automatic or asked_vision) or any(
-                type(value) is not bool for value in (*data.values(), *automatic.values())
+                type(value) is not bool
+                for value in (*data.values(), *(v for k, v in automatic.items() if k in switches))
+            ):
+                raise ValueError("Invalid setting")
+            if any(
+                not automatic_work.choice_ok(key, automatic[key]) for key in automatic_work.CHOICES if key in automatic
             ):
                 raise ValueError("Invalid setting")
             if asked_cap and (type(cap) is not int or not low <= cap <= high):
