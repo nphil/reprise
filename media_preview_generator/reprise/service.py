@@ -43,6 +43,7 @@ NOT_IN_LIBRARY = "This episode is not in the library any more. Refresh the libra
 CHANGED_ON_DISK = (
     "This file changed on disk after the library was last refreshed. Refresh the library, then analyze it again."
 )
+NOT_SURE_ANY_MORE = "This one is not a sure match in this season any more, so it was left alone."
 
 # Why the Library says a row is not current, in plain words. ``action`` is the button that helps: a refresh re-reads
 # the files, an analysis redoes the comparison. Each cause gets its own wording: a file Sonarr upgraded is gone, not
@@ -1086,11 +1087,13 @@ class RepriseService:
             raise ValueError("Analysis is unavailable or stale")
         return self.store.save_review(media_version_id, expected_revision, edits, actor)
 
-    def approve_confident(self, show, season):
+    def approve_confident(self, show, season, only=None):
         """Approve, for one season of a show, every suggestion the local vision model rated high confidence, as the
         owner's own exact skip (the same as setting it by hand and confirming it). Nothing is sent to Plex: that stays
         a separate step only the owner takes. An episode that changed since it was analyzed, or where Reprise cannot
-        set the skip exactly, is left as it was and reported with the reason."""
+        set the skip exactly, is left as it was and reported with the reason. ``only`` (a collection of episode ids)
+        limits this to those episodes: any other is never touched, and one of them that is not a sure match in this
+        season any more is reported as skipped."""
         from .models import ReviewRefused
         from .report import _pick_show
         from .store import RevisionConflict
@@ -1104,9 +1107,13 @@ class RepriseService:
             if version_id in seen or str(meta.get("show_title")) != title or str(meta.get("season")) != str(season):
                 continue
             seen.add(version_id)
+            if only is not None and version_id not in only:
+                continue
             stored = self.store.get_result(version_id)
             picks = _confident_local(stored.ranges, stored.evidence) if stored else []
             if not picks:
+                if only is not None:
+                    skipped.append({"id": version_id, "episode": meta.get("episode"), "reason": NOT_SURE_ANY_MORE})
                 continue
             edits = [
                 {
@@ -1147,6 +1154,8 @@ class RepriseService:
                 }
                 for r in picks
             ]
+        for version_id in sorted(set(only or ()) - seen):
+            skipped.append({"id": version_id, "episode": None, "reason": NOT_SURE_ANY_MORE})
         return {"show": title, "season": season, "approved": approved, "skipped": skipped}
 
     def _refresh_signature(self, server_id, library_id):

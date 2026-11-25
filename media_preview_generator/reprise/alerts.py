@@ -158,21 +158,45 @@ class Alerts:
             (_LOG_KEEP,),
         )
 
-    def _send(self, title, message, priority, tag):
-        """POST one message. Returns None on success, else a plain reason for the owner; never raises."""
+    def has_token(self):
+        """Whether the ntfy token file holds a token (it is read now, never kept)."""
+        return bool(self._read_token())
+
+    def notify(self, title, message, *, priority="default", tag=None, actions=None, click=None):
+        """Send one message that is no problem alert (a heads-up with buttons) through the same token, server and
+        topic. ``actions`` is ntfy's ``Actions`` header value, ``click`` the address a tap on the message opens. No
+        de-duplication or bookkeeping happens here: the caller decides what to send and when. Returns None on success,
+        else a plain reason for the owner; never raises."""
+        extra = {}
+        if actions:
+            extra["Actions"] = actions
+        if click:
+            extra["Click"] = click
+        with self._lock:
+            return self._send(_plain_title(title), message, priority, tag, extra)
+
+    def _read_token(self):
         try:
             with open(self._token_path, encoding="utf-8") as handle:
-                token = handle.read().strip()
+                return handle.read().strip()
         except (OSError, ValueError):
-            token = ""
+            return ""
+
+    def _send(self, title, message, priority, tag, extra=None):
+        """POST one message. Returns None on success, else a plain reason for the owner; never raises."""
+        token = self._read_token()
         if not token:
             logger.warning("ntfy alert not sent: no token file")
             return _NO_TOKEN
+        headers = {"Authorization": f"Bearer {token}", "Title": title, "Priority": priority}
+        if tag:
+            headers["Tags"] = tag
+        headers.update(extra or {})
         try:
             response = self._post(
                 self._endpoint,
                 data=message[:_MESSAGE_LIMIT].encode("utf-8"),
-                headers={"Authorization": f"Bearer {token}", "Title": title, "Priority": priority, "Tags": tag},
+                headers=headers,
                 timeout=_TIMEOUT_SECONDS,
             )
             code = response.status_code

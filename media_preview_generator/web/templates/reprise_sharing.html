@@ -46,6 +46,27 @@
     <p id="rpAutoStatus" class="rp-note" role="status" aria-live="polite"></p>
   </section>
 
+  <section class="rp-panel rp-notify" id="rpNotifyPanel" aria-labelledby="rpNotifyTitle" hidden>
+    <div class="rp-section-head rp-split">
+      <div><h2 id="rpNotifyTitle">Phone alerts</h2><p>Reprise can message your phone when suggestions are waiting for you, and when it sent something to Plex by itself. The message has buttons, so you can approve or undo straight from it without signing in.</p></div>
+    </div>
+    <div class="rp-auto-row">
+      <div class="form-check form-switch rp-switch"><input class="form-check-input" id="rpNotifyOn" type="checkbox" role="switch" aria-describedby="rpNotifyHelp"><label class="form-check-label" for="rpNotifyOn">Tell me on my phone when suggestions are waiting</label></div>
+      <p class="rp-note" id="rpNotifyHelp">One message per season, never one per episode, and no more than three an hour. A button only works once and stops working after six hours.</p>
+    </div>
+    <div class="rp-auto-row">
+      <fieldset class="rp-quiet" aria-describedby="rpQuietHelp">
+        <legend>Quiet hours</legend>
+        <div class="rp-quiet-times">
+          <label>From<input type="time" id="rpQuietFrom" step="60" required></label>
+          <label>Until<input type="time" id="rpQuietUntil" step="60" required></label>
+        </div>
+      </fieldset>
+      <p class="rp-note" id="rpQuietHelp">No messages during these hours. Anything waiting is sent afterwards. Pick the same time twice for no quiet hours.</p>
+    </div>
+    <p id="rpNotifyStatus" class="rp-note" role="status" aria-live="polite"></p>
+  </section>
+
   <section class="rp-panel" aria-labelledby="rpClientsTitle">
     <div class="rp-section-head rp-split">
       <div><h2 id="rpClientsTitle">Apps that read your results</h2><p>Give an app such as Marquee its own limited access to the saved skip and keep ranges.</p></div>
@@ -69,4 +90,5 @@
   </section>
 </div>
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', filename='js/reprise-sharing.js') }}" defer></script>{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='js/reprise-sharing.js') }}" defer></script>
+<script src="{{ url_for('static', filename='js/reprise-notify.js') }}" defer></script>{% endblock %}

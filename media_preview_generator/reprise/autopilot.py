@@ -28,6 +28,7 @@ from . import autosend, recovery
 from .alerts import Alerts
 from .autosend import AutoSender, LocalModelSender, label_of
 from .autostate import AutopilotState, Concerns
+from .nudges import Notifier
 from .service import AUTOPILOT_SOURCES
 
 SETTING_AUTO_SEND = "reprise_auto_send"
@@ -161,6 +162,7 @@ class Autopilot:
             clock=clock,
             backup=backup,
         )
+        self.notifier = Notifier(service, alerts, clock=clock)
         self._nudges = {}
         self._nudge_lock = threading.Lock()
         self._note_lock = threading.Lock()
@@ -213,6 +215,7 @@ class Autopilot:
             "last_reconcile": _iso(last) if last else None,
             "last_alert": {key: alert[key] for key in ("kind", "title", "at")} if alert else None,
             "auto_send_blocked": blocked,
+            "notifications": self.notifier.status(),
         }
 
     def send_test_alert(self):
@@ -252,6 +255,7 @@ class Autopilot:
             self._step("planning the backfill", self._backfill_if_due, now)
             self._step("sending sure matches to Plex", self.sender.sweep, now)
             self._step("sending the local model's high-confidence skips to Plex", self.local_sender.sweep, now)
+            self._step("sending phone notifications", self.notifier.run, now)
             self._step("checking for problems", self._watch, now)
         finally:
             self._tick_lock.release()

@@ -269,7 +269,7 @@ class TestWebhookReceivers:
             endpoint for endpoint, view in app.view_functions.items() if getattr(view, "is_webhook_receiver", False)
         }
 
-        assert exempt == set(WEBHOOK_RECEIVERS) | {"reprise_api.client_analysis"}
+        assert exempt == set(WEBHOOK_RECEIVERS) | {"reprise_api.client_analysis", "reprise_notify.act"}
 
     def test_client_analysis_exemption_still_requires_scoped_client_auth(self, app, signed_in):
         token = _page_token(signed_in)
