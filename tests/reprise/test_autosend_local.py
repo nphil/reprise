@@ -21,6 +21,7 @@ from tests.reprise.test_autosend import (
     Flaky,
     Lab,
     _marker_times,
+    _seed_marker,
     confirmed,
     detector_keep,
     sure_intro,
@@ -331,6 +332,37 @@ def test_a_failure_after_the_skip_was_made_leaves_no_skip_behind_and_names_the_e
     assert [r.review_status for r in lab.store.get_result(ep.vid).ranges if r.kind == "credits"] == ["proposed"]
     assert lab.post.titles() == [FAILED_TITLE]
     assert "Community S01E01" in lab.post.messages()[0]
+
+
+def test_a_pick_plex_already_has_exactly_is_done_without_a_false_alert(lab):
+    ep = credits_episode(lab)
+    _seed_marker(lab.plex, "credits", 80_000, DURATION, 0)  # what Plex holds now is exactly what the model picked
+    before = lab.rows()
+
+    assert lab.local.sweep(T0) == 0
+
+    assert lab.rows() == before and lab.publisher.list_changes(ep.vid) == []
+    assert owner_spans(lab, ep) == []  # the skip it made for the send is gone again
+    assert [r.review_status for r in lab.store.get_result(ep.vid).ranges if r.kind == "credits"] == ["proposed"]
+    assert lab.post.calls == [] and not lab.concerns.open_keys()
+    assert {a["outcome"] for a in local_attempts(lab, ep)} == {"already"}  # every revision it went through
+    assert lab.state.get("send_pause") is None and lab.local.blocked(T0) is None
+    seen = local_attempts(lab, ep)
+    assert lab.local.sweep(T0 + 7 * 3600) == 0  # done: never looked at again
+    assert local_attempts(lab, ep) == seen and lab.post.calls == []
+
+
+def test_an_alert_about_a_failed_send_is_closed_once_plex_turns_out_to_have_the_skip(lab, monkeypatch):
+    ep = credits_episode(lab)
+    monkeypatch.setattr(lab.publisher, "prepare", Flaky(lab.publisher.prepare, PublicationRefused("Plex moved on")))
+    assert lab.local.sweep(T0) == 0 and lab.post.titles() == [FAILED_TITLE]
+    _seed_marker(lab.plex, "credits", 80_000, DURATION, 0)  # meanwhile the skip reached Plex some other way
+
+    assert lab.local.sweep(T0 + autosend.FAILED_RETRY_S + 1) == 0
+
+    assert not lab.concerns.open_keys()
+    assert lab.post.titles() == [FAILED_TITLE, f"Resolved: {FAILED_TITLE}"]
+    assert local_attempts(lab, ep)[-1]["outcome"] == "already"  # the earlier failures stay on their old revisions
 
 
 def test_taking_the_skips_back_leaves_the_owners_own_alone(lab):

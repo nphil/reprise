@@ -29,7 +29,7 @@ from loguru import logger
 from ..markers.publishers import plex_db
 from ..shutdown import is_shutting_down
 from . import plexbackup
-from .models import ORIGIN_OWNER, REASON_OWNER_SPAN, DecisionRange, ReviewRefused, is_owner_span
+from .models import ORIGIN_OWNER, REASON_OWNER_SPAN, DecisionRange, NothingToPublish, ReviewRefused, is_owner_span
 from .policy import eligible_ranges
 from .publishing import AUTO_ACTOR
 from .review import plex_projection
@@ -212,8 +212,9 @@ class AutoSender:
     # ── one episode ───────────────────────────────────────────────────────────────────────────────────────────────
 
     def _consider(self, version_id, revision, now):
-        """Decide about one episode and send it when it is sure. Returns ``sent``, ``declined``, ``retry``, ``failed``
-        or ``waiting`` (nothing could be decided now; nothing was recorded)."""
+        """Decide about one episode and send it when it is sure. Returns ``sent``, ``already`` (Plex holds exactly
+        what was found), ``declined``, ``retry``, ``failed`` or ``waiting`` (nothing could be decided now; nothing was
+        recorded)."""
         vetted = self._vet(version_id, revision, now)
         if isinstance(vetted, str):
             return vetted
@@ -362,6 +363,10 @@ class AutoSender:
         publisher = self.service.publisher
         try:
             change = publisher.prepare(version_id, new_revision, identity, AUTO_ACTOR)
+        except NothingToPublish:
+            # Plex holds exactly what was approved: there is nothing to send and nothing went wrong.
+            back = self._take_back(version_id, new_revision, ids)
+            return self._already(version_id, (revision, back), now)
         except Exception as exc:
             # Nothing was written to Plex: take the approval back and leave the episode as it was.
             back = self._take_back(version_id, new_revision, ids)
@@ -459,6 +464,13 @@ class AutoSender:
             logger.opt(exception=True).warning("Reprise could not take back an automatic approval")
         result = self.service.store.get_result(version_id)
         return result.result_revision if result else revision
+
+    def _already(self, version_id, revisions, now):
+        """Plex holds exactly what was found, so there is nothing to send and nothing went wrong: done for these
+        revisions, with no alert and no retry."""
+        for revision in dict.fromkeys(revisions):
+            self._record(version_id, revision, "already", "Plex already has exactly this skip.", now=now)
+        return "already"
 
     def _sent(self, version_id, revision, new_revision, change_id, ids, now):
         for number in (revision, new_revision):
@@ -731,3 +743,11 @@ class LocalModelSender(AutoSender):
         bindings = self.service._bindings(version_id)
         label = label_of(bindings[0][2]) if bindings else "an episode"
         self.concerns.resolve(f"{LOCAL_FAILED_KEY}:{version_id}", f"The skip for {label} was sent to Plex after all.")
+
+    def _already(self, version_id, revisions, now):
+        outcome = super()._already(version_id, revisions, now)
+        bindings = self.service._bindings(version_id)
+        label = label_of(bindings[0][2]) if bindings else "an episode"
+        # A failure told about this episode earlier is over: Plex has the skip.
+        self.concerns.resolve(f"{LOCAL_FAILED_KEY}:{version_id}", f"Plex already has the skip for {label}.")
+        return outcome
