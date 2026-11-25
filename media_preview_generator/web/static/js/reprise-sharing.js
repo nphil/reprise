@@ -46,8 +46,9 @@
         }
     });
 
-    // Automatic work: the three switches of the background job and a line about what it is doing. The panel stays hidden when Reprise has no such job.
-    const AUTO_SWITCHES = { rpAutoSend: 'auto_send', rpBackfill: 'backfill', rpAlerts: 'alerts' };
+    // Automatic work: the switches of the background job and a line about what it is doing. The panel stays hidden when Reprise has no such job.
+    // The intro switch only exists while the server offers it (its setting is then in the answer).
+    const AUTO_SWITCHES = { rpAutoSend: 'auto_send', rpAutoSendEndings: 'auto_send_endings', rpBackfill: 'backfill', rpAlerts: 'alerts' };
     function ago(iso) {
         const then = Date.parse(iso);
         if (!iso || Number.isNaN(then)) return null;
@@ -57,10 +58,24 @@
         const count = Math.floor(seconds / size);
         return `${count} ${name}${count === 1 ? '' : 's'} ago`;
     }
+    function introSwitch(offered) {
+        const slot = $('rpAutoIntroSlot'), existing = $('rpAutoSendIntros');
+        if (!offered) { slot.replaceChildren(); return; }
+        if (existing) return;
+        const row = el('div', null, 'rp-auto-row'), wrap = el('div', null, 'form-check form-switch rp-switch');
+        const box = el('input', null, 'form-check-input');
+        box.id = 'rpAutoSendIntros'; box.type = 'checkbox'; box.setAttribute('role', 'switch'); box.setAttribute('aria-describedby', 'rpAutoSendIntrosHelp');
+        const label = el('label', 'Send high-confidence intros to Plex automatically', 'form-check-label'); label.htmlFor = box.id;
+        const help = el('p', 'When the local vision model is very sure where an intro starts and ends, Reprise sends that skip to Plex itself. Needs “Allow sending to Plex” above. Only episodes, never films, and never over anything you set or protected. Every automatic change can be undone.', 'rp-note');
+        help.id = 'rpAutoSendIntrosHelp';
+        wrap.append(box, label); row.append(wrap, help); slot.append(row);
+        bindSwitch(box, 'auto_send_intros');
+    }
     function showAutopilot(autopilot) {
         $('rpAutoPanel').hidden = !autopilot;
         if (!autopilot) return;
-        for (const [id, key] of Object.entries(AUTO_SWITCHES)) $(id).checked = !!autopilot[key];
+        introSwitch('auto_send_intros' in autopilot);
+        for (const [id, key] of Object.entries({ ...AUTO_SWITCHES, rpAutoSendIntros: 'auto_send_intros' })) if ($(id)) $(id).checked = !!autopilot[key];
         const status = autopilot.status || {};
         const blocked = $('rpAutoSendNote');
         blocked.textContent = status.auto_send_blocked || ''; blocked.hidden = !status.auto_send_blocked;
@@ -68,9 +83,9 @@
         const lastWhen = last && ago(last.at);
         $('rpAutoStatus').textContent = `${status.queue_length || 0} waiting in the queue · Last check for new files: ${ago(status.last_reconcile) || 'not yet'} · Last alert: ${last ? [last.title, lastWhen].filter(Boolean).join(', ') : 'none yet'}`;
     }
-    for (const [id, key] of Object.entries(AUTO_SWITCHES)) {
-        $(id).addEventListener('change', async event => {
-            const box = event.target, wanted = box.checked;
+    function bindSwitch(box, key) {
+        box.addEventListener('change', async event => {
+            const wanted = box.checked;
             box.disabled = true;
             try { showSettings(await api('/api/reprise/settings', { method: 'PATCH', body: { [key]: wanted } })); }
             catch (error) {
@@ -79,6 +94,7 @@
             } finally { box.disabled = false; }
         });
     }
+    for (const [id, key] of Object.entries(AUTO_SWITCHES)) bindSwitch($(id), key);
     $('rpTestAlert').addEventListener('click', async event => {
         const send = event.currentTarget, result = $('rpAlertResult');
         send.disabled = true; result.textContent = 'Sending a test alert…';

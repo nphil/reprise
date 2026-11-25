@@ -85,6 +85,7 @@ Reprise can read new files, work through the rest of the library and send sure m
   "auto_send": true,
   "backfill": true,
   "alerts": true,
+  "auto_send_endings": false,
   "status": {
     "queue_length": 12,
     "last_reconcile": "2026-11-22T09:30:00Z",
@@ -95,6 +96,8 @@ Reprise can read new files, work through the rest of the library and send sure m
 ```
 
 - `auto_send` (default `true`): send sure matches to Plex automatically. It does nothing unless **Allow sending to Plex** (`writes_enabled`) is also on.
+- `auto_send_endings` (default `false`): when the local vision model is very sure where the end credits start (its confidence is High), send that skip to Plex by itself. It does nothing unless **Allow sending to Plex** (`writes_enabled`) is also on, and it is independent of `auto_send`. Episodes only, never films or specials; never over a skip the owner set, took back or turned down, or over a range the owner or the analysis keeps or locked; Medium and Low are never sent. Each one is made the owner's own exact skip (review actor `reprise-auto`) and published like any automatic change, so it appears in `GET /approvals/automatic` and can be undone. If anything goes wrong after the skip was made, it is taken away again, the episode is as it was, and a phone alert says so.
+- `auto_send_intros` (default `false`): the same for intros. It is **offered only while Reprise considers the local model's intros safe to send** (a code switch, off today): until then the key is absent from `GET`, and sending it in a `PATCH` is `400` like any unknown key, and no intro is ever sent from the local model.
 - `backfill` (default `true`): analyse the rest of the library gradually, in the background.
 - `alerts` (default `true`): send phone alerts.
 - `status.queue_length`: files waiting in the jobs Reprise queued by itself, counting files a job has not listed yet.
@@ -102,7 +105,7 @@ Reprise can read new files, work through the rest of the library and send sure m
 - `status.last_alert`: the latest alert actually sent, `{kind, title, at}`, or `null`. `kind` is `problem`, `resolved` (the "fixed" follow-up) or `test`; `at` is ISO 8601 in UTC.
 - `status.auto_send_blocked`: one plain sentence saying why nothing is being sent automatically right now (sending to Plex is off, an earlier write needs checking, Plex's database could not be backed up, or sending is paused after a refusal), or `null` while it can send. It is also `null` when `auto_send` is off.
 
-`PATCH` accepts `{"auto_send": true | false}`, `{"backfill": …}` and `{"alerts": …}`, alone or together with the other keys, and every value must be a boolean. Anything else, an unknown key or an empty body is `400` with `{"error": "Invalid request or operation"}`. Without automatic mode (`autopilot` is `null`) it is `400` with `{"error": "Automatic work is not available right now."}` and nothing in the same request is changed. The answer is the same body as `GET`, after the change.
+`PATCH` accepts `{"auto_send": true | false}`, `{"auto_send_endings": …}`, `{"backfill": …}` and `{"alerts": …}` (and `auto_send_intros` while it is offered), alone or together with the other keys, and every value must be a boolean. Anything else, an unknown key or an empty body is `400` with `{"error": "Invalid request or operation"}`. Without automatic mode (`autopilot` is `null`) it is `400` with `{"error": "Automatic work is not available right now."}` and nothing in the same request is changed. The answer is the same body as `GET`, after the change.
 
 Owner `POST /api/reprise/alerts/test` takes no body and sends one test message to the phone, whether or not `alerts` is on. It answers `200` with `{"sent": true, "message": "Test alert sent. Check your phone."}`, or `{"sent": false, "message": "<one plain sentence>"}` when it could not (no token file, the alert server refused it with a code, or it could not be reached). Without automatic mode it is `400` with the same error as above. The token is read from `ntfy-token` in the config folder at the moment of sending and is never returned or logged.
 
@@ -119,6 +122,8 @@ These owner-only routes back the **To approve** page (`/reprise/approve`). They 
 `POST /api/reprise/approvals/send` takes `{"show", "season", "scope", "to_plex"}`. `scope` is `sure` (approve this season's sure ones as the owner's own exact skips, then send them) or `approved` (send what the owner approved earlier). `to_plex` defaults to `true`; with `false` it only approves. `scope: "approved"` with `to_plex: false`, or `to_plex: true` while sending is off, is `400` with a plain sentence. Plex is backed up before anything is written, each episode goes through the ordinary publication checks, and one episode that fails does not stop the others. It answers `{"show", "season", "scope", "approved", "sent", "failed", "stopped", "backup"}`: `approved` and `sent` list episodes with `media_version_id`, `label` and `span_ids` (`sent` also has `change_id`, the publication-journal record), `failed` gives a plain `reason` per episode, and `stopped` is one sentence when the run ended early.
 
 `POST /api/reprise/approvals/undo` takes `{"changes": [{"media_version_id", "change_id", "span_ids", "label"}]}` (1 to 500 entries, as `send` returned them; `change_id` is null for an approval that was never sent). It puts Plex back as it was for each `change_id`, through the publication journal's own undo, and takes back the approvals in `span_ids`. It answers `{"restored": [{"media_version_id", "label", "withdrawn"}], "failed": [...]}`.
+
+`GET /api/reprise/approvals/automatic?days=<n>` lists what Reprise sent to Plex by itself and is still there, newest first (`days` is 1 to 30, default 7; anything else is `400`). It answers `{"sent": [{"change_id", "media_version_id", "show", "season", "episode", "label", "kinds", "sent_at", "span_ids", "origin"}]}`. `kinds` is `["credits"]`, `["intro"]` or both; `sent_at` is seconds since 1970; `origin` is `local_model` (Reprise made the skip from the local model's High suggestion: `span_ids` are the skips an undo withdraws) or `sure` (the detector confirmed it: `span_ids` is empty). Send an entry's `media_version_id`, `change_id`, `span_ids` and `label` to `/approvals/undo` to put it back; an undone change leaves this list.
 
 `POST /api/reprise/approvals/decide` takes `{"media_version_id", "expected_revision", "kind", "decision"}` and, optionally, `start_ms` and `end_ms` (a moved time), `span_id` and `range_ids`. `decision` is `skip`, `keep` or `restore`. `expected_revision` is the revision the page last read: a stale one is `409` (`{"error": "Conflict; refresh and try again"}`) and nothing is written. Every answer carries `revision` and an `undo` body that, sent back with `decision: "restore"`, takes the answer back.
 

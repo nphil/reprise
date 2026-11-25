@@ -356,6 +356,11 @@
       view.canUndo = entry.undone.failed.length > 0;
       return view;
     }
+    if (entry.auto) {   // sent by Reprise itself: there is only ever a send to undo
+      view.title = 'Sent ' + autoKinds(r.sent[0].kinds) + ' to Plex automatically';
+      view.canUndo = true;
+      return view;
+    }
     if (r.sent.length) {
       view.title = 'Sent ' + plural(sentSkips, 'skip') + ' to Plex';
       if (r.backup) view.detail.push('Plex was backed up first');
@@ -390,7 +395,10 @@
         actions.append(undo);
       }
       const close = iconButton('x-lg', 'Dismiss');
-      close.addEventListener('click', () => { state.sent.splice(state.sent.indexOf(entry), 1); renderSent(); });
+      close.addEventListener('click', () => {
+        if (entry.auto) dismissAuto(entry.auto.change_id);
+        state.sent.splice(state.sent.indexOf(entry), 1); renderSent();
+      });
       actions.append(close);
       row.append(glyph(view.mark, view.tone), text, actions);
       return row;
@@ -414,6 +422,44 @@
     renderSent();
     await loadQueue({ quiet: true });
   }
+
+  /* What Reprise sent by itself in the last week (kept in Plex, newest first) joins the tray as rows of the same kind.
+     A dismissed row is remembered in this browser, so it stays gone. */
+  const DISMISSED_KEY = 'repriseAutoDismissed';
+  function dismissedAuto() {
+    try { return new Set(JSON.parse(localStorage.getItem(DISMISSED_KEY) || '[]')); } catch (_) { return new Set(); }
+  }
+  function dismissAuto(changeId) {
+    const all = dismissedAuto(); all.add(changeId);
+    try { localStorage.setItem(DISMISSED_KEY, JSON.stringify([...all].slice(-200))); } catch (_) { /* private mode: it just comes back next visit */ }
+  }
+  function autoKinds(kinds) {
+    const words = { intro: ['intro', 'intros'], credits: ['ending', 'endings'] };
+    const parts = ['intro', 'credits'].filter(k => kinds.includes(k)).map(k => plural(1, words[k][0], words[k][1]));
+    return parts.join(' and ');
+  }
+  function autoEntry(item) {
+    const place = [item.show || 'An episode', item.season == null ? null : 'Season ' + item.season, item.episode == null ? null : 'E' + item.episode];
+    const sent = { media_version_id: item.media_version_id, change_id: item.change_id, span_ids: item.span_ids || [], label: item.label, kinds: item.kinds || [] };
+    return {
+      result: { show: item.show, season: item.season, sent: [sent], approved: [], failed: [], stopped: null, backup: null },
+      label: place.filter(Boolean).join(' · '), undone: null, busy: false,
+      auto: { change_id: item.change_id, sent_at: item.sent_at || 0 },
+    };
+  }
+  async function loadAutomatic() {
+    let found;
+    try { found = (await api('/approvals/automatic?days=7')).sent || []; } catch (_) { return; }   // the tray is a courtesy: the queue still works
+    const gone = dismissedAuto(), current = new Set(found.map(item => item.change_id));
+    const mine = state.sent.filter(entry => !entry.auto);
+    const kept = state.sent.filter(entry => entry.auto && (current.has(entry.auto.change_id) || entry.undone));
+    const known = new Set(kept.map(entry => entry.auto.change_id));
+    const fresh = found.filter(item => !gone.has(item.change_id) && !known.has(item.change_id)).map(autoEntry);
+    const auto = [...kept, ...fresh].sort((a, b) => b.auto.sent_at - a.auto.sent_at);
+    state.sent = [...mine, ...auto];
+    renderSent();
+  }
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') loadAutomatic(); });
 
   /* ═══ The review: one by one ═══════════════════════════════════════════════════════════════════════════════════ */
   const startOf = item => (item.edit ? item.edit.start_ms : item.start_ms);
@@ -791,4 +837,5 @@
   if (window.RepriseTheme) window.RepriseTheme.mountPicker($('apTheme'));
   if (location.hash === '#review') history.replaceState(null, '', location.pathname + location.search);
   loadQueue();
+  loadAutomatic();
 })();

@@ -290,6 +290,9 @@ class RepriseApi:
                     self.settings["writes_enabled"] = body["writes_enabled"]
                 if "online_lookups" in body:
                     self.settings["online_lookups"] = body["online_lookups"]
+                for key in ("auto_send", "auto_send_endings", "auto_send_intros", "backfill", "alerts"):
+                    if key in body and self.settings.get("autopilot"):
+                        self.settings["autopilot"][key] = body[key]
                 if "gpu_decode" in body:
                     on = body["gpu_decode"]
                     self.settings["acceleration"].update(
@@ -907,6 +910,48 @@ class TestShellStatus:
         accept_app_confirm(authed_page)
         expect(authed_page.locator("#rpSafety")).to_have_attribute("data-state", "on")
         assert api.settings_patches == [{"writes_enabled": True}]
+
+    def test_the_endings_switch_is_off_until_turned_on_and_the_intro_switch_is_not_there(
+        self, authed_page: Page, api: RepriseApi, app_url: str
+    ) -> None:
+        api.settings["autopilot"] = {
+            "auto_send": True,
+            "backfill": True,
+            "alerts": True,
+            "auto_send_endings": False,
+            "status": {"queue_length": 0, "last_reconcile": None, "last_alert": None, "auto_send_blocked": None},
+        }
+        authed_page.goto(f"{app_url}/reprise/sharing")
+        endings = authed_page.locator("#rpAutoSendEndings")
+        expect(endings).to_be_visible()
+        expect(endings).not_to_be_checked()
+        expect(authed_page.locator("#rpAutoSendEndingsHelp")).to_contain_text("very sure where the end credits start")
+        expect(authed_page.locator("#rpAutoSendIntros")).to_have_count(0)
+        endings.check()
+        expect(endings).to_be_checked()
+        assert api.settings_patches == [{"auto_send_endings": True}]
+        endings.uncheck()
+        expect(endings).not_to_be_checked()
+        assert api.settings_patches[-1] == {"auto_send_endings": False}
+
+    def test_the_intro_switch_appears_only_when_the_server_offers_it(
+        self, authed_page: Page, api: RepriseApi, app_url: str
+    ) -> None:
+        api.settings["autopilot"] = {
+            "auto_send": True,
+            "backfill": True,
+            "alerts": True,
+            "auto_send_endings": False,
+            "auto_send_intros": False,
+            "status": {"queue_length": 0, "last_reconcile": None, "last_alert": None, "auto_send_blocked": None},
+        }
+        authed_page.goto(f"{app_url}/reprise/sharing")
+        intros = authed_page.locator("#rpAutoSendIntros")
+        expect(intros).to_be_visible()
+        expect(authed_page.get_by_label("Send high-confidence intros to Plex automatically")).not_to_be_checked()
+        intros.check()
+        expect(intros).to_be_checked()
+        assert api.settings_patches == [{"auto_send_intros": True}]
 
 
 def _more_episodes(api: RepriseApi, count: int, show: str = "Community", first: int = 7) -> None:

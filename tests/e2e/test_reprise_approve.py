@@ -7,12 +7,13 @@ and picture endpoints are answered by ``_approvals_api.ApprovalsApi``; the shell
 
 from __future__ import annotations
 
+import json
 import re
 
 import pytest
 from playwright.sync_api import Page, expect
 
-from ._approvals_api import ApprovalsApi, span
+from ._approvals_api import ApprovalsApi, automatic_entry, span
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -131,6 +132,65 @@ def test_one_click_sends_the_sure_ones_and_undo_puts_them_back(
     expect(community(page).get_by_role("button", name="Approve & send 3 sure ones")).to_be_visible()
     expect(sent.get_by_role("button", name="Undo")).to_have_count(0)  # an undone change cannot be undone twice
     assert errors == []
+
+
+@pytest.mark.e2e
+def test_what_reprise_sent_by_itself_is_listed_and_can_be_undone_or_dismissed(
+    authed_page: Page, app_url: str, errors: list[str]
+) -> None:
+    page = authed_page
+    api = open_page(
+        page,
+        app_url,
+        automatic=[
+            automatic_entry("v201", 1, sent_at=1_700_000_100),
+            automatic_entry("v202", 2, kinds=("intro", "credits"), sent_at=1_700_000_000),
+        ],
+    )
+    sent = page.locator("#apSent")
+
+    expect(sent).to_contain_text("Sent 1 ending to Plex automatically")
+    expect(sent).to_contain_text("Community · Season 2 · E1")
+    expect(sent).to_contain_text("Sent 1 intro and 1 ending to Plex automatically")
+    assert [q for m, p, q, _ in api.calls if p == "/approvals/automatic"][0] == {"days": "7"}
+
+    sent.locator(".ap-sent-row").first.get_by_role("button", name="Undo").click()
+    expect(sent).to_contain_text("Undone")
+    assert api.posts("/approvals/undo") == [
+        {
+            "changes": [
+                {
+                    "media_version_id": "v201",
+                    "change_id": "auto-1",
+                    "span_ids": ["owner-v201-credits"],
+                    "label": "S02E01",
+                }
+            ]
+        }
+    ]
+    expect(sent.locator(".ap-sent-row")).to_have_count(2)  # the undone one stays, as "Undone", until dismissed
+
+    sent.locator(".ap-sent-row").nth(1).get_by_role("button", name="Dismiss").click()
+    expect(sent.locator(".ap-sent-row")).to_have_count(1)
+    assert json.loads(page.evaluate("localStorage.getItem('repriseAutoDismissed')")) == ["auto-2"]
+    page.reload()  # a dismissed row stays gone, and the undone one is no longer sent
+    expect(page.locator("#apQueue")).to_be_visible()
+    expect(sent).to_be_hidden()
+    assert errors == []
+
+
+@pytest.mark.e2e
+def test_a_send_made_by_reprise_while_the_page_is_open_shows_up_when_you_come_back(
+    authed_page: Page, app_url: str
+) -> None:
+    page = authed_page
+    api = open_page(page, app_url)
+    expect(page.locator("#apSent")).to_be_hidden()
+
+    api.automatic.append(automatic_entry("v203", 3))
+    page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+
+    expect(page.locator("#apSent")).to_contain_text("Sent 1 ending to Plex automatically")
 
 
 @pytest.mark.e2e
