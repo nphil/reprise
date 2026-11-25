@@ -99,7 +99,9 @@ def test_nothing_waiting_says_so_and_a_failed_load_can_be_retried(authed_page: P
 
 
 @pytest.mark.e2e
-def test_one_click_sends_the_sure_ones_and_undo_puts_them_back(authed_page: Page, app_url: str, errors: list[str]) -> None:
+def test_one_click_sends_the_sure_ones_and_undo_puts_them_back(
+    authed_page: Page, app_url: str, errors: list[str]
+) -> None:
     page = authed_page
     api = open_page(page, app_url)
 
@@ -298,7 +300,7 @@ def test_a_held_key_decides_only_once(authed_page: Page, app_url: str) -> None:
 @pytest.mark.e2e
 def test_snapping_to_a_cut_moves_the_picked_time(authed_page: Page, app_url: str) -> None:
     page = authed_page
-    api = open_page(page, app_url)
+    open_page(page, app_url)
     start_review(page)
     choose(page, "Keep it").click()  # on to the intro: 0:02 to 0:34, cuts at 0:31, 0:32 and 0:33
     expect(page.locator("#apTimes")).to_have_text("0:02 → 0:34 · 32 s")
@@ -318,7 +320,9 @@ def test_a_changed_episode_reloads_what_is_left(authed_page: Page, app_url: str)
 
     api.revisions["v203"] += 1  # someone else decided it while this page was open
     page.keyboard.press("s")
-    expect(page.locator("#apToasts")).to_contain_text("This changed while you were looking at it. Getting what is left.")
+    expect(page.locator("#apToasts")).to_contain_text(
+        "This changed while you were looking at it. Getting what is left."
+    )
     expect(page.locator(".ap-top")).to_contain_text("Choice 1 of 2")
     expect(page.locator(".ap-card")).to_be_visible()
     # what is asked now carries the new revision

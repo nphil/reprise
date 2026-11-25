@@ -13,9 +13,9 @@ import io
 import itertools
 import json
 import re
+from urllib.parse import parse_qs, urlparse
 
 from playwright.sync_api import Page, Route
-from urllib.parse import parse_qs, urlparse
 
 from ._mocks import _fulfill_json
 
@@ -64,7 +64,9 @@ def default_spans() -> list[dict]:
         span("v201", "intro", "sure", 0, 32_000, reason=seen),
         span("v201", "credits", "sure", 1_250_000, DURATION, reason=seen),
         span("v202", "intro", "sure", 0, 33_500, reason=seen),
-        span("v203", "intro", "needs", 2_000, 34_000, "medium", "chapters", "The chapter list marks this as the intro."),
+        span(
+            "v203", "intro", "needs", 2_000, 34_000, "medium", "chapters", "The chapter list marks this as the intro."
+        ),
         span(
             "v203",
             "credits",
@@ -114,7 +116,9 @@ class ApprovalsApi:
         self.held: list[Route] = []
         self.plex = {"status": "read", "message": None}
         self._ids = itertools.count(1)
-        page.route(re.compile(r".*/api/reprise/(approvals|media/[^/?]+/(frame|strip|cuts|stream))(/|\?|$)"), self._handle)
+        page.route(
+            re.compile(r".*/api/reprise/(approvals|media/[^/?]+/(frame|strip|cuts|stream))(/|\?|$)"), self._handle
+        )
 
     # -- what the tests look at ---------------------------------------------------------------------------------
 
@@ -331,7 +335,9 @@ class ApprovalsApi:
             if scope == "sure":
                 approved.append({**entry, "span_ids": owner_ids})
             if to_plex and mid in self.send_fails:
-                failed.append({k: entry[k] for k in ("media_version_id", "episode", "label")} | {"reason": self.send_fails[mid]})
+                failed.append(
+                    {k: entry[k] for k in ("media_version_id", "episode", "label")} | {"reason": self.send_fails[mid]}
+                )
                 bucket = "ready"
             elif to_plex:
                 sent.append({**entry, "change_id": f"c{next(self._ids)}", "span_ids": owner_ids})
@@ -387,7 +393,13 @@ class ApprovalsApi:
             target["start_ms"], target["end_ms"] = target["first"]
             undo = {"decision": "skip"}
         self.revisions[mid] += 1
-        answer = {"media_version_id": mid, "kind": kind, "decision": decision, "revision": self.revisions[mid], "undo": undo}
+        answer = {
+            "media_version_id": mid,
+            "kind": kind,
+            "decision": decision,
+            "revision": self.revisions[mid],
+            "undo": undo,
+        }
         if decision == "skip":
             answer.update(start_ms=body["start_ms"], end_ms=body["end_ms"], span_id=owner_id)
         return 200, answer

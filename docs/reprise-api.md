@@ -108,6 +108,26 @@ Owner `POST /api/reprise/alerts/test` takes no body and sends one test message t
 
 Every change Reprise sends by itself is in the publication journal like any other and can be undone the same way; its change record has `actor: "reprise-auto"`.
 
+## Approvals (the To approve page)
+
+These owner-only routes back the **To approve** page (`/reprise/approve`). They carry out what the Library could already do, in one step per season. A client key gets `403`.
+
+`GET /api/reprise/approvals` lists everything waiting for the owner from Reprise's own database; Plex is not asked. It answers `{"shows": [...], "totals": {"sure", "needs", "ready", "seasons"}, "sending": {"available", "enabled", "message"}}`. Each show has `sure`, `needs`, `ready` and `seasons`; each season has `show`, `season`, `label`, `episodes`, `sure`, `needs`, `ready` and `kinds` (`{"intro", "credits"}`, the split of `sure`). `sure` counts the High-confidence suggestions of the local vision check, exactly the ones `POST /api/reprise/approve-local-model` approves. `needs` counts the other suggestions that would change Plex. Both count skips. `ready` counts episodes whose approved skips Plex does not have yet. `sending` says whether Reprise can write to Plex and whether the owner turned sending on.
+
+`GET /api/reprise/approvals/season?show=<title>&season=<n>` answers for one season, set against what Plex has now: `{"show", "season", "label", "sure": [...], "needs": [...], "ready": [...], "plex": {"status", "message"}, "changes": {"sure": {"lines", "counts"}, "ready": {"lines", "counts"}}, "sending"}`. Each `sure` or `needs` item has `media_version_id`, `how_sure` (`high`, `medium`, `low`, `confirmed` or null), `reason`, `revision` and `change` (`new`, `same`, `moved` or `unknown`, set against Plex's own marker). `plex.status` says whether Plex could be read; a Plex that cannot be read is reported there, not as an error. `changes.*.lines` are plain sentences such as "Intro skip is added on 2 episodes where Plex has none."
+
+`POST /api/reprise/approvals/send` takes `{"show", "season", "scope", "to_plex"}`. `scope` is `sure` (approve this season's sure ones as the owner's own exact skips, then send them) or `approved` (send what the owner approved earlier). `to_plex` defaults to `true`; with `false` it only approves. `scope: "approved"` with `to_plex: false`, or `to_plex: true` while sending is off, is `400` with a plain sentence. Plex is backed up before anything is written, each episode goes through the ordinary publication checks, and one episode that fails does not stop the others. It answers `{"show", "season", "scope", "approved", "sent", "failed", "stopped", "backup"}`: `approved` and `sent` list episodes with `media_version_id`, `label` and `span_ids` (`sent` also has `change_id`, the publication-journal record), `failed` gives a plain `reason` per episode, and `stopped` is one sentence when the run ended early.
+
+`POST /api/reprise/approvals/undo` takes `{"changes": [{"media_version_id", "change_id", "span_ids", "label"}]}` (1 to 500 entries, as `send` returned them; `change_id` is null for an approval that was never sent). It puts Plex back as it was for each `change_id`, through the publication journal's own undo, and takes back the approvals in `span_ids`. It answers `{"restored": [{"media_version_id", "label", "withdrawn"}], "failed": [...]}`.
+
+`POST /api/reprise/approvals/decide` takes `{"media_version_id", "expected_revision", "kind", "decision"}` and, optionally, `start_ms` and `end_ms` (a moved time), `span_id` and `range_ids`. `decision` is `skip`, `keep` or `restore`. `expected_revision` is the revision the page last read: a stale one is `409` (`{"error": "Conflict; refresh and try again"}`) and nothing is written. Every answer carries `revision` and an `undo` body that, sent back with `decision: "restore"`, takes the answer back.
+
+The pictures the page shows are made by FFmpeg from the file itself, so they work for a format the browser cannot play. They are made a couple at a time, cached, and sent with `Cache-Control: private, max-age=300`. A file FFmpeg cannot read is `502` with a plain `error`.
+
+- `GET /api/reprise/media/<id>/frame?t_ms=<ms>&w=<px>` is one JPEG still. `w` is one of 120, 160, 240, 320, 480, 640 or 960 (default 480).
+- `GET /api/reprise/media/<id>/strip?start_ms=<ms>&step_ms=<ms>&count=<n>&w=<px>` is `count` stills `step_ms` apart as one JPEG row (default width 160).
+- `GET /api/reprise/media/<id>/cuts?start_ms=<ms>&end_ms=<ms>` answers `{"cuts": [<ms>, ...]}`, the times in that stretch where the picture jumps to a different shot, ascending. The page uses it to snap a moved edge to the nearest cut.
+
 ## Reanalysis and job controls
 
 Recurrence references must be actively registered in the Reprise store and belong to a different, numbered Plex episode on the same Plex machine, in the same known show and season. Alternate files or audio bindings of the same episode do not count, even if they have a different rating key. Missing, ambiguous, conflicting or changed binding metadata cannot establish an independent reference and is rejected rather than guessed. Without an admissible reference, recurrence cannot support a skip proposal; review and publication remain separate steps.

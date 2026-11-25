@@ -174,7 +174,7 @@
 }
 .lu-btn.lu-primary:focus-visible { background-color: var(--lu-accent-fill); background-image: var(--lu-sheen); color: var(--lu-accent-fill-ink); }
 /* The shell draws a 3px outline on every :focus-visible (body.rp-app :focus-visible); inside Lucent the raised glass above is the only focus look. */
-.lu-root :is(.lu-btn, .lu-chip, .lu-iconbtn, .lu-linkbtn, .lu-seg button, .lu-tile, .lu-switch, .lu-clip-play, .lu-strip-seek, .lu-thm-tile):focus-visible { outline: none; }
+.lu-root :is(.lu-btn, .lu-chip, .lu-iconbtn, .lu-linkbtn, .lu-seg button, .lu-tile, .lu-switch, .lu-clip-play, .lu-strip-seek, .lu-thm-tile, .lu-field input):focus-visible { outline: none; }
 .lu-root .lu-thm-tile:focus-visible { background-color: var(--lu-glass-raised); border-color: var(--lu-edge-raised); box-shadow: var(--lu-shadow-pressed), 0 0 0 2px var(--lu-accent-text); }
 .lu-chip {
   position: relative; display: inline-flex; align-items: center; gap: var(--lu-space-2); height: var(--h-chip);
@@ -199,10 +199,12 @@
 .lu-badge.lu-bad { background: color-mix(in srgb, var(--lu-danger) 16%, transparent); color: var(--lu-danger-text); }
 .lu-badge.lu-inf { background: color-mix(in srgb, var(--lu-info) 18%, transparent); color: var(--lu-info-text); }
 .lu-badge .bi { font-size: 14px; line-height: 1; }
+/* Bootstrap paints a bare <kbd> as a light block with dark text, so the chip sets its own fill and resets the rest. */
 .lu-kbd {
-  display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 8px;
-  border: 1px solid var(--lu-edge-raised); color: var(--lu-ink-2); font: 600 11px/1 var(--lu-font);
+  display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 6px; margin: 0; border-radius: 8px;
+  border: 1px solid var(--lu-edge-raised); background: transparent; box-shadow: none; color: var(--lu-ink-2); font: 600 11px/1 var(--lu-font);
 }
+.lu-btn.lu-primary .lu-kbd { color: var(--lu-accent-fill-ink); border-color: color-mix(in srgb, currentColor 45%, transparent); }
 @media (hover: none) { .lu-kbd { display: none; } }
 .lu-seg {
   display: inline-flex; gap: 2px; padding: var(--lu-space-1); border-radius: var(--lu-radius-pill);
@@ -363,7 +365,10 @@
 }
 .lu-thm-tile:hover { background-image: linear-gradient(var(--lu-hover-wash), var(--lu-hover-wash)); }
 .lu-thm-tile[aria-checked="true"] { background: var(--lu-selected-wash); border-color: var(--lu-edge-raised); }
-.lu-thm-name { padding: 0 18px 0 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 var(--lu-type-caption)/1.25 var(--lu-font); }
+.lu-thm-name {
+  padding: 0 18px 0 2px; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2;
+  overflow-wrap: anywhere; font: 600 var(--lu-type-caption)/1.25 var(--lu-font);
+}
 .lu-thm-chk { position: absolute; right: var(--lu-space-3); bottom: var(--lu-space-2); display: grid; place-items: center; color: var(--lu-accent-text); }
 /* The swatch carries its own data-theme, so every colour below is that palette's, not the current theme's. */
 .lu-thm-prev { position: relative; display: block; aspect-ratio: 16 / 10; border-radius: var(--lu-radius-row); background: var(--pal-canvas); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pal-ink) 22%, transparent); overflow: hidden; }
