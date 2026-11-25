@@ -25,7 +25,7 @@ class FakeAutopilot:
     """The contract the settings page relies on."""
 
     def __init__(self):
-        self.values = {"auto_send": False, "backfill": True, "alerts": False}
+        self.values = {"auto_send": False, "backfill": True, "alerts": False, "auto_send_endings": False}
         self.updates = []
         self.test_alerts = 0
 
@@ -70,7 +70,13 @@ def test_get_includes_the_switches_and_the_status(env):
     client, _service, _online = env
     answer = client.get("/api/reprise/settings")
     assert answer.status_code == 200
-    assert answer.json["autopilot"] == {"auto_send": False, "backfill": True, "alerts": False, "status": STATUS}
+    assert answer.json["autopilot"] == {
+        "auto_send": False,
+        "backfill": True,
+        "alerts": False,
+        "auto_send_endings": False,
+        "status": STATUS,
+    }
 
 
 def test_get_without_an_autopilot_says_null(env):
@@ -83,13 +89,25 @@ def test_get_without_an_autopilot_says_null(env):
     assert client.get("/api/reprise/settings").json["autopilot"] is None
 
 
-@pytest.mark.parametrize("key", ["auto_send", "backfill", "alerts"])
+@pytest.mark.parametrize("key", ["auto_send", "backfill", "alerts", "auto_send_endings"])
 def test_each_switch_reaches_the_autopilot_alone(env, key):
     client, service, _online = env
     answer = client.patch("/api/reprise/settings", json={key: True})
     assert answer.status_code == 200
     assert service.autopilot.updates == [{key: True}]
     assert answer.json["autopilot"][key] is True
+
+
+def test_the_intro_switch_is_an_unknown_key_until_intros_are_safe(env, monkeypatch):
+    client, service, _online = env
+    answer = client.patch("/api/reprise/settings", json={"auto_send_intros": True})
+    assert answer.status_code == 400
+    assert service.autopilot.updates == []
+    assert "auto_send_intros" not in client.get("/api/reprise/settings").json["autopilot"]
+    monkeypatch.setattr("media_preview_generator.reprise.autosend.INTRO_AUTOSEND_SAFE", True)
+    service.autopilot.values["auto_send_intros"] = False
+    assert client.patch("/api/reprise/settings", json={"auto_send_intros": True}).status_code == 200
+    assert service.autopilot.updates == [{"auto_send_intros": True}]
 
 
 def test_several_switches_are_applied_together(env):
@@ -126,7 +144,7 @@ def test_an_unknown_key_is_still_refused(env):
 def test_the_new_switches_without_an_autopilot_get_a_plain_answer(env):
     client, service, online = env
     service.autopilot = None
-    for key in ("auto_send", "backfill", "alerts"):
+    for key in ("auto_send", "backfill", "alerts", "auto_send_endings"):
         answer = client.patch("/api/reprise/settings", json={key: True})
         assert answer.status_code == 400
         assert answer.json == {"error": NOT_AVAILABLE}

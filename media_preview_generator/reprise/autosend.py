@@ -29,7 +29,7 @@ from loguru import logger
 from ..markers.publishers import plex_db
 from ..shutdown import is_shutting_down
 from . import plexbackup
-from .models import is_owner_span
+from .models import ORIGIN_OWNER, REASON_OWNER_SPAN, DecisionRange, ReviewRefused, is_owner_span
 from .policy import eligible_ranges
 from .publishing import AUTO_ACTOR
 from .review import plex_projection
@@ -53,12 +53,18 @@ REFUSED_KEY = "plex_refused"
 BACKUP_KEY = "backup_failed"
 UNCERTAIN_KEY = "plex_uncertain"  # followed by the episode: each such change is reported once and never "fixed"
 
-_ATTEMPTS = (
-    "CREATE TABLE IF NOT EXISTS reprise_autopilot_attempts ("
-    "version_id TEXT NOT NULL, revision INTEGER NOT NULL, outcome TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', "
-    "range_ids TEXT NOT NULL DEFAULT '[]', change_id TEXT, at REAL NOT NULL, retry_after REAL, "
-    "tries INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (version_id, revision))"
-)
+
+def _attempts_ddl(table):
+    return (
+        f"CREATE TABLE IF NOT EXISTS {table} ("
+        "version_id TEXT NOT NULL, revision INTEGER NOT NULL, outcome TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', "
+        "range_ids TEXT NOT NULL DEFAULT '[]', change_id TEXT, at REAL NOT NULL, retry_after REAL, "
+        "tries INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (version_id, revision))"
+    )
+
+
+_ATTEMPTS_TABLE = "reprise_autopilot_attempts"
+_LOCAL_ATTEMPTS_TABLE = "reprise_autopilot_local_attempts"
 
 
 def _is_sure(item, decided):
@@ -129,6 +135,8 @@ def _sentence(exc):
 class AutoSender:
     """Looks at the episodes whose analysis changed and sends the sure ones, one at a time."""
 
+    TABLE = _ATTEMPTS_TABLE  # where this sender writes down what it decided (a fixed name, never request data)
+
     def __init__(self, service, concerns, state, *, config_dir, enabled=lambda: True, clock=time.time, backup=None):
         self.service, self.concerns, self.state = service, concerns, state
         self.config_dir = config_dir
@@ -137,7 +145,7 @@ class AutoSender:
         self._backup = backup or plexbackup.ensure_daily_backup
         self._backup_retry_at, self._backup_error = 0.0, ""
         with service.store.transaction() as conn:
-            conn.execute(_ATTEMPTS)
+            conn.execute(_attempts_ddl(self.TABLE))
 
     # ── whether it may send at all ────────────────────────────────────────────────────────────────────────────────
 
@@ -192,7 +200,7 @@ class AutoSender:
         with self.service.store.marker_store._reading() as conn:
             rows = conn.execute(
                 "SELECT r.version_id AS version_id, r.revision AS revision FROM reprise_decision_results r "
-                "LEFT JOIN reprise_autopilot_attempts a ON a.version_id=r.version_id AND a.revision=r.revision "
+                f"LEFT JOIN {self.TABLE} a ON a.version_id=r.version_id AND a.revision=r.revision "
                 "WHERE r.status='complete' AND r.policy_version=? "
                 "AND (a.version_id IS NULL OR (a.outcome IN ('retry','failed') AND a.retry_after<=?)) "
                 "AND EXISTS (SELECT 1 FROM reprise_bindings b WHERE b.version_id=r.version_id AND b.active=1) "
@@ -206,6 +214,15 @@ class AutoSender:
     def _consider(self, version_id, revision, now):
         """Decide about one episode and send it when it is sure. Returns ``sent``, ``declined``, ``retry``, ``failed``
         or ``waiting`` (nothing could be decided now; nothing was recorded)."""
+        vetted = self._vet(version_id, revision, now)
+        if isinstance(vetted, str):
+            return vetted
+        result, bindings, meta = vetted
+        return self._decide(version_id, revision, result, bindings, meta, now)
+
+    def _vet(self, version_id, revision, now):
+        """``(result, bindings, meta)`` of an episode that may be looked at, or the outcome (already recorded) of why
+        it may not: a film, a special, an analysis that is not current, an episode already sent, undone or unfinished."""
         service, store, publisher = self.service, self.service.store, self.service.publisher
         result = store.get_result(version_id)
         if result is None or result.result_revision != revision:
@@ -228,6 +245,11 @@ class AutoSender:
         held = publisher.automatic_hold(version_id)
         if held:
             return self._decline(version_id, revision, held, now)
+        return result, bindings, meta
+
+    def _decide(self, version_id, revision, result, bindings, meta, now):
+        """The sure matches of one vetted episode, sent when Plex can take them exactly as they were found."""
+        store = self.service.store
         runs, notes = sure_runs(result, store.owner_decided_ids(version_id), store.owner_keep_ranges(version_id))
         if not runs:
             return self._decline(
@@ -236,10 +258,14 @@ class AutoSender:
                 " ".join(notes) or "Nothing in it is confirmed for sure by picture and sound.",
                 now,
             )
+        return self._dispatch(version_id, revision, result, bindings, meta, runs, now)
+
+    def _dispatch(self, version_id, revision, result, bindings, meta, runs, now):
+        """Send ``runs`` (``{kind: pieces}``) when Plex can take them exactly and today's backup exists."""
         kinds, why = self._projectable(result, bindings, runs)
         if not kinds:
             return self._decline(version_id, revision, why, now)
-        cfg = service.registry.get_config(bindings[0][1])
+        cfg = self.service.registry.get_config(bindings[0][1])
         database = plex_db.PlexMarkerPublisher.db_path_for(cfg) if cfg else None
         if not database:
             return self._decline(version_id, revision, "Reprise can't see Plex's database folder.", now)
@@ -313,15 +339,27 @@ class AutoSender:
     # ── the write ─────────────────────────────────────────────────────────────────────────────────────────────────
 
     def _send(self, version_id, revision, identity, label, kinds, pieces, now):
-        store, publisher = self.service.store, self.service.publisher
-        ids = [piece.id for piece in pieces]
         # Written first, so a restart in the middle of the steps below can find what was approved and take it back.
         earlier = self._attempt(version_id, revision)
-        self._record(version_id, revision, "working", now=now, tries=earlier["tries"] if earlier else 0, range_ids=ids)
+        tries = earlier["tries"] if earlier else 0
+        self._record(version_id, revision, "working", now=now, tries=tries, range_ids=[p.id for p in pieces])
         try:
-            new_revision = store.auto_approve(version_id, revision, ids).result_revision
+            ids, new_revision = self._approve(version_id, revision, pieces, now)
+        except ReviewRefused as exc:
+            return self._decline(version_id, revision, f"It can't be sent: {_sentence(exc)}.", now)
         except (RevisionConflict, ValueError):
             return self._retry(version_id, revision, "It changed while Reprise was about to send it.", now, wait=60)
+        return self._publish(version_id, revision, new_revision, identity, label, kinds, ids, now)
+
+    def _approve(self, version_id, revision, pieces, now):
+        """Approve the confirmed pieces; ``(ids, the episode's revision afterwards)``."""
+        ids = [piece.id for piece in pieces]
+        return ids, self.service.store.auto_approve(version_id, revision, ids).result_revision
+
+    def _publish(self, version_id, revision, new_revision, identity, label, kinds, ids, now):
+        """Prepare and apply what was approved, the journal naming Reprise as the actor; put it all back when it does
+        not reach Plex."""
+        publisher = self.service.publisher
         try:
             change = publisher.prepare(version_id, new_revision, identity, AUTO_ACTOR)
         except Exception as exc:
@@ -405,7 +443,7 @@ class AutoSender:
         self._pause(now, PLEX_RETRY_S, "Waiting a few minutes: Plex could not be reached.")
         with self.service.store.transaction() as conn:
             conn.execute(
-                "DELETE FROM reprise_autopilot_attempts WHERE version_id=? AND revision=? AND outcome='working'",
+                f"DELETE FROM {self.TABLE} WHERE version_id=? AND revision=? AND outcome='working'",
                 (version_id, revision),
             )
         return "waiting"
@@ -433,7 +471,7 @@ class AutoSender:
     def _finish_interrupted(self, now):
         with self.service.store.marker_store._reading() as conn:
             rows = conn.execute(
-                "SELECT version_id,revision,range_ids FROM reprise_autopilot_attempts WHERE outcome='working'"
+                f"SELECT version_id,revision,range_ids FROM {self.TABLE} WHERE outcome='working'"
             ).fetchall()
         for row in rows:
             try:
@@ -468,7 +506,7 @@ class AutoSender:
     def _attempt(self, version_id, revision):
         with self.service.store.marker_store._reading() as conn:
             return conn.execute(
-                "SELECT outcome,tries FROM reprise_autopilot_attempts WHERE version_id=? AND revision=?",
+                f"SELECT outcome,tries FROM {self.TABLE} WHERE version_id=? AND revision=?",
                 (version_id, revision),
             ).fetchone()
 
@@ -477,7 +515,7 @@ class AutoSender:
     ):
         with self.service.store.transaction() as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO reprise_autopilot_attempts VALUES (?,?,?,?,?,?,?,?,?)",
+                f"INSERT OR REPLACE INTO {self.TABLE} VALUES (?,?,?,?,?,?,?,?,?)",
                 (
                     version_id,
                     revision,
@@ -512,3 +550,184 @@ class AutoSender:
             else:
                 self._record(version_id, revision, "failed", detail, now=now, wait=FAILED_RETRY_S, tries=tries)
         return "declined" if final else "failed"
+
+
+# ── the local vision model's high-confidence skips ───────────────────────────────────────────────────────────────
+
+# Whether the intro switch ("Send high-confidence intros to Plex automatically") is offered at all. It stays False until
+# the local model's intros have been graded and none was unsafe; while False no intro is ever sent from the model.
+INTRO_AUTOSEND_SAFE = False
+
+LOCAL_FAILED_KEY = "local_send_failed"  # followed by the episode
+
+
+def local_runs(result, kinds, decided):
+    """What Reprise may send by itself from the local vision model's High-confidence suggestions in one result, as
+    ``({kind: [pick]}, notes)``; ``decided`` is the set of range ids that are the owner's.
+
+    Only the proposed skips the model alone suggested and rated High (``service._confident_local``) of the offered
+    ``kinds``, one per kind. Nothing at all when the owner already approved anything (a send would carry it along).
+    A kind is left alone when the owner set, took back or turned down a skip for it, or when anything the analysis or
+    the owner keeps or locked overlaps the pick; ``notes`` say why, in plain words."""
+    from .service import _confident_local
+
+    if any(r.action == "skip" and r.review_status == "approved" for r in result.ranges):
+        return {}, ["You already approved something in it, so sending it is up to you."]
+    confident = _confident_local(result.ranges, result.evidence)
+    picks, notes = {}, []
+    for kind in kinds:
+        found = [r for r in confident if r.kind == kind]
+        if not found:
+            continue
+        if any(is_owner_span(r) and r.kind == kind for r in result.ranges):
+            notes.append(f"You set or took back the {kind} skip yourself, so it is up to you.")
+        elif any(r.action == "skip" and r.kind == kind and r.review_status == "rejected" for r in result.ranges):
+            notes.append(f"You turned down the {kind}, so it is left alone.")
+        elif len(found) != 1:
+            notes.append(f"The local model gave more than one {kind}, so it needs your approval.")
+        elif any(
+            (r.action == "keep" or r.locked or r.id in decided) and _meets(r.start_ms, r.end_ms, *_span(found[0]))
+            for r in result.ranges
+        ):
+            notes.append(f"Something is kept, locked or decided inside the {kind}, so it needs your approval.")
+        else:
+            picks[kind] = found
+    return picks, notes
+
+
+def _span(item):
+    return item.start_ms, item.end_ms
+
+
+class LocalModelSender(AutoSender):
+    """Sends the local vision model's High-confidence endings (and, once offered, intros) to Plex by itself.
+
+    Each pick is first made the owner's own exact skip, through the same review the owner's "approve the confident
+    ones" uses but with Reprise (``AUTO_ACTOR``) as the actor, and then published like any other automatic change, so
+    the journal, the hold on a second automatic send and the report's Undo all recognise it. A pass that goes wrong
+    after that takes the skip away again and tells the owner. It shares the pause, backup and refusal rules of the
+    sender of sure matches, and keeps its own record of what it decided (it looks at results that sender already
+    declined)."""
+
+    TABLE = _LOCAL_ATTEMPTS_TABLE
+
+    def __init__(self, service, concerns, state, *, config_dir, kinds, clock=time.time, backup=None):
+        self._kinds = kinds
+        self._alerted = False
+        super().__init__(
+            service,
+            concerns,
+            state,
+            config_dir=config_dir,
+            enabled=lambda: bool(self._offered()),
+            clock=clock,
+            backup=backup,
+        )
+
+    def _offered(self):
+        """The kinds that may be sent now: what the owner switched on, and never an intro while those are not safe."""
+        return tuple(kind for kind in self._kinds() if kind == "credits" or INTRO_AUTOSEND_SAFE)
+
+    def _decide(self, version_id, revision, result, bindings, meta, now):
+        picks, notes = local_runs(result, self._offered(), self.service.store.owner_decided_ids(version_id))
+        if not picks:
+            return self._decline(
+                version_id,
+                revision,
+                " ".join(notes) or "The local vision model has no high-confidence skip for it.",
+                now,
+            )
+        tracks = tuple(sorted({identity.audio_stream_id for identity, _server, _meta in bindings}))
+        runs = {
+            kind: [
+                DecisionRange(
+                    f"auto-{kind}",
+                    kind,
+                    "skip",
+                    pick[0].start_ms,
+                    pick[0].end_ms,
+                    "approved",
+                    True,
+                    ORIGIN_OWNER,
+                    REASON_OWNER_SPAN,
+                    "Set by you",
+                    (),
+                    tracks,
+                )
+            ]
+            for kind, pick in picks.items()
+        }
+        return self._dispatch(version_id, revision, result, bindings, meta, runs, now)
+
+    @staticmethod
+    def _shape(result, bindings, runs, kinds):
+        """The dry run with the exact skips these runs would become added to the result, as the publisher will see them."""
+        spans = tuple(span for kind in kinds for span in runs[kind])
+        AutoSender._shape(replace(result, ranges=(*result.ranges, *spans)), bindings, runs, kinds)
+
+    def _approve(self, version_id, revision, pieces, now):
+        from .approvals import _hold_edits
+
+        store = self.service.store
+        result = store.get_result(version_id)
+        if result is None or result.result_revision != revision:
+            raise RevisionConflict("result changed")
+        edits = list(_hold_edits(result.ranges).values())
+        edits += [
+            {
+                "range_id": None,
+                "kind": piece.kind,
+                "start_ms": piece.start_ms,
+                "end_ms": piece.end_ms,
+                "review_status": "approved",
+                "acknowledge_owner_span": True,
+            }
+            for piece in pieces
+        ]
+        saved = self.service.review(version_id, revision, edits, AUTO_ACTOR)
+        kinds = {piece.kind for piece in pieces}
+        ids = [r.id for r in saved.ranges if is_owner_span(r) and r.review_status == "approved" and r.kind in kinds]
+        earlier = self._attempt(version_id, revision)
+        self._record(version_id, revision, "working", now=now, tries=earlier["tries"] if earlier else 0, range_ids=ids)
+        return ids, saved.result_revision
+
+    def _take_back(self, version_id, revision, ids):
+        """Take away the exact skips this sender made, as if they had never been set. Returns the revision the episode is
+        at afterwards."""
+        try:
+            self.service.store.discard_owner_spans(version_id, revision, AUTO_ACTOR)
+        except RevisionConflict:
+            logger.info("Reprise left an automatic skip alone: the episode was changed by hand since")
+        except Exception:
+            logger.opt(exception=True).warning("Reprise could not take back an automatic skip")
+        result = self.service.store.get_result(version_id)
+        return result.result_revision if result else revision
+
+    def _refused(self, label, now):
+        self._alerted = True  # Plex's refusal is already told to the owner in its own words
+        super()._refused(label, now)
+
+    def _fail(self, version_id, revisions, detail, now):
+        outcome = super()._fail(version_id, revisions, detail, now)
+        told, self._alerted = self._alerted, False
+        if not told:
+            bindings = self.service._bindings(version_id)
+            label = label_of(bindings[0][2]) if bindings else "an episode"
+            later = (
+                "It will not try again: the skip waits for you in To approve."
+                if outcome == "declined"
+                else "It will try again later."
+            )
+            self.concerns.raise_problem(
+                f"{LOCAL_FAILED_KEY}:{version_id}",
+                "An automatic send did not work",
+                f"Reprise tried to send a skip to Plex by itself for {label}, but it did not work: {detail} "
+                f"It put everything back the way it was, so nothing changed in Plex. {later}",
+            )
+        return outcome
+
+    def _sent(self, version_id, revision, new_revision, change_id, ids, now):
+        super()._sent(version_id, revision, new_revision, change_id, ids, now)
+        bindings = self.service._bindings(version_id)
+        label = label_of(bindings[0][2]) if bindings else "an episode"
+        self.concerns.resolve(f"{LOCAL_FAILED_KEY}:{version_id}", f"The skip for {label} was sent to Plex after all.")

@@ -21,6 +21,7 @@ Films are not here: the comparisons, the local model's grading and the sender al
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import statistics
 from collections import defaultdict
@@ -30,6 +31,7 @@ from loguru import logger
 from ..markers.publishers import plex_db
 from . import plexbackup
 from .models import ORIGIN_PLEX, SUGGESTION_ORIGINS, NothingToPublish, ReviewRefused, is_owner_span
+from .publishing import AUTO_ACTOR
 from .report import PLEX_BATCH, TOLERANCE_MS, _hidden_kinds, _pick_show, read_plex_markers
 
 OWNER = "owner"
@@ -801,3 +803,56 @@ def _undo_reason(exc):
     if _transient(exc):
         return "Plex could not be reached."
     return f"It could not be put back: {_sentence(exc)}."
+
+
+# ── what Reprise sent by itself ──────────────────────────────────────────────────────────────────────────────────
+
+
+def recent_automatic(service, *, since=None, limit=50):
+    """What Reprise sent to Plex by itself that is still in Plex, newest first: ``[entry]`` for each applied change the
+    journal names Reprise as the actor of (a later undo takes it out of the list). ``since`` is the earliest ``sent_at``
+    (seconds since 1970), ``limit`` the most entries. An entry is ``{"change_id", "media_version_id", "show", "season",
+    "episode", "label", "kinds", "sent_at", "span_ids", "origin"}``. ``span_ids`` are the exact skips to withdraw when
+    the change is undone (what ``undo`` takes along with ``change_id``): the ones Reprise set from the local model's
+    suggestions (``origin`` ``local_model``), none for a skip the detector confirmed (``origin`` ``sure``)."""
+    if service.publisher is None:
+        return []
+    sql = (
+        "SELECT id,media_version_id,updated_at,json_extract(payload,'$.projection') AS projection,"
+        "json_extract(payload,'$.canonical') AS canonical FROM reprise_publication_changes "
+        "WHERE state='applied' AND actor=?"
+    )
+    args = [AUTO_ACTOR]
+    if since is not None:
+        sql += " AND updated_at>=?"
+        args.append(since)
+    with service.store.marker_store._reading() as conn:
+        rows = conn.execute(sql + " ORDER BY updated_at DESC,rowid DESC LIMIT ?", (*args, limit)).fetchall()
+    found = []
+    for row in rows:
+        version_id = row["media_version_id"]
+        kinds = {kind for kind, _start, _end in json.loads(row["projection"] or "[]")}
+        entry = next((e for e in json.loads(row["canonical"] or "[]") if e["version"]["id"] == version_id), None)
+        spans = [
+            r["id"]
+            for r in (entry["result"]["ranges"] if entry else ())
+            if r["origin"] == "owner" and r["action"] == "skip" and r["review_status"] == "approved"
+            if r["kind"] in kinds
+        ]
+        bindings = service._bindings(version_id)
+        meta = bindings[0][2] if bindings else {}
+        found.append(
+            {
+                "change_id": row["id"],
+                "media_version_id": version_id,
+                "show": meta.get("show_title"),
+                "season": meta.get("season"),
+                "episode": meta.get("episode"),
+                "label": episode_label(meta),
+                "kinds": [kind for kind in KINDS if kind in kinds],
+                "sent_at": row["updated_at"],
+                "span_ids": spans,
+                "origin": "local_model" if spans else "sure",
+            }
+        )
+    return found

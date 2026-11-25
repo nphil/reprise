@@ -30,6 +30,11 @@
       <p class="rp-note" id="rpAutoSendNote" hidden></p>
     </div>
     <div class="rp-auto-row">
+      <div class="form-check form-switch rp-switch"><input class="form-check-input" id="rpAutoSendEndings" type="checkbox" role="switch" aria-describedby="rpAutoSendEndingsHelp"><label class="form-check-label" for="rpAutoSendEndings">Send high-confidence endings to Plex automatically</label></div>
+      <p class="rp-note" id="rpAutoSendEndingsHelp">When the local vision model is very sure where the end credits start, Reprise sends that skip to Plex itself. Needs “Allow sending to Plex” above. Only episodes, never films, and never over anything you set or protected. Every automatic change can be undone, and you can see what was sent on the To approve page.</p>
+    </div>
+    <div id="rpAutoIntroSlot"></div>
+    <div class="rp-auto-row">
       <div class="form-check form-switch rp-switch"><input class="form-check-input" id="rpBackfill" type="checkbox" role="switch" aria-describedby="rpBackfillHelp"><label class="form-check-label" for="rpBackfill">Work through the rest of the library quietly</label></div>
       <p class="rp-note" id="rpBackfillHelp">Reprise slowly analyzes episodes it has not looked at yet, most-watched shows first. New files always go first.</p>
     </div>

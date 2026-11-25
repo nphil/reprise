@@ -42,6 +42,8 @@ from media_preview_generator.reprise.autopilot import (
     RECONCILE_EVERY_S,
     SETTING_ALERTS,
     SETTING_AUTO_SEND,
+    SETTING_AUTO_SEND_ENDINGS,
+    SETTING_AUTO_SEND_INTROS,
     SETTING_BACKFILL,
     Autopilot,
     backfill_order,
@@ -931,19 +933,43 @@ def test_new_imports_go_ahead_of_the_backfill(env):
 # ── the switches ──────────────────────────────────────────────────────────────────────────────────────────────────
 
 
-def test_all_three_switches_are_on_until_the_owner_turns_one_off(env):
-    assert env.autopilot.settings() == {"auto_send": True, "backfill": True, "alerts": True}
+THREE_ON = {"auto_send": True, "backfill": True, "alerts": True}
+
+
+def test_three_switches_are_on_and_the_endings_switch_off_until_the_owner_changes_them(env):
+    assert env.autopilot.settings() == {**THREE_ON, "auto_send_endings": False}
 
 
 def test_changed_switches_are_saved_and_survive_a_restart(env, settings):
-    assert env.autopilot.update_settings({"auto_send": False, "alerts": False}) == {
+    assert env.autopilot.update_settings({"auto_send": False, "alerts": False, "auto_send_endings": True}) == {
         "auto_send": False,
         "backfill": True,
         "alerts": False,
+        "auto_send_endings": True,
     }
     saved = SettingsManager(env.dir)  # a fresh read of the saved file, as after a restart
     assert saved.get(SETTING_AUTO_SEND) is False and saved.get(SETTING_ALERTS) is False
+    assert saved.get(SETTING_AUTO_SEND_ENDINGS) is True
     assert saved.get(SETTING_BACKFILL, True) is True
+
+
+def test_the_intro_switch_is_not_offered_while_intros_are_not_safe(env, settings):
+    assert "auto_send_intros" not in env.autopilot.settings()
+    with pytest.raises(ValueError, match="Choose on or off"):
+        env.autopilot.update_settings({"auto_send_intros": True})
+    assert settings.get(SETTING_AUTO_SEND_INTROS) is None
+    settings.set(SETTING_AUTO_SEND_INTROS, True)  # even a stored "on" is inert: no intro is ever a sender's kind
+    assert env.autopilot._local_kinds() == ()
+
+
+def test_the_intro_switch_is_offered_off_and_live_once_intros_are_safe(env, settings, monkeypatch):
+    monkeypatch.setattr("media_preview_generator.reprise.autosend.INTRO_AUTOSEND_SAFE", True)
+    assert env.autopilot.settings() == {**THREE_ON, "auto_send_endings": False, "auto_send_intros": False}
+    assert env.autopilot._local_kinds() == ()
+    assert env.autopilot.update_settings({"auto_send_intros": True})["auto_send_intros"] is True
+    assert env.autopilot._local_kinds() == ("intro",)
+    env.autopilot.update_settings({"auto_send_endings": True})
+    assert env.autopilot._local_kinds() == ("credits", "intro")
 
 
 @pytest.mark.parametrize(
@@ -974,7 +1000,7 @@ def test_changed_switches_are_saved_and_survive_a_restart(env, settings):
 def test_a_change_that_is_not_plain_on_or_off_is_refused_and_saves_nothing(env, settings, values):
     with pytest.raises(ValueError, match="Choose on or off"):
         env.autopilot.update_settings(values)
-    assert env.autopilot.settings() == {"auto_send": True, "backfill": True, "alerts": True}
+    assert env.autopilot.settings() == {**THREE_ON, "auto_send_endings": False}
 
 
 def test_switches_cannot_be_saved_when_the_app_has_no_settings(env):

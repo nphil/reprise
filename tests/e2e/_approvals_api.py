@@ -42,6 +42,23 @@ SENDING = {
 }
 
 
+def automatic_entry(mid: str, n: int, *, kinds=("credits",), sent_at: int = 1_700_000_000, span_ids=None) -> dict:
+    """One row of ``GET /approvals/automatic`` for episode ``mid``."""
+    show, season, number, _title = EPISODES[mid]
+    return {
+        "change_id": f"auto-{n}",
+        "media_version_id": mid,
+        "show": show,
+        "season": season,
+        "episode": number,
+        "label": f"S{season:02d}E{number:02d}",
+        "kinds": list(kinds),
+        "sent_at": sent_at,
+        "span_ids": [f"owner-{mid}-{k}" for k in kinds] if span_ids is None else span_ids,
+        "origin": "local_model",
+    }
+
+
 def span(mid, kind, bucket, start, end, how_sure="high", source="Reprise", reason="", plex=None) -> dict:
     """One skip Reprise found: ``bucket`` is sure / needs (to look at) / ready (approved, not sent) / sent / kept."""
     return {
@@ -103,8 +120,17 @@ class ApprovalsApi:
     """The approvals API as the To approve page sees it. ``calls`` lists every request, ``posts(path)`` the bodies sent
     to one endpoint; ``fail[(method, path)] = (status, body)`` makes the next such request fail once."""
 
-    def __init__(self, page: Page, *, sending: str = "on", spans: list[dict] | None = None, cuts=None) -> None:
+    def __init__(
+        self,
+        page: Page,
+        *,
+        sending: str = "on",
+        spans: list[dict] | None = None,
+        cuts=None,
+        automatic: list[dict] | None = None,
+    ) -> None:
         self.sending = sending
+        self.automatic = list(automatic or [])  # what Reprise sent by itself: ``GET /approvals/automatic``
         self.spans = spans if spans is not None else default_spans()
         self.cuts = [31_000, 32_000, 33_000] if cuts is None else list(cuts)
         self.revisions = dict.fromkeys(EPISODES, 1)
@@ -154,6 +180,8 @@ class ApprovalsApi:
             return _fulfill_json(route, self.queue())
         if path == "/approvals/season":
             return _fulfill_json(route, self.season(query["show"], int(query["season"])))
+        if path == "/approvals/automatic":
+            return _fulfill_json(route, {"sent": self.automatic})
         if path == "/approvals/send":
             status, answer = self.send(body)
         elif path == "/approvals/undo":
@@ -363,6 +391,7 @@ class ApprovalsApi:
         restored, failed = [], []
         for change in reversed(body["changes"]):
             mid, label = change["media_version_id"], change.get("label") or "an episode"
+            self.automatic = [a for a in self.automatic if a["change_id"] != change.get("change_id")]
             if mid in self.undo_fails:
                 failed.append({"media_version_id": mid, "label": label, "reason": self.undo_fails[mid]})
                 continue

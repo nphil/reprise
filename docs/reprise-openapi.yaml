@@ -176,11 +176,11 @@ paths:
           description: Publication availability, write status and what decodes analysed video (a verified GPU, or the CPU)
           content: {application/json: {schema: {type: object, required: [publication_available, writes_enabled, acceleration, online_lookups, autopilot], properties: {publication_available: {type: boolean}, writes_enabled: {type: boolean}, acceleration: {$ref: '#/components/schemas/Acceleration'}, online_lookups: {type: boolean, description: "The owner's switch for asking public intro and credits databases (IntroDB, SkipDB, and TheIntroDB when it has a key) where an episode's intro and credits are. On unless explicitly turned off."}, autopilot: {$ref: '#/components/schemas/Autopilot'}}}}}
     patch:
-      summary: Change a setting - Plex writes (disabled by default), GPU decoding (on by default), online intro and credits lookups (on by default) and/or the three automatic-work switches auto_send, backfill and alerts (all on by default); send any of them
+      summary: Change a setting - Plex writes (disabled by default), GPU decoding (on by default), online intro and credits lookups (on by default) and/or the automatic-work switches auto_send, backfill and alerts (on by default), auto_send_endings (off by default) and auto_send_intros (off, and only accepted while the server offers it); send any of them
       security: [{owner: []}]
       requestBody:
         required: true
-        content: {application/json: {schema: {type: object, additionalProperties: false, minProperties: 1, properties: {writes_enabled: {type: boolean}, gpu_decode: {type: boolean}, online_lookups: {type: boolean}, auto_send: {type: boolean}, backfill: {type: boolean}, alerts: {type: boolean}}}}}
+        content: {application/json: {schema: {type: object, additionalProperties: false, minProperties: 1, properties: {writes_enabled: {type: boolean}, gpu_decode: {type: boolean}, online_lookups: {type: boolean}, auto_send: {type: boolean}, auto_send_endings: {type: boolean}, auto_send_intros: {type: boolean, description: Only while the server offers the intro switch; otherwise 400}, backfill: {type: boolean}, alerts: {type: boolean}}}}}
       responses:
         '200': {description: "Publication availability, write status, the active video decoder, online_lookups and autopilot, as in GET"}
         '400': {description: "Invalid request, or writes_enabled true was refused, or an automatic-work switch was sent while automatic mode could not start (nothing in the request is changed). A refusal body is {error: <plain sentence>} that names the owner's own folders, for example Sending to Plex needs Plex's database, and Reprise can't see it: ..."}
@@ -194,6 +194,18 @@ paths:
           description: "Whether the test message was delivered. The alert token is read at the moment of sending and is never returned or logged."
           content: {application/json: {schema: {type: object, required: [sent, message], properties: {sent: {type: boolean}, message: {type: string, description: One plain sentence for the owner}}}}}
         '400': {description: "Automatic mode could not start; the body is {error: <plain sentence>}"}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /api/reprise/approvals/automatic:
+    get:
+      summary: What Reprise sent to Plex by itself and is still there, newest first (owner only)
+      security: [{owner: []}]
+      parameters:
+        - {name: days, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 30, default: 7}}
+      responses:
+        '200':
+          description: "Each entry has what /api/reprise/approvals/undo needs (media_version_id, change_id, span_ids, label). An undone change is not listed."
+          content: {application/json: {schema: {type: object, required: [sent], properties: {sent: {type: array, items: {type: object, required: [change_id, media_version_id, show, season, episode, label, kinds, sent_at, span_ids, origin], properties: {change_id: {type: string}, media_version_id: {type: string}, show: {type: string, nullable: true}, season: {type: integer, nullable: true}, episode: {type: integer, nullable: true}, label: {type: string, example: S01E02}, kinds: {type: array, items: {type: string, enum: [intro, credits]}}, sent_at: {type: number, description: Seconds since 1970}, span_ids: {type: array, items: {type: string}, description: The skips an undo withdraws; empty for a detector-confirmed send}, origin: {type: string, enum: [sure, local_model]}}}}}}}}
+        '400': {description: "days is not a whole number from 1 to 30"}
         '403': {$ref: '#/components/responses/Forbidden'}
   /api/reprise/setup-guide:
     get:
@@ -346,6 +358,8 @@ components:
       required: [auto_send, backfill, alerts, status]
       properties:
         auto_send: {type: boolean, description: "Send sure matches to Plex automatically (default true). It does nothing unless writes_enabled is also on."}
+        auto_send_endings: {type: boolean, description: "Send the end credits the local vision model is very sure about (High confidence) to Plex automatically, as the owner's own exact skip, episodes only (default false). It does nothing unless writes_enabled is also on. Every change can be undone."}
+        auto_send_intros: {type: boolean, description: "The same for intros (default false). Present only while the server offers it; absent otherwise, and then a PATCH with it is 400."}
         backfill: {type: boolean, description: "Analyse the rest of the library gradually in the background (default true)."}
         alerts: {type: boolean, description: "Send phone alerts (default true)."}
         status:

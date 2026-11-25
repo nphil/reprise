@@ -2,6 +2,7 @@
 
 import mimetypes
 import re
+import time
 from dataclasses import asdict, is_dataclass
 from functools import wraps
 
@@ -9,6 +10,7 @@ from flask import Blueprint, Response, g, jsonify, request, stream_with_context
 from loguru import logger
 
 from ...reprise import acceleration, approvals
+from ...reprise import autopilot as automatic_work
 from ...reprise import setup_guide as guide
 from ...reprise.api_auth import DEFAULT_SCOPES, SCOPES, bearer_secret, require_client
 from ...reprise.models import AnalysisRefused, PlaybackIdentity, PublicationRefused, ReportRefused, ReviewRefused
@@ -372,6 +374,14 @@ def create_reprise_blueprint(service):
                 raise ValueError("Invalid request")
         return jsonify(_json(approvals.undo(service, changes)))
 
+    @bp.get("/api/reprise/approvals/automatic")
+    @owner
+    def approvals_automatic():
+        """What Reprise sent to Plex by itself (and is still there) in the last ``days`` days (1 to 30, default 7), newest
+        first, each with the ids its Undo needs."""
+        days = _query_int("days", 1, 30, default=7)
+        return jsonify(_json({"sent": approvals.recent_automatic(service, since=time.time() - days * 86400)}))
+
     @bp.post("/api/reprise/approvals/decide")
     @owner
     def approvals_decide():
@@ -568,15 +578,14 @@ def create_reprise_blueprint(service):
     def settings():
         autopilot = getattr(service, "autopilot", None)
         if request.method == "PATCH":
+            switches = tuple(automatic_work.offered())  # the intro switch only while it is offered
             data = _body(
                 {
                     "writes_enabled",
                     "gpu_decode",
                     "online_lookups",
                     "gpu_vram_cap_mb",
-                    "auto_send",
-                    "backfill",
-                    "alerts",
+                    *switches,
                     "local_vision",
                 }
             )
@@ -584,8 +593,8 @@ def create_reprise_blueprint(service):
             vision = data.pop("local_vision", None)
             asked_cap = "gpu_vram_cap_mb" in data
             cap = data.pop("gpu_vram_cap_mb", None)
-            # The three automatic-work switches go to the autopilot; only the keys that were sent.
-            automatic = {key: data.pop(key) for key in ("auto_send", "backfill", "alerts") if key in data}
+            # The automatic-work switches go to the autopilot; only the keys that were sent.
+            automatic = {key: data.pop(key) for key in switches if key in data}
             # The memory cap is a whole number of MiB inside the range the setting allows; the switches are booleans.
             low, high = acceleration.VRAM_CAP_RANGE_MB
             if not (data or asked_cap or automatic or asked_vision) or any(
