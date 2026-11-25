@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}To approve · Reprise{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ url_for('static', filename='css/reprise-lucent.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/pages/approve.css') }}">{% endblock %}
+{% block content %}
+{#- The first screen in the Lucent look (reprise-lucent.css). Everything between the two script tags below is drawn by
+    reprise-approve.js from /api/reprise/approvals; the clips and strips come from reprise-clip.js. -#}
+<div class="lu-root ap" id="apRoot" data-view="queue" data-sharing-url="{{ url_for('main.reprise_sharing_page') }}" data-library-url="{{ url_for('main.reprise_page') }}">
+  <div class="lu-page">
+    <header class="lu-head">
+      <div class="lu-col">
+        <h1 class="lu-page-title" id="apTitle" tabindex="-1">To approve</h1>
+        <p class="lu-sub" id="apSub">Looking for what is waiting…</p>
+      </div>
+      <div class="lu-thm"><button type="button" class="lu-iconbtn" id="apTheme" aria-label="Colour theme" title="Colour theme" aria-haspopup="dialog" aria-expanded="false"><i class="bi bi-palette" aria-hidden="true"></i></button></div>
+    </header>
+    <div id="apNotice" class="ap-notice"></div>
+    <section id="apQueue" class="ap-queue" aria-label="Seasons waiting for you" aria-busy="true"></section>
+    <section id="apReview" class="ap-review" aria-label="Review one by one" hidden></section>
+    <aside id="apSent" class="lu-tray ap-sent" aria-label="What you just did" hidden></aside>
+  </div>
+  <div class="lu-toasts" id="apToasts" role="status" aria-live="polite"></div>
+</div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='js/reprise-clip.js') }}" defer></script>
+<script src="{{ url_for('static', filename='js/reprise-approve.js') }}" defer></script>{% endblock %}

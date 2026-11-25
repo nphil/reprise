@@ -582,6 +582,14 @@ class ReprisePublisher:
         latest = self._latest_settled(media_version_ids)
         return {version: revision for version, (state, revision, _) in latest.items() if state == "applied"}
 
+    def settled_states(self, media_version_ids):
+        """``{media_version_id: (state, revision)}`` for each version's latest applied-or-undone change in the journal
+        ("applied" or "undone"), read once for a whole season."""
+        return {
+            version: (state, revision)
+            for version, (state, revision, _) in self._latest_settled(media_version_ids).items()
+        }
+
     def automatically_published(self, media_version_ids):
         """The versions among these whose latest settled change is an applied one Reprise made by itself."""
         latest = self._latest_settled(media_version_ids)

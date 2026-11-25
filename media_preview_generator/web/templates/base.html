@@ -11,17 +11,28 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Reprise{% endblock %}</title>
 
-    <!-- Apply saved theme before CSS loads to avoid a flash of the wrong
-         theme on page navigation.  Reads localStorage.theme ("dark" |
-         "light") and sets <html data-bs-theme> accordingly.  Dark is the
-         default for users who haven't chosen yet. -->
+    <!-- Apply the saved colour theme before CSS loads, so a page change never flashes the wrong one. reprise-theme.js
+         owns the saved choice ("reprise.theme": one pinned theme, or follow the device); an install that only has
+         localStorage.theme ("dark" | "light") keeps that choice. Dark Lucent is the default. -->
     <script>
         (function () {
             try {
-                var saved = localStorage.getItem('theme');
-                if (saved === 'light' || saved === 'dark') {
-                    document.documentElement.setAttribute('data-bs-theme', saved);
+                var d = document.documentElement, scheme = 'dark', id = 'lucent-dark';
+                var saved = JSON.parse(localStorage.getItem('reprise.theme') || 'null');
+                var legacy = localStorage.getItem('theme');
+                if (saved && saved.mode === 'auto') {
+                    scheme = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+                    id = (scheme === 'light' ? saved.light : saved.dark) || 'lucent-' + scheme;
+                } else if (saved && saved.id) {
+                    id = saved.id;
+                    scheme = saved.scheme === 'light' ? 'light' : 'dark';
+                } else if (legacy === 'light') {
+                    scheme = 'light';
+                    id = 'lucent-light';
                 }
+                d.setAttribute('data-theme', id);
+                d.setAttribute('data-scheme', scheme);
+                d.setAttribute('data-bs-theme', scheme);
                 // The sidebar's collapsed state is applied before paint too, so the page does not jump on load.
                 if (localStorage.getItem('rpRailCollapsed') === '1') {
                     document.documentElement.classList.add('rp-rail-collapsed');
@@ -42,6 +53,7 @@
     <link href="{{ url_for('static', filename='css/style.css') }}" rel="stylesheet">
     <link href="{{ url_for('static', filename='css/overlays.css') }}" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/reprise-tokens.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/reprise-themes.css') }}">
 
     <!-- CSRF token: csrf_fetch.js adds it to every state-changing fetch to this app -->
     <meta name="csrf-token" content="{{ csrf_token() }}">
@@ -85,6 +97,7 @@
         <div class="rp-rail-panel" id="rpRailPanel">
             <nav class="rp-rail-nav" aria-label="Main">
                 <a href="{{ url_for('main.reprise_page') }}" data-tour="nav-library"{% if request.endpoint in ('main.reprise_page', 'main.reprise_report_page') %} aria-current="page"{% endif %}><i class="bi bi-collection-play" aria-hidden="true"></i><span>Library</span></a>
+                <a href="{{ url_for('main.reprise_approve_page') }}" data-tour="nav-approve"{% if request.endpoint == 'main.reprise_approve_page' %} aria-current="page"{% endif %}><i class="bi bi-inbox" aria-hidden="true"></i><span>To approve</span></a>
                 <a href="{{ url_for('main.servers_page') }}" data-tour="nav-settings"{% if rp_nav.in_settings %} aria-current="true"{% endif %}><i class="bi bi-gear" aria-hidden="true"></i><span>Settings</span></a>
             </nav>
             <div class="rp-rail-foot">
@@ -288,10 +301,11 @@
 
     <!-- Sidebar (open/collapse), the Plex-safety chip and the other shared shell behaviour. -->
     <script src="{{ url_for('static', filename='js/reprise-shell.js') }}"></script>
+    <!-- Colour themes: the list, the saved choice and the picker. -->
+    <script src="{{ url_for('static', filename='js/reprise-theme.js') }}"></script>
 
-    <!-- Theme toggle — flips data-bs-theme on <html> and persists to
-         localStorage.  The pre-paint script in <head> reads the saved
-         value on load to avoid a flash of the wrong theme. -->
+    <!-- Theme toggle — flips between the paired dark and light theme (reprise-theme.js saves the choice; the pre-paint
+         script in <head> applies it on the next load). Falls back to flipping data-bs-theme if that script is missing. -->
     <script>
         (function () {
             var btn = document.getElementById('themeToggleBtn');
@@ -299,8 +313,11 @@
             if (!btn || !icon) return;
 
             var label = document.getElementById('themeToggleLabel');
+            function scheme() {
+                return window.RepriseTheme ? window.RepriseTheme.active().scheme : (document.documentElement.getAttribute('data-bs-theme') || 'dark');
+            }
             function syncIcon() {
-                var current = document.documentElement.getAttribute('data-bs-theme') || 'dark';
+                var current = scheme();
                 icon.className = current === 'dark' ? 'bi bi-moon-stars' : 'bi bi-sun';
                 // Tooltip stays verbose ("Switch to …") because tooltips
                 // appear on hover and need to be self-explanatory. The
@@ -315,12 +332,16 @@
             syncIcon();
 
             btn.addEventListener('click', function () {
-                var current = document.documentElement.getAttribute('data-bs-theme') || 'dark';
-                var next = current === 'dark' ? 'light' : 'dark';
-                document.documentElement.setAttribute('data-bs-theme', next);
-                try { localStorage.setItem('theme', next); } catch (e) { /* best-effort */ }
+                if (window.RepriseTheme) {
+                    window.RepriseTheme.toggleScheme();
+                } else {
+                    var next = scheme() === 'dark' ? 'light' : 'dark';
+                    document.documentElement.setAttribute('data-bs-theme', next);
+                    try { localStorage.setItem('theme', next); } catch (e) { /* best-effort */ }
+                }
                 syncIcon();
             });
+            document.addEventListener('reprise:theme', syncIcon);
         })();
     </script>
 

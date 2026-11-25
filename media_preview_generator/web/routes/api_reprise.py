@@ -8,7 +8,7 @@ from functools import wraps
 from flask import Blueprint, Response, g, jsonify, request, stream_with_context
 from loguru import logger
 
-from ...reprise import acceleration
+from ...reprise import acceleration, approvals
 from ...reprise import setup_guide as guide
 from ...reprise.api_auth import DEFAULT_SCOPES, SCOPES, bearer_secret, require_client
 from ...reprise.models import AnalysisRefused, PlaybackIdentity, PublicationRefused, ReportRefused, ReviewRefused
@@ -51,6 +51,23 @@ def _body(allowed, required=()):
     if not isinstance(value, dict) or set(value) - set(allowed) or not set(required) <= set(value):
         raise ValueError("Invalid request")
     return value
+
+
+def _query_int(name, low, high, default=None):
+    """A whole number from the query string between ``low`` and ``high`` (``ValueError`` when missing or outside)."""
+    raw = request.args.get(name)
+    if raw is None and default is not None:
+        return default
+    if raw is None or not re.fullmatch(r"\d{1,9}", raw) or not low <= int(raw) <= high:
+        raise ValueError("Invalid request")
+    return int(raw)
+
+
+def _picture(data):
+    """A JPEG the browser may keep for a few minutes: it is private to the owner and its address names the exact time."""
+    response = Response(data, mimetype="image/jpeg")
+    response.headers["Cache-Control"] = "private, max-age=300"
+    return response
 
 
 def _identity(values):
@@ -153,7 +170,8 @@ def create_reprise_blueprint(service):
 
     @bp.after_request
     def no_store(response):
-        response.headers["Cache-Control"] = "no-store"
+        if "Cache-Control" not in response.headers:
+            response.headers["Cache-Control"] = "no-store"
         return response
 
     def owner(view):
@@ -301,6 +319,93 @@ def create_reprise_blueprint(service):
             raise ReportRefused("The season must be a number.")
         return jsonify(_json(service.approve_confident(show.strip(), season)))
 
+    @bp.get("/api/reprise/approvals")
+    @owner
+    def approvals_queue():
+        """Everything waiting for the owner, by show and season, from the store alone (Plex is not read)."""
+        return jsonify(_json(approvals.queue(service)))
+
+    @bp.get("/api/reprise/approvals/season")
+    @owner
+    def approvals_season():
+        """One season in detail, set against what Plex has now, with the plain account of what sending would change."""
+        show = request.args.get("show", "").strip()
+        if not show or len(show) > 200:
+            raise ReportRefused("Say which show (show=<title>).")
+        return jsonify(_json(approvals.season_plan(service, show, _query_int("season", 0, 9999))))
+
+    @bp.post("/api/reprise/approvals/send")
+    @owner
+    def approvals_send():
+        """Approve one season's sure ones (``sure``) or take what the owner approved (``approved``) and, unless
+        ``to_plex`` is false, send it to Plex with a backup first."""
+        data = _body({"show", "season", "scope", "to_plex"}, {"show", "season", "scope"})
+        if not isinstance(data.get("to_plex", True), bool):
+            raise ValueError("Invalid request")
+        show, season = data["show"], data["season"]
+        if not isinstance(show, str) or not show.strip() or len(show) > 200:
+            raise ReportRefused("Say which show (show=<title>).")
+        if type(season) is not int or not 0 <= season <= 9999:
+            raise ReportRefused("The season must be a number.")
+        return jsonify(
+            _json(approvals.send(service, show.strip(), season, data["scope"], to_plex=data.get("to_plex", True)))
+        )
+
+    @bp.post("/api/reprise/approvals/undo")
+    @owner
+    def approvals_undo():
+        """Put Plex back as it was for the changes a send returned, and take back what that send approved."""
+        data = _body({"changes"}, {"changes"})
+        changes = data["changes"]
+        if not isinstance(changes, list) or not 0 < len(changes) <= 500:
+            raise ValueError("Invalid request")
+        for change in changes:
+            if (
+                not isinstance(change, dict)
+                or set(change) - {"media_version_id", "change_id", "span_ids", "label"}
+                or not isinstance(change.get("media_version_id"), str)
+                or not isinstance(change.get("change_id"), str | None)
+                or not isinstance(change.get("span_ids", []), list)
+                or any(not isinstance(i, str) for i in change.get("span_ids", []))
+            ):
+                raise ValueError("Invalid request")
+        return jsonify(_json(approvals.undo(service, changes)))
+
+    @bp.post("/api/reprise/approvals/decide")
+    @owner
+    def approvals_decide():
+        """Skip (at the shown or a moved time), keep or restore one suggestion; every answer carries its own undo."""
+        data = _body(
+            {"media_version_id", "expected_revision", "kind", "decision", "start_ms", "end_ms", "span_id", "range_ids"},
+            {"media_version_id", "expected_revision", "kind", "decision"},
+        )
+        revision = data["expected_revision"]
+        ranges = data.get("range_ids", [])
+        if (
+            not isinstance(data["media_version_id"], str)
+            or type(revision) is not int
+            or not isinstance(data["kind"], str)
+            or not isinstance(ranges, list)
+            or any(not isinstance(i, str) for i in ranges)
+            or not isinstance(data.get("span_id"), str | None)
+        ):
+            raise ValueError("Invalid request")
+        return jsonify(
+            _json(
+                approvals.decide(
+                    service,
+                    data["media_version_id"],
+                    revision,
+                    data["kind"],
+                    data["decision"],
+                    start_ms=data.get("start_ms"),
+                    end_ms=data.get("end_ms"),
+                    span_id=data.get("span_id"),
+                    range_ids=ranges,
+                )
+            )
+        )
+
     @bp.post("/api/reprise/refresh")
     @owner
     def refresh():
@@ -322,6 +427,48 @@ def create_reprise_blueprint(service):
     def media_stream(media_id):
         file, version = service.open_stream(media_id)
         return _stream(file, version)
+
+    @bp.get("/api/reprise/media/<media_id>/frame")
+    @owner
+    def media_frame(media_id):
+        """One still from the episode at ``t_ms`` (picture width ``w`` from a fixed set)."""
+        frames, version = service.picture_source(media_id)
+        at_ms = _query_int("t_ms", 0, max(version.duration_ms or 0, 1))
+        try:
+            return _picture(frames.still(version, at_ms, _query_int("w", 1, 4096, 480)))
+        except OSError as exc:
+            return jsonify(error=str(exc)), 502
+
+    @bp.get("/api/reprise/media/<media_id>/strip")
+    @owner
+    def media_strip(media_id):
+        """A row of ``count`` stills ``step_ms`` apart from ``start_ms`` as one picture (the thumbnail strip)."""
+        frames, version = service.picture_source(media_id)
+        start_ms = _query_int("start_ms", 0, max(version.duration_ms or 0, 1))
+        try:
+            return _picture(
+                frames.strip(
+                    version,
+                    start_ms,
+                    _query_int("step_ms", 1, 600000),
+                    _query_int("count", 1, 200),
+                    _query_int("w", 1, 4096, 160),
+                )
+            )
+        except OSError as exc:
+            return jsonify(error=str(exc)), 502
+
+    @bp.get("/api/reprise/media/<media_id>/cuts")
+    @owner
+    def media_cuts(media_id):
+        """Where the picture jumps to a different shot between ``start_ms`` and ``end_ms`` (milliseconds, ascending)."""
+        frames, version = service.picture_source(media_id)
+        top = max(version.duration_ms or 0, 1)
+        try:
+            cuts = frames.cuts(version, _query_int("start_ms", 0, top), _query_int("end_ms", 1, top))
+        except OSError as exc:
+            return jsonify(error=str(exc)), 502
+        return jsonify({"cuts": cuts})
 
     @bp.post("/api/reprise/media/<media_id>/preview")
     @owner

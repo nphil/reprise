@@ -1,0 +1,394 @@
+/* Reprise · Lucent v2 design layer (the Stashy-Decensor look).
+ *
+ * One token set and one component kit for every redesigned screen. Everything lives under a `.lu-root` wrapper, so the
+ * pages that still use the older look are untouched. A page opts in with `<div class="lu-root">` and `lu-` classes.
+ * Colours come only from the theme palette (`--pal-*` in reprise-themes.css, chosen by reprise-theme.js through
+ * <html data-theme>), so every component follows every theme, dark or light. Nothing below hard-codes a colour.
+ *
+ * Contents: 1 tokens · 2 base · 3 type and layout · 4 buttons and chips · 5 surfaces · 6 feedback · 7 tray and toasts
+ *           8 picture clip and strip · 9 theme picker · 10 phone and motion. */
+
+/* ── 1. Tokens ──────────────────────────────────────────────────────────────────────────────────────────────── */
+.lu-root {
+  --lu-canvas: var(--pal-canvas); --lu-sheet: var(--pal-sheet); --lu-scrim: var(--pal-scrim);
+  --lu-glass: var(--pal-glass); --lu-glass-raised: var(--pal-glass-raised);
+  --lu-edge: var(--pal-edge); --lu-edge-raised: var(--pal-edge-raised);
+  --lu-ink: var(--pal-ink); --lu-ink-2: var(--pal-ink-2); --lu-ink-3: var(--pal-ink-3);
+  --lu-track-off: var(--pal-track-off);
+  --lu-track-readable: color-mix(in srgb, var(--lu-ink) 60%, transparent);
+  --lu-accent: var(--pal-accent); --lu-accent-ink: var(--pal-accent-ink);
+  --lu-accent-fill: var(--pal-accent-fill); --lu-accent-fill-ink: var(--pal-accent-fill-ink);
+  --lu-accent-text: var(--pal-accent-text);
+  --lu-positive: var(--pal-positive); --lu-warning: var(--pal-warning); --lu-danger: var(--pal-danger);
+  --lu-info: var(--pal-info); --lu-live: var(--pal-live);
+  --lu-positive-text: var(--pal-positive-text); --lu-warning-text: var(--pal-warning-text);
+  --lu-danger-text: var(--pal-danger-text); --lu-info-text: var(--pal-info-text);
+
+  --lu-radius-sheet: 28px; --lu-radius-card: 24px; --lu-radius-tile: 20px; --lu-radius-row: 18px;
+  --lu-radius-control: 14px; --lu-radius-pill: 999px;
+  --lu-space-1: 4px; --lu-space-2: 8px; --lu-space-3: 12px; --lu-space-4: 16px; --lu-space-5: 20px;
+  --lu-space-6: 24px; --lu-space-7: 32px; --lu-space-8: 40px;
+  --lu-target: 48px; --h-btn: var(--lu-target); --h-chip: calc(var(--lu-target) - var(--lu-space-2));
+  --lu-edge-x: 32px;
+
+  --lu-font: Manrope, system-ui, sans-serif;
+  --lu-type-page: 28px; --lu-type-title: 20px; --lu-type-body: 16px; --lu-type-label: 14px; --lu-type-caption: 12px;
+  --lu-type-body-line: 1.45; --lu-type-title-line: 1.25;
+
+  --lu-z-raised: 1; --lu-z-sticky: 2; --lu-z-chrome: 3; --lu-z-popup: 4;
+
+  --lu-shadow-rest: 0 24px 60px rgba(0, 0, 0, .28);
+  --lu-shadow-raised: 0 34px 80px rgba(0, 0, 0, .55), 0 10px 24px rgba(0, 0, 0, .30);
+  --lu-shadow-pressed: 0 6px 14px rgba(0, 0, 0, .30);
+  --lu-highlight-rest: inset 0 1px 0 rgba(255, 255, 255, .07);
+  --lu-neumorphic-light: rgba(255, 255, 255, .10);
+  --lu-neumorphic-shade: rgba(0, 0, 0, .32);
+  --lu-focus-wash: color-mix(in srgb, var(--lu-ink) 7%, transparent);
+  --lu-material-edge: var(--lu-edge);
+  --lu-neumorphic-raised: -2px -2px 4px var(--lu-neumorphic-light), 2px 2px 4px var(--lu-neumorphic-shade);
+  --lu-neumorphic-inset: inset 2px 2px 4px var(--lu-neumorphic-shade), inset -2px -2px 4px var(--lu-neumorphic-light);
+  --lu-material-well: color-mix(in srgb, var(--lu-canvas) 30%, transparent);
+  --lu-material-overlay: color-mix(in srgb, var(--lu-sheet) 40%, var(--lu-canvas));
+  --lu-hover-wash: color-mix(in srgb, var(--lu-ink) 4%, transparent);
+  --lu-press-wash: color-mix(in srgb, var(--lu-ink) 8%, transparent);
+  --lu-selected-wash: var(--lu-hover-wash);
+  --lu-reading: color-mix(in srgb, var(--lu-ink) 4%, var(--lu-canvas));
+  --lu-sheen: linear-gradient(135deg, rgba(255, 255, 255, .16) 0%, rgba(255, 255, 255, .05) 38%, transparent 60%);
+
+  --lu-ease: cubic-bezier(.33, 1, .68, 1);
+  --lu-motion-label: 120ms; --lu-motion-focus: 150ms; --lu-motion-card: 180ms; --lu-motion-layer: 220ms;
+  --lu-lift-raised: 4px; --lu-focus-scale: 1.02; --lu-travel-layer: 16px;
+}
+/* Light themes: Lucent's lighter shadows and washes (the same values Stashy-Decensor uses). */
+:root[data-scheme="light"] .lu-root {
+  --lu-shadow-rest: 0 24px 60px rgba(0, 0, 0, .18);
+  --lu-shadow-raised: 0 34px 80px rgba(0, 0, 0, .28), 0 10px 24px rgba(0, 0, 0, .14);
+  --lu-shadow-pressed: 0 6px 14px rgba(0, 0, 0, .16);
+  --lu-highlight-rest: inset 0 1px 0 rgba(255, 255, 255, .60);
+  --lu-neumorphic-light: rgba(255, 255, 255, .86);
+  --lu-neumorphic-shade: rgba(0, 0, 0, .10);
+  --lu-focus-wash: color-mix(in srgb, var(--lu-ink) 6%, transparent);
+  --lu-material-edge: color-mix(in srgb, var(--lu-ink) 16%, transparent);
+}
+@media (max-width: 600px) {
+  .lu-root { --lu-edge-x: 16px; --lu-type-page: 24px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lu-root { --lu-motion-label: 0ms; --lu-motion-focus: 0ms; --lu-motion-card: 0ms; --lu-motion-layer: 120ms; --lu-lift-raised: 0px; --lu-focus-scale: 1; --lu-travel-layer: 0px; }
+}
+
+/* ── 2. Base ────────────────────────────────────────────────────────────────────────────────────────────────── */
+/* Stashy's wallpaper: a deep canvas with three faint colour glows, fixed behind the page so it never repaints on scroll. */
+.lu-root::before {
+  content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background:
+    radial-gradient(1100px 640px at 6% -10%, color-mix(in srgb, var(--pal-accent) 15%, transparent), transparent 70%),
+    radial-gradient(900px 560px at 104% 0%, color-mix(in srgb, var(--pal-live) 8%, transparent), transparent 70%),
+    radial-gradient(1000px 720px at 50% 125%, color-mix(in srgb, var(--pal-info) 8%, transparent), transparent 70%),
+    var(--pal-canvas);
+}
+.lu-root {
+  position: relative; color: var(--lu-ink); font: 400 var(--lu-type-body)/var(--lu-type-body-line) var(--lu-font);
+  font-variant-numeric: tabular-nums; caret-color: var(--lu-accent); accent-color: var(--lu-accent);
+}
+.lu-root ::selection { background: color-mix(in srgb, var(--lu-accent) 32%, transparent); color: var(--lu-ink); }
+.lu-root * { scrollbar-width: thin; scrollbar-color: var(--lu-track-off) transparent; }
+.lu-root :is(h1, h2, h3, h4, p, dl, dd, figure) { margin: 0; }
+.lu-root button { font: inherit; color: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.lu-root :is(img, video) { display: block; max-width: 100%; }
+.lu-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.lu-root [hidden] { display: none !important; }
+
+/* ── 3. Type and layout ─────────────────────────────────────────────────────────────────────────────────────── */
+.lu-page-title { font: 500 var(--lu-type-page)/1.15 var(--lu-font); letter-spacing: -.02em; color: var(--lu-ink); }
+.lu-title { font: 600 var(--lu-type-title)/var(--lu-type-title-line) var(--lu-font); letter-spacing: -.01em; color: var(--lu-ink); }
+.lu-h { font: 600 var(--lu-type-body)/1.3 var(--lu-font); color: var(--lu-ink); }
+.lu-lbl { font: 500 var(--lu-type-label)/1.3 var(--lu-font); }
+.lu-cap { font: 400 var(--lu-type-caption)/1.35 var(--lu-font); letter-spacing: .01em; }
+.lu-b { font-weight: 700; }
+.lu-muted { color: var(--lu-ink-2); }
+.lu-pos { color: var(--lu-positive-text); } .lu-warn { color: var(--lu-warning-text); }
+.lu-bad { color: var(--lu-danger-text); } .lu-acc { color: var(--lu-accent-text); } .lu-inf { color: var(--lu-info-text); }
+.lu-row { display: flex; align-items: center; gap: var(--lu-space-3); min-width: 0; }
+.lu-row.lu-wrap { flex-wrap: wrap; }
+.lu-col { display: flex; flex-direction: column; min-width: 0; }
+.lu-grow { flex: 1 1 0; min-width: 0; }
+.lu-end { margin-left: auto; }
+.lu-ell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lu-measure { max-width: 68ch; }
+.lu-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--lu-space-4); margin: 0 0 var(--lu-space-6); }
+.lu-head .lu-sub { margin-top: var(--lu-space-1); color: var(--lu-ink-2); font: 400 var(--lu-type-label)/1.4 var(--lu-font); }
+.lu-page { max-width: 1100px; margin: 0 auto; }
+@keyframes lu-rise { from { opacity: 0; transform: translateY(var(--lu-travel-layer)); } to { opacity: 1; transform: none; } }
+@keyframes lu-spin { to { transform: rotate(1turn); } }
+.lu-enter { animation: lu-rise var(--lu-motion-layer) var(--lu-ease) both; }
+
+/* ── 4. Buttons and chips ───────────────────────────────────────────────────────────────────────────────────── */
+.lu-btn, .lu-chip, .lu-iconbtn, .lu-linkbtn, .lu-seg button, .lu-tile {
+  transition: background-color var(--lu-motion-label) var(--lu-ease), box-shadow var(--lu-motion-focus) var(--lu-ease),
+    transform var(--lu-motion-focus) var(--lu-ease), border-color var(--lu-motion-focus) var(--lu-ease);
+}
+.lu-btn {
+  position: relative; display: inline-flex; align-items: center; justify-content: center; gap: var(--lu-space-2);
+  height: var(--h-btn); padding: 0 var(--lu-space-5); border-radius: var(--lu-radius-pill);
+  border: 1px solid var(--lu-material-edge); background: transparent; color: var(--lu-ink);
+  font: 600 var(--lu-type-label)/1 var(--lu-font); white-space: nowrap; text-decoration: none;
+}
+.lu-btn .bi, .lu-iconbtn .bi, .lu-chip .bi, .lu-linkbtn .bi { font-size: 18px; line-height: 1; }
+.lu-btn.lu-quiet { border-color: transparent; }
+.lu-btn.lu-primary { background: var(--lu-accent-fill); color: var(--lu-accent-fill-ink); border-color: transparent; }
+.lu-btn.lu-danger { color: var(--lu-danger-text); }
+.lu-btn.lu-wide { width: 100%; }
+.lu-btn.lu-big { height: 56px; padding: 0 var(--lu-space-6); font-size: var(--lu-type-body); }
+.lu-btn.lu-big .bi { font-size: 22px; }
+.lu-btn:hover:not([aria-disabled="true"]), .lu-btn.lu-primary:hover:not([aria-disabled="true"]) {
+  background-image: linear-gradient(var(--lu-hover-wash), var(--lu-hover-wash));
+}
+.lu-btn:active:not([aria-disabled="true"]), .lu-chip:active, .lu-iconbtn:active, .lu-linkbtn:active {
+  background-image: linear-gradient(var(--lu-press-wash), var(--lu-press-wash)); transition: none;
+}
+.lu-btn[aria-disabled="true"], .lu-btn:disabled { background: var(--lu-track-off); color: var(--lu-ink-2); border-color: transparent; cursor: not-allowed; }
+.lu-btn[aria-busy="true"] { cursor: progress; }
+.lu-btn[aria-busy="true"]::before {
+  content: ""; width: 16px; height: 16px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent;
+  animation: lu-spin .8s linear infinite;
+}
+.lu-iconbtn {
+  position: relative; display: inline-grid; place-items: center; width: var(--h-btn); height: var(--h-btn);
+  border-radius: var(--lu-radius-pill); border: 0; background: transparent; color: var(--lu-ink-2);
+}
+.lu-iconbtn:hover { background-image: linear-gradient(var(--lu-hover-wash), var(--lu-hover-wash)); color: var(--lu-ink); }
+.lu-iconbtn.lu-sm { width: var(--h-chip); height: var(--h-chip); }
+.lu-linkbtn {
+  position: relative; display: inline-flex; align-items: center; gap: var(--lu-space-1); min-height: var(--h-chip);
+  padding: 0 var(--lu-space-3); border: 0; border-radius: var(--lu-radius-pill); background: transparent;
+  color: var(--lu-accent-text); font: 600 var(--lu-type-label)/1 var(--lu-font); text-decoration: none;
+}
+.lu-linkbtn:hover { background-image: linear-gradient(var(--lu-hover-wash), var(--lu-hover-wash)); }
+.lu-linkbtn:disabled { color: var(--lu-ink-2); cursor: not-allowed; }
+/* Focus = raised glass: a brighter fill, a sheen and one soft shadow. The thin ring keeps it visible on every theme. */
+:is(.lu-btn, .lu-chip, .lu-iconbtn, .lu-linkbtn, .lu-seg button, .lu-tile):focus-visible {
+  outline: none; background-color: var(--lu-glass-raised); background-image: var(--lu-sheen); border-color: var(--lu-edge-raised);
+  box-shadow: var(--lu-shadow-pressed), 0 0 0 2px var(--lu-accent-text); color: var(--lu-ink);
+  transform: translateY(calc(var(--lu-lift-raised) / -2)) scale(var(--lu-focus-scale)); z-index: var(--lu-z-raised);
+}
+.lu-btn.lu-primary:focus-visible { background-color: var(--lu-accent-fill); background-image: var(--lu-sheen); color: var(--lu-accent-fill-ink); }
+/* The shell draws a 3px outline on every :focus-visible (body.rp-app :focus-visible); inside Lucent the raised glass above is the only focus look. */
+.lu-root :is(.lu-btn, .lu-chip, .lu-iconbtn, .lu-linkbtn, .lu-seg button, .lu-tile, .lu-switch, .lu-clip-play, .lu-strip-seek, .lu-thm-tile):focus-visible { outline: none; }
+.lu-root .lu-thm-tile:focus-visible { background-color: var(--lu-glass-raised); border-color: var(--lu-edge-raised); box-shadow: var(--lu-shadow-pressed), 0 0 0 2px var(--lu-accent-text); }
+.lu-chip {
+  position: relative; display: inline-flex; align-items: center; gap: var(--lu-space-2); height: var(--h-chip);
+  padding: 0 var(--lu-space-4); border-radius: var(--lu-radius-pill); border: 1px solid var(--lu-material-edge);
+  background: var(--lu-glass); color: var(--lu-ink); font: 500 var(--lu-type-label)/1 var(--lu-font); white-space: nowrap;
+}
+.lu-chip::after { content: ""; position: absolute; inset: calc((var(--h-chip) - var(--h-btn)) / 2) 0; }
+.lu-chip:hover { background-image: linear-gradient(var(--lu-hover-wash), var(--lu-hover-wash)); }
+.lu-chip[aria-pressed="true"] { font-weight: 600; background-color: var(--lu-glass-raised); border-color: var(--lu-edge-raised); }
+.lu-count {
+  display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 6px; border-radius: var(--lu-radius-pill);
+  background: var(--lu-accent-fill); color: var(--lu-accent-fill-ink); font: 700 var(--lu-type-caption)/1 var(--lu-font);
+}
+.lu-count.lu-quiet { background: var(--lu-focus-wash); color: var(--lu-ink); }
+.lu-badge {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 24px; padding: 2px var(--lu-space-2); border-radius: var(--lu-radius-pill);
+  background: var(--lu-focus-wash); color: var(--lu-ink); font: 600 var(--lu-type-caption)/1.2 var(--lu-font); white-space: nowrap;
+}
+.lu-badge.lu-acc { background: color-mix(in srgb, var(--lu-accent) 18%, transparent); color: var(--lu-accent-text); }
+.lu-badge.lu-pos { background: color-mix(in srgb, var(--lu-positive) 16%, transparent); color: var(--lu-positive-text); }
+.lu-badge.lu-warn { background: color-mix(in srgb, var(--lu-warning) 18%, transparent); color: var(--lu-warning-text); }
+.lu-badge.lu-bad { background: color-mix(in srgb, var(--lu-danger) 16%, transparent); color: var(--lu-danger-text); }
+.lu-badge.lu-inf { background: color-mix(in srgb, var(--lu-info) 18%, transparent); color: var(--lu-info-text); }
+.lu-badge .bi { font-size: 14px; line-height: 1; }
+.lu-kbd {
+  display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 8px;
+  border: 1px solid var(--lu-edge-raised); color: var(--lu-ink-2); font: 600 11px/1 var(--lu-font);
+}
+@media (hover: none) { .lu-kbd { display: none; } }
+.lu-seg {
+  display: inline-flex; gap: 2px; padding: var(--lu-space-1); border-radius: var(--lu-radius-pill);
+  background: var(--lu-material-well); box-shadow: var(--lu-neumorphic-inset);
+}
+.lu-seg button {
+  position: relative; height: calc(var(--h-chip) - var(--lu-space-1)); padding: 0 var(--lu-space-4); border: 1px solid transparent;
+  border-radius: var(--lu-radius-pill); background: transparent; color: var(--lu-ink-2); font: 600 var(--lu-type-label)/1 var(--lu-font); white-space: nowrap;
+}
+.lu-seg button:hover { color: var(--lu-ink); background-image: linear-gradient(var(--lu-hover-wash), var(--lu-hover-wash)); }
+.lu-seg button[aria-pressed="true"], .lu-seg button[aria-checked="true"] { background: var(--lu-glass-raised); color: var(--lu-ink); box-shadow: var(--lu-neumorphic-raised); }
+.lu-switch {
+  position: relative; flex: none; width: 52px; height: 32px; padding: 0; border: 1px solid var(--lu-material-edge);
+  border-radius: var(--lu-radius-pill); background: var(--lu-material-well); box-shadow: var(--lu-neumorphic-inset);
+}
+.lu-switch::before {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 24px; height: 24px; border-radius: var(--lu-radius-pill);
+  background: var(--lu-track-readable); transition: transform var(--lu-motion-focus) var(--lu-ease), background-color var(--lu-motion-focus) var(--lu-ease);
+}
+.lu-switch::after { content: ""; position: absolute; inset: -8px -2px; }
+.lu-switch[aria-checked="true"] { background: var(--lu-accent-fill); border-color: transparent; }
+.lu-switch[aria-checked="true"]::before { transform: translateX(20px); background: var(--lu-accent-fill-ink); }
+.lu-switch:focus-visible { outline: none; box-shadow: var(--lu-shadow-pressed), 0 0 0 2px var(--lu-accent-text); }
+.lu-field {
+  display: flex; align-items: center; gap: var(--lu-space-3); height: var(--h-btn); padding: 0 var(--lu-space-4);
+  border-radius: var(--lu-radius-pill); background: var(--lu-material-well); box-shadow: var(--lu-neumorphic-inset);
+  border: 1px solid var(--lu-material-edge); color: var(--lu-ink-2);
+}
+.lu-field input { flex: 1 1 auto; min-width: 0; border: 0; background: transparent; color: var(--lu-ink); font: 500 var(--lu-type-body)/1 var(--lu-font); outline: none; }
+.lu-field input::placeholder { color: var(--lu-ink-2); opacity: 1; }
+.lu-field:focus-within { background: var(--lu-glass-raised); border-color: var(--lu-edge-raised); box-shadow: var(--lu-shadow-pressed); }
+
+/* ── 5. Surfaces ────────────────────────────────────────────────────────────────────────────────────────────── */
+/* A panel is flat: one border, no shadow. Only layers that float (tray, popover, toast) carry a shadow. */
+.lu-panel { background: var(--lu-material-overlay); border: 1px solid var(--lu-material-edge); border-radius: var(--lu-radius-card); }
+.lu-panel > .lu-panel-head { display: flex; align-items: center; gap: var(--lu-space-3); padding: var(--lu-space-4) var(--lu-space-5); }
+.lu-well { background: var(--lu-material-well); border-radius: var(--lu-radius-row); box-shadow: var(--lu-neumorphic-inset); }
+.lu-divide > * + * { border-top: 1px solid var(--lu-material-edge); }
+.lu-gt {
+  display: grid; place-items: center; flex: none; width: var(--h-btn); height: var(--h-btn); border-radius: var(--lu-radius-control);
+  background: color-mix(in srgb, var(--tone, var(--lu-accent)) 16%, transparent); color: var(--tone-text, var(--lu-accent-text));
+}
+.lu-gt .bi { font-size: 22px; line-height: 1; }
+.lu-gt.lu-pos { --tone: var(--lu-positive); --tone-text: var(--lu-positive-text); }
+.lu-gt.lu-warn { --tone: var(--lu-warning); --tone-text: var(--lu-warning-text); }
+.lu-gt.lu-bad { --tone: var(--lu-danger); --tone-text: var(--lu-danger-text); }
+.lu-gt.lu-inf { --tone: var(--lu-info); --tone-text: var(--lu-info-text); }
+.lu-bar { position: relative; display: flex; height: 8px; border-radius: var(--lu-radius-pill); background: var(--lu-track-off); overflow: hidden; }
+.lu-bar > i { display: block; height: 100%; background: var(--lu-accent-fill); border-radius: var(--lu-radius-pill); transition: width var(--lu-motion-layer) var(--lu-ease); }
+
+/* ── 6. Feedback: banner, skeleton ──────────────────────────────────────────────────────────────────────────── */
+.lu-banner {
+  display: flex; align-items: flex-start; gap: var(--lu-space-3); padding: var(--lu-space-3) var(--lu-space-4);
+  border-radius: var(--lu-radius-row); background: color-mix(in srgb, var(--tone, var(--lu-accent)) 12%, transparent);
+  color: var(--lu-ink);
+}
+.lu-banner .lu-gt { width: var(--h-chip); height: var(--h-chip); }
+.lu-banner.lu-warn { --tone: var(--lu-warning); } .lu-banner.lu-bad { --tone: var(--lu-danger); }
+.lu-banner.lu-pos { --tone: var(--lu-positive); } .lu-banner.lu-inf { --tone: var(--lu-info); }
+.lu-banner > .lu-col { padding-top: 2px; }
+.lu-banner .lu-actions { display: flex; flex-wrap: wrap; gap: var(--lu-space-2); margin-top: var(--lu-space-2); }
+.lu-skel {
+  display: block; height: 1em; border-radius: var(--lu-radius-pill); background: var(--lu-track-off);
+  animation: lu-pulse 1.4s ease-in-out infinite;
+}
+@keyframes lu-pulse { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+
+/* ── 7. Tray and toasts ─────────────────────────────────────────────────────────────────────────────────────── */
+/* The tray: what is happening and what to do next, always at the bottom of the screen. */
+.lu-tray {
+  position: sticky; bottom: calc(var(--lu-space-4) + env(safe-area-inset-bottom, 0px)); z-index: var(--lu-z-chrome);
+  width: min(1040px, 100%); margin: var(--lu-space-6) auto 0; display: grid; gap: var(--lu-space-3);
+  padding: var(--lu-space-3) var(--lu-space-4); border-radius: var(--lu-radius-sheet); background: var(--lu-reading);
+  border: 1px solid var(--lu-material-edge); box-shadow: var(--lu-shadow-raised);
+}
+.lu-tray .lu-trow { display: flex; flex-wrap: wrap; align-items: center; gap: var(--lu-space-3); min-width: 0; }
+.lu-tray .lu-tsum { flex: 1 1 220px; min-width: 0; }
+.lu-tray .lu-tsum b { color: var(--lu-ink); font-weight: 700; }
+.lu-toasts {
+  position: fixed; left: 0; right: 0; z-index: var(--lu-z-popup); display: grid; justify-items: center; gap: var(--lu-space-2);
+  bottom: calc(112px + env(safe-area-inset-bottom, 0px)); padding: 0 var(--lu-space-4); pointer-events: none;
+}
+.lu-toast {
+  display: flex; align-items: center; gap: var(--lu-space-3); max-width: min(560px, 100%); padding: var(--lu-space-2) var(--lu-space-2) var(--lu-space-2) var(--lu-space-4);
+  border-radius: var(--lu-radius-pill); background: var(--lu-reading); border: 1px solid var(--lu-edge-raised);
+  box-shadow: var(--lu-shadow-raised); pointer-events: auto; animation: lu-rise var(--lu-motion-layer) var(--lu-ease) both;
+}
+.lu-toast .lu-linkbtn { flex: none; }
+.lu-pop {
+  background: var(--lu-reading); border: 1px solid var(--lu-material-edge); border-radius: var(--lu-radius-card);
+  box-shadow: var(--lu-shadow-raised); z-index: var(--lu-z-popup);
+}
+
+/* ── 8. Picture clip and strip ──────────────────────────────────────────────────────────────────────────────── */
+/* The reusable "look at a moment" component (reprise-clip.js): a still, an optional 8-second clip, a strip of frames
+   around one time with its marker, and nudge buttons. Any screen can host one. */
+.lu-clip { display: grid; gap: var(--lu-space-2); min-width: 0; }
+.lu-clip-stage { position: relative; aspect-ratio: 16 / 9; border-radius: var(--lu-radius-card); overflow: hidden; background: var(--lu-material-well); }
+.lu-clip-stage :is(img, video) { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.lu-clip-stage .lu-clip-video { background: #000; }
+.lu-clip-play {
+  position: absolute; inset: 0; display: grid; place-items: center; width: 100%; border: 0; background: transparent; color: var(--lu-ink);
+}
+.lu-clip-play > span {
+  display: grid; place-items: center; width: 56px; height: 56px; border-radius: var(--lu-radius-pill);
+  background: color-mix(in srgb, var(--lu-canvas) 82%, transparent); border: 1px solid var(--lu-edge-raised);
+  transition: transform var(--lu-motion-focus) var(--lu-ease);
+}
+.lu-clip-play .bi { font-size: 26px; line-height: 1; }
+.lu-clip-play:hover > span { transform: scale(1.06); }
+.lu-clip-play:focus-visible { outline: none; }
+.lu-clip-play:focus-visible > span { background: var(--lu-glass-raised); box-shadow: var(--lu-shadow-pressed), 0 0 0 2px var(--lu-accent-text); }
+.lu-clip[data-state="playing"] .lu-clip-play > span { opacity: 0; }
+.lu-clip[data-state="playing"] .lu-clip-play:hover > span, .lu-clip[data-state="playing"] .lu-clip-play:focus-visible > span { opacity: 1; }
+.lu-clip-time {
+  position: absolute; left: var(--lu-space-3); bottom: var(--lu-space-3); padding: 2px var(--lu-space-2); border-radius: var(--lu-radius-pill);
+  background: color-mix(in srgb, var(--lu-canvas) 82%, transparent); color: var(--lu-ink); font: 700 var(--lu-type-caption)/1.4 var(--lu-font);
+}
+.lu-clip-note {
+  position: absolute; left: var(--lu-space-3); right: var(--lu-space-3); top: var(--lu-space-3); padding: var(--lu-space-2) var(--lu-space-3);
+  border-radius: var(--lu-radius-control); background: color-mix(in srgb, var(--lu-canvas) 88%, transparent); color: var(--lu-ink); font: 500 var(--lu-type-label)/1.35 var(--lu-font);
+}
+.lu-clip-note:empty { display: none; }
+/* The strip is as tall as its pictures are: reprise-clip.js sets --strip-ar to (pictures across) x (a picture's shape),
+   so the frames are never stretched, whatever the episode's aspect ratio. */
+.lu-strip { position: relative; aspect-ratio: var(--strip-ar, 8); border-radius: var(--lu-radius-row); overflow: hidden; background: var(--lu-material-well); touch-action: pan-y; }
+.lu-strip-img { position: absolute; inset: 0; background-size: 100% 100%; background-repeat: no-repeat; }
+.lu-strip-edge, .lu-strip-head { position: absolute; top: 0; bottom: 0; width: 0; pointer-events: none; }
+.lu-strip-edge::before { content: ""; position: absolute; top: 0; bottom: 0; left: -2px; width: 4px; background: var(--lu-accent-fill); box-shadow: 0 0 0 1px color-mix(in srgb, var(--lu-canvas) 70%, transparent); }
+.lu-strip-head::before { content: ""; position: absolute; top: 0; bottom: 0; left: -1px; width: 2px; background: var(--lu-ink); }
+.lu-strip-seek { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: ew-resize; appearance: none; -webkit-appearance: none; background: transparent; }
+.lu-strip:has(.lu-strip-seek:focus-visible) { box-shadow: var(--lu-shadow-pressed), 0 0 0 2px var(--lu-accent-text); }
+.lu-clip-tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--lu-space-2); }
+.lu-clip-tools .lu-readout { margin-left: auto; font: 700 var(--lu-type-label)/1 var(--lu-font); }
+.lu-clip-stage[data-picture="missing"] img { visibility: hidden; }
+.lu-clip[data-state="loading"] .lu-clip-play .bi { animation: lu-spin .9s linear infinite; }
+.lu-strip[data-state="loading"] .lu-strip-img { animation: lu-pulse 1.4s ease-in-out infinite; background-color: var(--lu-track-off); }
+
+/* ── 9. Theme picker ────────────────────────────────────────────────────────────────────────────────────────── */
+.lu-thm { position: relative; }
+.lu-thm-scrim { display: none; }
+.lu-thm-pop {
+  position: absolute; top: calc(100% + var(--lu-space-2)); right: 0; width: min(404px, calc(100vw - 2 * var(--lu-edge-x)));
+  max-height: min(76dvh, 700px); display: flex; flex-direction: column; gap: var(--lu-space-3); padding: var(--lu-space-3);
+  border-radius: var(--lu-radius-sheet);
+}
+.lu-thm-auto {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--lu-space-3); padding: var(--lu-space-2) var(--lu-space-3);
+  border-radius: var(--lu-radius-row); background: var(--lu-material-well);
+}
+.lu-thm-scroll { display: grid; gap: var(--lu-space-4); min-height: 0; overflow: auto; padding: var(--lu-space-1); margin: calc(var(--lu-space-1) * -1); align-content: start; }
+.lu-thm-group > .lu-h { margin: 0 0 var(--lu-space-2) var(--lu-space-1); }
+.lu-thm-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: var(--lu-space-2); }
+.lu-thm-empty { margin: var(--lu-space-4) 0; text-align: center; }
+.lu-thm-tile {
+  position: relative; display: grid; gap: var(--lu-space-2); min-width: 0; padding: var(--lu-space-2); border: 1px solid transparent;
+  border-radius: var(--lu-radius-tile); background: transparent; color: var(--lu-ink); text-align: left; content-visibility: auto; contain-intrinsic-size: auto 96px;
+}
+.lu-thm-tile:hover { background-image: linear-gradient(var(--lu-hover-wash), var(--lu-hover-wash)); }
+.lu-thm-tile[aria-checked="true"] { background: var(--lu-selected-wash); border-color: var(--lu-edge-raised); }
+.lu-thm-name { padding: 0 18px 0 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 var(--lu-type-caption)/1.25 var(--lu-font); }
+.lu-thm-chk { position: absolute; right: var(--lu-space-3); bottom: var(--lu-space-2); display: grid; place-items: center; color: var(--lu-accent-text); }
+/* The swatch carries its own data-theme, so every colour below is that palette's, not the current theme's. */
+.lu-thm-prev { position: relative; display: block; aspect-ratio: 16 / 10; border-radius: var(--lu-radius-row); background: var(--pal-canvas); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pal-ink) 22%, transparent); overflow: hidden; }
+.lu-thm-prev i { position: absolute; display: block; border-radius: 99px; }
+.lu-thm-prev .pv-card { left: 8%; top: 14%; width: 64%; height: 72%; border-radius: 6px; background: var(--pal-sheet); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pal-ink) 12%, transparent); }
+.lu-thm-prev .pv-ink { left: 15%; top: 28%; width: 34%; height: 8%; background: var(--pal-ink); }
+.lu-thm-prev .pv-ink2 { left: 15%; top: 44%; width: 48%; height: 6%; background: var(--pal-ink-2); }
+.lu-thm-prev .pv-acc { left: 15%; top: 62%; width: 24%; height: 14%; background: var(--pal-accent); }
+.lu-thm-prev .pv-dots { position: absolute; right: 8%; top: 14%; bottom: 14%; width: 12%; display: flex; flex-direction: column; justify-content: space-between; align-items: center; }
+.lu-thm-prev .pv-dots i { position: static; width: 100%; max-width: 9px; aspect-ratio: 1; border-radius: 50%; }
+
+/* ── 10. Phone ──────────────────────────────────────────────────────────────────────────────────────────────── */
+@media (max-width: 600px) {
+  .lu-head { margin-bottom: var(--lu-space-5); }
+  .lu-tray { padding: var(--lu-space-3); margin-top: var(--lu-space-4); }
+  .lu-btn.lu-big { padding: 0 var(--lu-space-4); }
+  .lu-toasts { bottom: calc(104px + env(safe-area-inset-bottom, 0px)); }
+  .lu-thm-scrim { display: block; position: fixed; inset: 0; z-index: calc(var(--lu-z-popup) - 1); border: 0; background: var(--lu-scrim); }
+  .lu-thm-pop {
+    position: fixed; top: auto; left: 0; right: 0; bottom: 0; width: auto; max-height: 84dvh; border-radius: var(--lu-radius-sheet) var(--lu-radius-sheet) 0 0;
+    padding-bottom: calc(var(--lu-space-3) + env(safe-area-inset-bottom, 0px)); animation: lu-rise var(--lu-motion-layer) var(--lu-ease) both;
+  }
+  .lu-thm-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lu-skel, .lu-btn[aria-busy="true"]::before, .lu-clip[data-state="loading"] .lu-clip-play .bi, .lu-strip[data-state="loading"] .lu-strip-img { animation: none; }
+  .lu-enter, .lu-toast, .lu-thm-pop { animation: none; }
+}

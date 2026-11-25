@@ -18,3 +18,22 @@
 --lu-positive:#286983;--lu-warning:#7a500f;--lu-danger:#9c3e5a;--lu-info:#6d5a9a;
 --lu-hover-wash:#17131f0d;--lu-selected-wash:#907aa933;--lu-scrim:#17131f66;
 --lu-shadow-raised:0 12px 32px #57527940,0 2px 8px #57527926}
+/* Colour themes (reprise-themes.css, chosen by reprise-theme.js). Any theme other than the two Lucent defaults repaints
+   the shell and every older page through the tokens above; the defaults already match them, so they are left alone.
+   The redesigned screens (reprise-lucent.css) read the palette directly. Needs relative colours; an older browser keeps
+   the default palette here. The Bootstrap --bs-*-rgb triplets in reprise-shell.css cannot follow a theme and stay as they are. */
+@supports (color: rgb(from red r g b)) {
+  :root[data-theme]:not([data-theme^="lucent-"]) {
+    --lu-canvas: var(--pal-canvas); --lu-sheet: rgb(from var(--pal-sheet) r g b);
+    --lu-glass: color-mix(in srgb, var(--pal-ink) 7%, rgb(from var(--pal-sheet) r g b));
+    --lu-edge: color-mix(in srgb, var(--pal-ink) 28%, transparent); --lu-edge-soft: color-mix(in srgb, var(--pal-ink) 16%, transparent);
+    --lu-ink: var(--pal-ink); --lu-ink-2: color-mix(in srgb, var(--pal-ink) 86%, transparent); --lu-ink-3: var(--pal-ink-2);
+    --lu-accent: var(--pal-accent-fill); --lu-accent-ink: var(--pal-accent-fill-ink); --lu-accent-text: var(--pal-accent-text);
+    --lu-accent-wash: color-mix(in srgb, var(--pal-accent) 18%, transparent);
+    --lu-positive: var(--pal-positive-text); --lu-warning: var(--pal-warning-text);
+    --lu-danger: var(--pal-danger-text); --lu-info: var(--pal-info-text);
+    --lu-hover-wash: color-mix(in srgb, var(--pal-ink) 8%, transparent);
+    --lu-selected-wash: color-mix(in srgb, var(--pal-accent) 16%, transparent);
+    --lu-scrim: color-mix(in srgb, var(--pal-canvas) 80%, transparent);
+  }
+}

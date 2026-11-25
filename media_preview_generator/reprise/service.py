@@ -448,6 +448,7 @@ class RepriseService:
         self._refresh_locks = {}
         self._show_ids = {}
         self._resume_stop = threading.Event()
+        self._frames = None  # the reader of stills and cuts for the approval screen, made on first use
 
     def set_writes_enabled(self, enabled):
         if type(enabled) is not bool or self.publisher is None:
@@ -1041,6 +1042,19 @@ class RepriseService:
             result["ranges"] = [asdict(r) for r in stored.ranges]
             result["evidence"] = [asdict(e) for e in stored.evidence]
         return result
+
+    def picture_source(self, media_version_id):
+        """``(frames, version)`` for the approval screen's pictures of one episode, only while the file is as Reprise
+        read it and still in a library it may read (the test the stream passes)."""
+        version = self.store.get_media(media_version_id)
+        bindings = self._bindings(media_version_id)
+        if not version or not bindings or not any(self._valid_binding(version, *b) for b in bindings):
+            raise FileNotFoundError("Media is unavailable or no longer current")
+        if self._frames is None:
+            from .frames import Frames
+
+            self._frames = Frames(ffmpeg_binary(), os.path.join(self.job_manager.config_dir, "reprise-frames"))
+        return self._frames, version
 
     def open_stream(self, media_version_id):
         version = self.store.get_media(media_version_id)

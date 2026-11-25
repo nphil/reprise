@@ -28,7 +28,7 @@ SETTINGS_PAGES = {
     "/nodes": ("Advanced", "true"),
     "/webhook-activity": ("Automation", "true"),
 }
-ALL_PAGES = ["/reprise", "/setup-guide", *SETTINGS_PAGES]
+ALL_PAGES = ["/reprise", "/reprise/approve", "/setup-guide", *SETTINGS_PAGES]
 TABS = [
     ("Connections", "/servers"),
     ("Sharing", "/reprise/sharing"),
@@ -139,19 +139,40 @@ class TestNoInheritedNavbar:
 
 class TestNavigation:
     @pytest.mark.parametrize("path", ALL_PAGES)
-    def test_the_sidebar_has_two_destinations(self, client, path):
+    def test_the_sidebar_has_three_destinations(self, client, path):
         rail = _nav(_page(client, path)).rail
-        assert [(link["text"], link["href"]) for link in rail] == [("Library", "/reprise"), ("Settings", "/servers")]
+        assert [(link["text"], link["href"]) for link in rail] == [
+            ("Library", "/reprise"),
+            ("To approve", "/reprise/approve"),
+            ("Settings", "/servers"),
+        ]
 
     def test_the_library_marks_itself_current_and_has_no_tabs(self, client):
         nav = _nav(_page(client, "/reprise"))
-        assert [(link["text"], link["current"]) for link in nav.rail] == [("Library", "page"), ("Settings", None)]
+        assert [(link["text"], link["current"]) for link in nav.rail] == [
+            ("Library", "page"),
+            ("To approve", None),
+            ("Settings", None),
+        ]
         assert nav.tabs == []
 
-    def test_the_setup_guide_is_neither_destination_and_has_no_tabs(self, client):
-        # The guide is reached from the sidebar footer, not from the two destinations, so neither one is marked current.
+    def test_to_approve_marks_itself_current_and_has_no_tabs(self, client):
+        nav = _nav(_page(client, "/reprise/approve"))
+        assert [(link["text"], link["current"]) for link in nav.rail] == [
+            ("Library", None),
+            ("To approve", "page"),
+            ("Settings", None),
+        ]
+        assert nav.tabs == []
+
+    def test_the_setup_guide_is_no_destination_and_has_no_tabs(self, client):
+        # The guide is reached from the sidebar footer, not from the three destinations, so none of them is marked current.
         nav = _nav(_page(client, "/setup-guide"))
-        assert [(link["text"], link["current"]) for link in nav.rail] == [("Library", None), ("Settings", None)]
+        assert [(link["text"], link["current"]) for link in nav.rail] == [
+            ("Library", None),
+            ("To approve", None),
+            ("Settings", None),
+        ]
         assert nav.tabs == []
 
     @pytest.mark.parametrize(("path", "expected"), SETTINGS_PAGES.items())
@@ -160,7 +181,7 @@ class TestNavigation:
         nav = _nav(_page(client, path))
         assert [(link["text"], link["href"]) for link in nav.tabs] == TABS
         assert {link["text"]: link["current"] for link in nav.tabs if link["current"]} == {label: current}
-        assert [link["current"] for link in nav.rail] == [None, "true"]
+        assert [link["current"] for link in nav.rail] == [None, None, "true"]
 
     def test_pages_without_their_own_tab_stay_reachable_from_their_parent(self, client):
         # Nodes is linked from Advanced's own sidebar, Webhook activity from Automation's and from the Jobs shortcuts.

@@ -529,6 +529,17 @@ class RepriseStore:
         with self.marker_store._reading() as c:
             return c.execute("SELECT COUNT(DISTINCT version_id) FROM reprise_bindings WHERE active=1").fetchone()[0]
 
+    def versions_with_skips(self, review_status):
+        """The ids of the media versions that hold at least one skip in this review status ("proposed", "approved"...),
+        from one pass over the ranges: the approval queue looks only at these instead of every episode."""
+        with self.marker_store._reading() as c:
+            rows = c.execute(
+                "SELECT DISTINCT version_id FROM reprise_ranges "
+                "WHERE json_extract(data,'$.action')='skip' AND json_extract(data,'$.review_status')=?",
+                (review_status,),
+            ).fetchall()
+        return {r["version_id"] for r in rows}
+
     def list_media(self, server_id=None, cursor=None, limit=50):
         if type(limit) is not int or not 1 <= limit <= 500:
             raise ValueError("invalid page size")

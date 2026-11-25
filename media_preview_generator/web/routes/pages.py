@@ -68,6 +68,13 @@ def reprise_page():
     return render_template("reprise.html")
 
 
+@main.route("/reprise/approve")
+@login_required
+def reprise_approve_page():
+    """Everything Reprise found that waits for the owner: approve the sure ones in one click, decide the rest one by one."""
+    return render_template("reprise_approve.html")
+
+
 @main.route("/reprise/report")
 @login_required
 def reprise_report_page():
