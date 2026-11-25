@@ -356,8 +356,13 @@
       view.canUndo = entry.undone.failed.length > 0;
       return view;
     }
-    if (entry.auto) {   // sent by Reprise itself: there is only ever a send to undo
-      view.title = 'Sent ' + autoKinds(r.sent[0].kinds) + ' to Plex automatically';
+    if (entry.auto) {   // sent by Reprise itself, one row for a whole season: there is only ever a send to undo
+      const counts = { intro: 0, credits: 0 }, words = { intro: ['intro', 'intros'], credits: ['ending', 'endings'] };
+      for (const sent of r.sent) for (const kind of sent.kinds) counts[kind] += 1;
+      view.title = 'Sent ' + ['intro', 'credits'].filter(kind => counts[kind]).map(kind => plural(counts[kind], ...words[kind])).join(' and ') + ' to Plex automatically';
+      if (r.sent.length > 1) view.detail.push(plural(r.sent.length, 'episode'));
+      view.detail.push(whenSent(entry.auto.sent_at));
+      view.fresh = entry.auto.unread > 0;
       view.canUndo = true;
       return view;
     }
@@ -382,13 +387,61 @@
     return view;
   }
 
+  /* "today", "yesterday", "3 days ago": when Reprise sent something, for a row's small print. */
+  function whenSent(seconds) {
+    const days = Math.floor((Date.now() / 1000 - seconds) / 86400);
+    return days <= 0 ? 'today' : days === 1 ? 'yesterday' : days + ' days ago';
+  }
+
+  /* The list is kept on the server, so a row cleared here is gone on every screen. Nothing here touches Plex. */
+  const autoIds = entries => entries.filter(entry => entry.auto).flatMap(entry => entry.auto.change_ids);
+  async function clearNotices(entries, everything) {
+    const ids = autoIds(entries);
+    state.sent = state.sent.filter(entry => !entries.includes(entry));
+    renderSent();
+    if (ids.length) {
+      try { await api('/approvals/automatic/notices', everything ? { action: 'dismiss', all: true } : { action: 'dismiss', change_ids: ids.slice(0, 500) }); }
+      catch (error) { toast(error.message + ' It will be back next time.', { tone: 'bad' }); await loadAutomatic(); return false; }
+    }
+    return true;
+  }
+  async function clearAll() {
+    const count = state.sent.length;
+    if (await clearNotices([...state.sent], true)) toast('Cleared ' + plural(count, 'notice') + '. Nothing was changed in Plex.');
+  }
+  async function markAllRead() {
+    await api('/approvals/automatic/notices', { action: 'read', all: true });
+    for (const entry of state.sent) if (entry.auto) entry.auto.unread = 0;
+    renderSent();
+  }
+
+  function sentHead() {
+    const fresh = state.sent.filter(entry => entry.auto && entry.auto.unread > 0).length;
+    const head = el('div', 'ap-sent-head');
+    const title = el('span', 'lu-cap lu-muted lu-grow');
+    title.append(el('b', null, plural(state.sent.length, 'notice')), fresh ? ' · ' + fresh + ' new' : '');
+    const actions = el('div', 'ap-sent-tools');
+    if (fresh) {
+      const read = button('Mark all as read', { cls: 'lu-quiet', icon: 'check2-all' });
+      read.addEventListener('click', () => act(read, markAllRead));
+      actions.append(read);
+    }
+    const clear = button('Clear all', { cls: 'lu-quiet', icon: 'x-circle' });
+    clear.addEventListener('click', () => act(clear, clearAll));
+    actions.append(clear);
+    head.append(title, actions);
+    return head;
+  }
+
   function renderSent() {
     sentEl.hidden = state.sent.length === 0;
     const rows = state.sent.map(entry => {
       const view = sentView(entry);
       const row = el('div', 'ap-sent-row');
       const text = el('div', 'lu-col lu-grow');
-      text.append(el('b', 'lu-h', view.title), el('span', 'lu-cap lu-muted', view.detail.join(' · ')));
+      const title = el('b', 'lu-h', view.title);
+      if (view.fresh) title.append(' ', el('span', 'ap-new', 'New'));
+      text.append(title, el('span', 'lu-cap lu-muted', view.detail.join(' · ')));
       if (view.more.length) { const list = el('ul', 'ap-fails'); for (const line of view.more) list.append(el('li', null, line)); text.append(list); }
       const actions = el('div', 'ap-sent-actions');
       if (view.canUndo) {
@@ -396,16 +449,13 @@
         undo.addEventListener('click', () => act(undo, () => undoSent(entry)));
         actions.append(undo);
       }
-      const close = iconButton('x-lg', 'Dismiss');
-      close.addEventListener('click', () => {
-        if (entry.auto) dismissAuto(entry.auto.change_id);
-        state.sent.splice(state.sent.indexOf(entry), 1); renderSent();
-      });
+      const close = iconButton('x-lg', entry.auto ? 'Clear this notice' : 'Dismiss');
+      close.addEventListener('click', () => clearNotices([entry], false));
       actions.append(close);
       row.append(glyph(view.mark, view.tone), text, actions);
       return row;
     });
-    sentEl.replaceChildren(...rows);
+    sentEl.replaceChildren(...(rows.length ? [sentHead(), ...rows] : []));
   }
 
   async function undoSent(entry) {
@@ -425,38 +475,33 @@
     await loadQueue({ quiet: true });
   }
 
-  /* What Reprise sent by itself in the last week (kept in Plex, newest first) joins the tray as rows of the same kind.
-     A dismissed row is remembered in this browser, so it stays gone. */
-  const DISMISSED_KEY = 'repriseAutoDismissed';
-  function dismissedAuto() {
-    try { return new Set(JSON.parse(localStorage.getItem(DISMISSED_KEY) || '[]')); } catch (_) { return new Set(); }
-  }
-  function dismissAuto(changeId) {
-    const all = dismissedAuto(); all.add(changeId);
-    try { localStorage.setItem(DISMISSED_KEY, JSON.stringify([...all].slice(-200))); } catch (_) { /* private mode: it just comes back next visit */ }
-  }
-  function autoKinds(kinds) {
-    const words = { intro: ['intro', 'intros'], credits: ['ending', 'endings'] };
-    const parts = ['intro', 'credits'].filter(k => kinds.includes(k)).map(k => plural(1, words[k][0], words[k][1]));
-    return parts.join(' and ');
-  }
-  function autoEntry(item) {
-    const place = [item.show || 'An episode', item.season == null ? null : 'Season ' + item.season, item.episode == null ? null : 'E' + item.episode];
-    const sent = { media_version_id: item.media_version_id, change_id: item.change_id, span_ids: item.span_ids || [], label: item.label, kinds: item.kinds || [] };
-    return {
-      result: { show: item.show, season: item.season, sent: [sent], approved: [], failed: [], stopped: null, backup: null },
-      label: place.filter(Boolean).join(' · '), undone: null, busy: false,
-      auto: { change_id: item.change_id, sent_at: item.sent_at || 0 },
-    };
+  /* What Reprise sent by itself (kept in Plex, newest first) joins the tray as one row for each show and season, so a
+     season of sends is one notice, not twenty. Reading and clearing them is kept on the server (/approvals/automatic/notices). */
+  function autoGroups(items) {
+    const groups = new Map();
+    for (const item of items) {
+      const key = keyOf(item.show || '', item.season == null ? '' : item.season);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(item);
+    }
+    return [...groups.values()].map(list => {
+      const first = list[0];
+      const place = [first.show || 'An episode', first.season == null ? null : 'Season ' + first.season];
+      const sent = list.map(item => ({ media_version_id: item.media_version_id, change_id: item.change_id, span_ids: item.span_ids || [], label: item.label, kinds: item.kinds || [] }));
+      return {
+        result: { show: first.show, season: first.season, sent, approved: [], failed: [], stopped: null, backup: null },
+        label: place.filter(Boolean).join(' · '), undone: null, busy: false,
+        auto: { change_ids: list.map(item => item.change_id), sent_at: first.sent_at || 0, unread: list.filter(item => !item.read).length },
+      };
+    });
   }
   async function loadAutomatic() {
     let found;
-    try { found = (await api('/approvals/automatic?days=7')).sent || []; } catch (_) { return; }   // the tray is a courtesy: the queue still works
-    const gone = dismissedAuto(), current = new Set(found.map(item => item.change_id));
+    try { found = (await api('/approvals/automatic')).sent || []; } catch (_) { return; }   // the tray is a courtesy: the queue still works
     const mine = state.sent.filter(entry => !entry.auto);
-    const kept = state.sent.filter(entry => entry.auto && (current.has(entry.auto.change_id) || entry.undone));
-    const known = new Set(kept.map(entry => entry.auto.change_id));
-    const fresh = found.filter(item => !gone.has(item.change_id) && !known.has(item.change_id)).map(autoEntry);
+    const kept = state.sent.filter(entry => entry.auto && entry.undone);
+    const known = new Set(kept.flatMap(entry => entry.auto.change_ids));
+    const fresh = autoGroups(found.filter(item => !known.has(item.change_id)));
     const auto = [...kept, ...fresh].sort((a, b) => b.auto.sent_at - a.auto.sent_at);
     state.sent = [...mine, ...auto];
     renderSent();

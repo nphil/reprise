@@ -505,3 +505,86 @@ def test_the_history_route_only_looks_back_as_far_as_asked(client, lab):
 @pytest.mark.parametrize("days", ["0", "31", "x", "1.5"])
 def test_a_bad_number_of_days_is_a_400(client, lab, days):
     assert client.get(f"/api/reprise/approvals/automatic?days={days}").status_code == 400
+
+
+# ── the in-app list: read, cleared, expiring ───────────────────────────────────────────────────────────────────
+
+
+def test_notices_can_be_marked_read_or_cleared_and_read_ones_expire_after_a_week(lab):
+    one, two = credits_episode(lab, 1), credits_episode(lab, 2)
+    lab.local.sweep(T0)
+    now = T0 + 60
+    ids = {e["media_version_id"]: e["change_id"] for e in approvals.recent_automatic(lab.service)}
+    reads = lambda at: {e["media_version_id"]: e["read"] for e in approvals.automatic_notices(lab.service, now=at)}  # noqa: E731
+
+    assert reads(now) == {one.vid: False, two.vid: False}
+    assert approvals.mark_automatic(lab.service, "read", [ids[one.vid], "not-a-change"], now=now) == 1
+    assert approvals.mark_automatic(lab.service, "read", [ids[one.vid]], now=now) == 0  # already read
+    assert reads(now) == {one.vid: True, two.vid: False}
+    assert reads(now + 7 * 86400 + 1) == {two.vid: False}  # a read one goes a week after it was read
+
+    assert approvals.mark_automatic(lab.service, "dismissed", now=now) == 2  # clear all
+    assert reads(now) == {}
+    assert approvals.mark_automatic(lab.service, "read", [ids[two.vid]], now=now) == 0  # read never un-clears
+    assert reads(now) == {}
+    assert len(approvals.recent_automatic(lab.service)) == 2  # the history itself is untouched
+
+
+def test_mark_all_as_read_marks_only_what_is_unread_and_clearing_one_leaves_the_rest(lab):
+    one, two = credits_episode(lab, 1), credits_episode(lab, 2)
+    lab.local.sweep(T0)
+    now = T0 + 60
+    ids = {e["media_version_id"]: e["change_id"] for e in approvals.recent_automatic(lab.service)}
+
+    assert approvals.mark_automatic(lab.service, "read", None, now=now) == 2
+    assert approvals.mark_automatic(lab.service, "read", None, now=now) == 0
+    assert approvals.mark_automatic(lab.service, "dismissed", [ids[one.vid]], now=now) == 1
+    assert [e["media_version_id"] for e in approvals.automatic_notices(lab.service, now=now)] == [two.vid]
+
+
+def test_a_mark_is_forgotten_with_its_change_after_thirty_days(lab):
+    credits_episode(lab, 1)
+    lab.local.sweep(T0)
+    approvals.mark_automatic(lab.service, "dismissed", None, now=T0 + 60)
+    approvals.automatic_notices(lab.service, now=T0 + 60 + 31 * 86400)
+    with lab.store.transaction() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM reprise_auto_notice").fetchone()[0] == 0
+
+
+def test_the_notices_route_marks_read_clears_and_leaves_plex_alone(client, lab):
+    credits_episode(lab, 1)
+    credits_episode(lab, 2)
+    lab.local.sweep(T0)
+    with lab.store.transaction() as conn:
+        conn.execute("UPDATE reprise_publication_changes SET updated_at=?", (time.time() - 60,))
+    before = lab.rows()
+    notices = "/api/reprise/approvals/automatic/notices"
+    listing = lambda: client.get("/api/reprise/approvals/automatic").get_json()["sent"]  # noqa: E731
+
+    assert [e["read"] for e in listing()] == [False, False]
+    assert client.post(notices, json={"action": "read", "all": True}).get_json() == {"marked": 2}
+    assert [e["read"] for e in listing()] == [True, True]
+    first = listing()[0]["change_id"]
+    assert client.post(notices, json={"action": "dismiss", "change_ids": [first]}).get_json() == {"marked": 1}
+    assert [e["change_id"] for e in listing()] != [first] and len(listing()) == 1
+    assert client.post(notices, json={"action": "dismiss", "all": True}).get_json() == {"marked": 1}
+    assert listing() == []
+    assert lab.rows() == before
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"action": "read"},
+        {"action": "wipe", "all": True},
+        {"action": "read", "all": False},
+        {"action": "read", "all": True, "change_ids": ["a"]},
+        {"action": "read", "change_ids": []},
+        {"action": "read", "change_ids": [1]},
+        {"action": "read", "change_ids": ["a"] * 501},
+        {"action": "read", "all": True, "extra": 1},
+    ],
+)
+def test_the_notices_route_refuses_a_bad_body(client, lab, body):
+    assert client.post("/api/reprise/approvals/automatic/notices", json=body).status_code == 400

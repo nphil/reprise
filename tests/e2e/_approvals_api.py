@@ -131,6 +131,7 @@ class ApprovalsApi:
     ) -> None:
         self.sending = sending
         self.automatic = list(automatic or [])  # what Reprise sent by itself: ``GET /approvals/automatic``
+        self.notice_marks: dict[str, str] = {}  # change id -> "read" or "dismissed", as the server keeps them
         self.spans = spans if spans is not None else default_spans()
         self.cuts = [31_000, 32_000, 33_000] if cuts is None else list(cuts)
         self.revisions = dict.fromkeys(EPISODES, 1)
@@ -181,7 +182,15 @@ class ApprovalsApi:
         if path == "/approvals/season":
             return _fulfill_json(route, self.season(query["show"], int(query["season"])))
         if path == "/approvals/automatic":
-            return _fulfill_json(route, {"sent": self.automatic})
+            listed = [a for a in self.automatic if self.notice_marks.get(a["change_id"]) != "dismissed"]
+            return _fulfill_json(route, {"sent": [{**a, "read": a["change_id"] in self.notice_marks} for a in listed]})
+        if path == "/approvals/automatic/notices":
+            mark = "read" if body["action"] == "read" else "dismissed"
+            ids = [a["change_id"] for a in self.automatic] if body.get("all") else body["change_ids"]
+            for change_id in ids:
+                if mark == "dismissed" or self.notice_marks.get(change_id) != "dismissed":
+                    self.notice_marks[change_id] = mark
+            return _fulfill_json(route, {"marked": len(ids)})
         if path == "/approvals/send":
             status, answer = self.send(body)
         elif path == "/approvals/undo":

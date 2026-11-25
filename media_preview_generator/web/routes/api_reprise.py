@@ -2,7 +2,6 @@
 
 import mimetypes
 import re
-import time
 from dataclasses import asdict, is_dataclass
 from functools import wraps
 
@@ -379,10 +378,30 @@ def create_reprise_blueprint(service):
     @bp.get("/api/reprise/approvals/automatic")
     @owner
     def approvals_automatic():
-        """What Reprise sent to Plex by itself (and is still there) in the last ``days`` days (1 to 30, default 7), newest
-        first, each with the ids its Undo needs."""
-        days = _query_int("days", 1, 30, default=7)
-        return jsonify(_json({"sent": approvals.recent_automatic(service, since=time.time() - days * 86400)}))
+        """What Reprise sent to Plex by itself (and is still there) in the last ``days`` days (1 to 30, default 30), newest
+        first, each with the ids its Undo needs and ``read``. Cleared ones, and ones marked read over a week ago, are left
+        out."""
+        days = _query_int("days", 1, 30, default=30)
+        return jsonify(_json({"sent": approvals.automatic_notices(service, days=days)}))
+
+    @bp.post("/api/reprise/approvals/automatic/notices")
+    @owner
+    def approvals_automatic_notices():
+        """Mark what Reprise sent by itself as read, or clear it from the list. Body: ``action`` (``read`` or
+        ``dismiss``) and either ``change_ids`` (1 to 500 ids from the list) or ``all: true`` (everything listed).
+        Nothing in Plex changes. Answers ``{"marked": <how many>}``."""
+        data = _body({"action", "change_ids", "all"}, {"action"})
+        ids = data.get("change_ids")
+        if (
+            data["action"] not in ("read", "dismiss")
+            or ("all" in data) == ("change_ids" in data)
+            or ("all" in data and data["all"] is not True)
+            or ("change_ids" in data and not (isinstance(ids, list) and 0 < len(ids) <= 500))
+            or any(not isinstance(i, str) for i in ids or ())
+        ):
+            raise ValueError("Invalid request")
+        state = "read" if data["action"] == "read" else "dismissed"
+        return jsonify(marked=approvals.mark_automatic(service, state, ids))
 
     @bp.post("/api/reprise/approvals/decide")
     @owner

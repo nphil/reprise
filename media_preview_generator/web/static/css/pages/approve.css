@@ -30,6 +30,10 @@
 .ap-sent-row + .ap-sent-row { padding-top: var(--lu-space-3); border-top: 1px solid var(--lu-material-edge); }
 .ap-sent-row > .lu-col { padding-top: 2px; }
 .ap-sent-actions { display: flex; align-items: center; gap: var(--lu-space-1); flex: none; }
+.ap-sent-head { position: sticky; top: 0; z-index: 1; display: flex; flex-wrap: wrap; align-items: center; gap: var(--lu-space-2) var(--lu-space-3); padding-bottom: var(--lu-space-2); background: var(--lu-reading); border-bottom: 1px solid var(--lu-material-edge); }
+.ap-sent-head > .lu-grow { flex: 1 1 140px; min-width: 0; }
+.ap-sent-tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--lu-space-1); }
+.ap-new { display: inline-block; padding: 0 var(--lu-space-2); border-radius: var(--lu-radius-pill); background: var(--lu-accent-fill); color: var(--lu-accent-fill-ink); font: 700 var(--lu-type-caption)/1.5 var(--lu-font); vertical-align: 1px; }
 .ap-fails { margin: var(--lu-space-1) 0 0; padding-left: var(--lu-space-4); color: var(--lu-ink-2); font: 400 var(--lu-type-caption)/1.45 var(--lu-font); }
 
 /* ── The review: one episode at a time ─────────────────────────────────────────────────────────────────────── */

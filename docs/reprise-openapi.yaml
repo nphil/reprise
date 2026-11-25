@@ -200,12 +200,25 @@ paths:
       summary: What Reprise sent to Plex by itself and is still there, newest first (owner only)
       security: [{owner: []}]
       parameters:
-        - {name: days, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 30, default: 7}}
+        - {name: days, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 30, default: 30}}
       responses:
         '200':
-          description: "Each entry has what /api/reprise/approvals/undo needs (media_version_id, change_id, span_ids, label). An undone change is not listed."
-          content: {application/json: {schema: {type: object, required: [sent], properties: {sent: {type: array, items: {type: object, required: [change_id, media_version_id, show, season, episode, label, kinds, sent_at, span_ids, origin], properties: {change_id: {type: string}, media_version_id: {type: string}, show: {type: string, nullable: true}, season: {type: integer, nullable: true}, episode: {type: integer, nullable: true}, label: {type: string, example: S01E02}, kinds: {type: array, items: {type: string, enum: [intro, credits]}}, sent_at: {type: number, description: Seconds since 1970}, span_ids: {type: array, items: {type: string}, description: The skips an undo withdraws; empty for a detector-confirmed send}, origin: {type: string, enum: [sure, local_model]}}}}}}}}
+          description: "Each entry has what /api/reprise/approvals/undo needs (media_version_id, change_id, span_ids, label), and read (true once marked read). An undone change is not listed, nor a cleared one, nor one marked read over a week ago."
+          content: {application/json: {schema: {type: object, required: [sent], properties: {sent: {type: array, items: {type: object, required: [change_id, media_version_id, show, season, episode, label, kinds, sent_at, span_ids, origin, read], properties: {read: {type: boolean}, change_id: {type: string}, media_version_id: {type: string}, show: {type: string, nullable: true}, season: {type: integer, nullable: true}, episode: {type: integer, nullable: true}, label: {type: string, example: S01E02}, kinds: {type: array, items: {type: string, enum: [intro, credits]}}, sent_at: {type: number, description: Seconds since 1970}, span_ids: {type: array, items: {type: string}, description: The skips an undo withdraws; empty for a detector-confirmed send}, origin: {type: string, enum: [sure, local_model]}}}}}}}}
         '400': {description: "days is not a whole number from 1 to 30"}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /api/reprise/approvals/automatic/notices:
+    post:
+      summary: Mark what Reprise sent by itself as read, or clear it from the list (owner only; nothing in Plex changes)
+      security: [{owner: []}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, additionalProperties: false, required: [action], properties: {action: {type: string, enum: [read, dismiss]}, change_ids: {type: array, minItems: 1, maxItems: 500, items: {type: string}}, all: {type: boolean, enum: [true], description: Every notice still listed; send this or change_ids, not both}}}}}
+      responses:
+        '200':
+          description: "How many notices were marked. A read mark never undoes a clear; an id that is not listed is ignored."
+          content: {application/json: {schema: {type: object, required: [marked], properties: {marked: {type: integer}}}}}
+        '400': {description: "Not exactly one of change_ids and all, an unknown action or key, or a bad list"}
         '403': {$ref: '#/components/responses/Forbidden'}
   /api/reprise/notifications:
     get:

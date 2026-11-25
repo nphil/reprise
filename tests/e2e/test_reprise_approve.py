@@ -7,7 +7,6 @@ and picture endpoints are answered by ``_approvals_api.ApprovalsApi``; the shell
 
 from __future__ import annotations
 
-import json
 import re
 
 import pytest
@@ -134,28 +133,34 @@ def test_one_click_sends_the_sure_ones_and_undo_puts_them_back(
     assert errors == []
 
 
+def three_automatic() -> list[dict]:
+    """What Reprise sent by itself, newest first: two Community episodes and one Parks and Recreation episode."""
+    return [
+        automatic_entry("v201", 1, sent_at=1_700_000_100),
+        automatic_entry("v301", 3, kinds=("intro",), sent_at=1_700_000_050),
+        automatic_entry("v202", 2, kinds=("intro", "credits"), sent_at=1_700_000_000),
+    ]
+
+
 @pytest.mark.e2e
-def test_what_reprise_sent_by_itself_is_listed_and_can_be_undone_or_dismissed(
+def test_what_reprise_sent_by_itself_is_one_notice_per_season_and_can_be_undone_or_cleared(
     authed_page: Page, app_url: str, errors: list[str]
 ) -> None:
     page = authed_page
-    api = open_page(
-        page,
-        app_url,
-        automatic=[
-            automatic_entry("v201", 1, sent_at=1_700_000_100),
-            automatic_entry("v202", 2, kinds=("intro", "credits"), sent_at=1_700_000_000),
-        ],
-    )
+    api = open_page(page, app_url, automatic=three_automatic())
     sent = page.locator("#apSent")
+    rows = sent.locator(".ap-sent-row")
 
-    expect(sent).to_contain_text("Sent 1 ending to Plex automatically")
-    expect(sent).to_contain_text("Community · Season 2 · E1")
-    expect(sent).to_contain_text("Sent 1 intro and 1 ending to Plex automatically")
-    assert [q for m, p, q, _ in api.calls if p == "/approvals/automatic"][0] == {"days": "7"}
+    expect(rows).to_have_count(2)  # three episodes, two seasons: two notices
+    expect(rows.first).to_contain_text("Sent 1 intro and 2 endings to Plex automatically")
+    expect(rows.first).to_contain_text("Community · Season 2 · 2 episodes")
+    expect(rows.nth(1)).to_contain_text("Sent 1 intro to Plex automatically")
+    expect(rows.nth(1)).to_contain_text("Parks and Recreation · Season 1")
+    expect(sent).to_contain_text("2 notices · 2 new")
+    assert [q for m, p, q, _ in api.calls if p == "/approvals/automatic"][0] == {}
 
-    sent.locator(".ap-sent-row").first.get_by_role("button", name="Undo").click()
-    expect(sent).to_contain_text("Undone")
+    rows.first.get_by_role("button", name="Undo").click()  # one Undo for the whole season
+    expect(rows.first).to_contain_text("Undone")
     assert api.posts("/approvals/undo") == [
         {
             "changes": [
@@ -164,16 +169,52 @@ def test_what_reprise_sent_by_itself_is_listed_and_can_be_undone_or_dismissed(
                     "change_id": "auto-1",
                     "span_ids": ["owner-v201-credits"],
                     "label": "S02E01",
-                }
+                },
+                {
+                    "media_version_id": "v202",
+                    "change_id": "auto-2",
+                    "span_ids": ["owner-v202-intro", "owner-v202-credits"],
+                    "label": "S02E02",
+                },
             ]
         }
     ]
-    expect(sent.locator(".ap-sent-row")).to_have_count(2)  # the undone one stays, as "Undone", until dismissed
+    expect(rows).to_have_count(2)  # the undone one stays, as "Undone", until cleared
 
-    sent.locator(".ap-sent-row").nth(1).get_by_role("button", name="Dismiss").click()
-    expect(sent.locator(".ap-sent-row")).to_have_count(1)
-    assert json.loads(page.evaluate("localStorage.getItem('repriseAutoDismissed')")) == ["auto-2"]
-    page.reload()  # a dismissed row stays gone, and the undone one is no longer sent
+    rows.nth(1).get_by_role("button", name="Clear this notice").click()
+    expect(rows).to_have_count(1)
+    assert api.posts("/approvals/automatic/notices") == [{"action": "dismiss", "change_ids": ["auto-3"]}]
+    page.reload()  # a cleared notice stays gone, and the undone one is no longer sent
+    expect(page.locator("#apQueue")).to_be_visible()
+    expect(sent).to_be_hidden()
+    assert errors == []
+
+
+@pytest.mark.e2e
+def test_mark_all_as_read_and_clear_all_work_on_a_phone(authed_page: Page, app_url: str, errors: list[str]) -> None:
+    page = authed_page
+    page.set_viewport_size({"width": 390, "height": 800})
+    api = open_page(page, app_url, automatic=three_automatic())
+    sent = page.locator("#apSent")
+    rows = sent.locator(".ap-sent-row")
+    expect(sent.locator(".ap-new")).to_have_count(2)
+
+    sent.get_by_role("button", name="Mark all as read").click()
+    expect(sent.locator(".ap-new")).to_have_count(0)
+    expect(sent.get_by_role("button", name="Mark all as read")).to_have_count(0)
+    assert api.posts("/approvals/automatic/notices") == [{"action": "read", "all": True}]
+    box = sent.get_by_role("button", name="Clear all").bounding_box()
+    assert box is not None and box["x"] >= 0 and box["x"] + box["width"] <= 390
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+    page.reload()  # read stays read
+    expect(rows).to_have_count(2)
+    expect(sent.locator(".ap-new")).to_have_count(0)
+
+    sent.get_by_role("button", name="Clear all").click()
+    expect(sent).to_be_hidden()
+    expect(page.locator("#apToasts")).to_contain_text("Cleared 2 notices. Nothing was changed in Plex.")
+    assert api.posts("/approvals/automatic/notices")[-1] == {"action": "dismiss", "all": True}
+    page.reload()
     expect(page.locator("#apQueue")).to_be_visible()
     expect(sent).to_be_hidden()
     assert errors == []

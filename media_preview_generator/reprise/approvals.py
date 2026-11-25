@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import statistics
+import time
 from collections import defaultdict
 
 from loguru import logger
@@ -810,13 +811,14 @@ def _undo_reason(exc):
 # ── what Reprise sent by itself ──────────────────────────────────────────────────────────────────────────────────
 
 
-def recent_automatic(service, *, since=None, limit=50):
+def recent_automatic(service, *, since=None, limit=50, exclude=()):
     """What Reprise sent to Plex by itself that is still in Plex, newest first: ``[entry]`` for each applied change the
     journal names Reprise as the actor of (a later undo takes it out of the list). ``since`` is the earliest ``sent_at``
     (seconds since 1970), ``limit`` the most entries. An entry is ``{"change_id", "media_version_id", "show", "season",
     "episode", "label", "kinds", "sent_at", "span_ids", "origin"}``. ``span_ids`` are the exact skips to withdraw when
     the change is undone (what ``undo`` takes along with ``change_id``): the ones Reprise set from the local model's
-    suggestions (``origin`` ``local_model``), none for a skip the detector confirmed (``origin`` ``sure``)."""
+    suggestions (``origin`` ``local_model``), none for a skip the detector confirmed (``origin`` ``sure``). ``exclude``
+    holds change ids to leave out."""
     if service.publisher is None:
         return []
     sql = (
@@ -832,6 +834,8 @@ def recent_automatic(service, *, since=None, limit=50):
         rows = conn.execute(sql + " ORDER BY updated_at DESC,rowid DESC LIMIT ?", (*args, limit)).fetchall()
     found = []
     for row in rows:
+        if row["id"] in exclude:
+            continue
         version_id = row["media_version_id"]
         kinds = {kind for kind, _start, _end in json.loads(row["projection"] or "[]")}
         entry = next((e for e in json.loads(row["canonical"] or "[]") if e["version"]["id"] == version_id), None)
@@ -858,3 +862,60 @@ def recent_automatic(service, *, since=None, limit=50):
             }
         )
     return found
+
+
+# ── the in-app list of what Reprise sent by itself: read, cleared, expiring ────────────────────────────────────────
+
+NOTICE_DAYS = 30  # nothing older is listed
+NOTICE_KEEP_READ_S = 7 * 86400  # a notice marked read goes this long after it was marked
+NOTICE_LIMIT = 500
+
+
+def _notice_states(conn, now):
+    """``{change_id: (state, at)}`` for what the owner marked ``read`` or ``dismissed``. A mark older than the time
+    window is forgotten: its change is no longer listed anyway."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS reprise_auto_notice ("
+        "change_id TEXT PRIMARY KEY, state TEXT NOT NULL, at REAL NOT NULL)"
+    )
+    conn.execute("DELETE FROM reprise_auto_notice WHERE at<?", (now - NOTICE_DAYS * 86400,))
+    return {r[0]: (r[1], r[2]) for r in conn.execute("SELECT change_id,state,at FROM reprise_auto_notice")}
+
+
+def automatic_notices(service, *, days=NOTICE_DAYS, now=None):
+    """What the owner still has to look at of what Reprise sent by itself: ``recent_automatic`` entries (newest first)
+    without the cleared ones and without the read ones marked read over a week ago, each with ``read`` (true once
+    marked read). The history itself (``recent_automatic``) is not touched by clearing."""
+    now = time.time() if now is None else now
+    if service.publisher is None:
+        return []
+    with service.store.transaction() as conn:
+        marks = _notice_states(conn, now)
+    gone = {i for i, (state, at) in marks.items() if state == "dismissed" or at < now - NOTICE_KEEP_READ_S}
+    return [
+        {**entry, "read": entry["change_id"] in marks}
+        for entry in recent_automatic(service, since=now - days * 86400, limit=NOTICE_LIMIT, exclude=gone)
+    ]
+
+
+def mark_automatic(service, state, change_ids=None, *, now=None):
+    """Mark notices ``read`` or ``dismissed`` (cleared). ``change_ids`` is the list to mark; ``None`` is every one still
+    listed. An id that is not an automatic change is ignored, and a read mark never undoes a clear. Nothing in Plex or
+    in the journal changes. Returns how many notices were marked."""
+    now = time.time() if now is None else now
+    listed = automatic_notices(service, now=now)
+    if change_ids is None:
+        wanted = [e["change_id"] for e in listed if state == "dismissed" or not e["read"]]
+    else:
+        known = {e["change_id"]: e for e in listed}
+        wanted = [i for i in dict.fromkeys(change_ids) if i in known and (state == "dismissed" or not known[i]["read"])]
+    if not wanted:
+        return 0
+    upsert = (
+        "INSERT INTO reprise_auto_notice(change_id,state,at) VALUES (?,?,?) ON CONFLICT(change_id) DO UPDATE SET "
+        "state=excluded.state, at=excluded.at"
+    ) + ("" if state == "dismissed" else " WHERE reprise_auto_notice.state NOT IN ('dismissed','read')")
+    with service.store.transaction() as conn:
+        _notice_states(conn, now)
+        conn.executemany(upsert, [(i, state, now) for i in wanted])
+    return len(wanted)
