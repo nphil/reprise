@@ -527,6 +527,59 @@ def test_approving_both_kinds_replaces_both(case):
     assert _rows(c["plex"]) == before
 
 
+def _seed_row(path, kind, start, end, index, extra):
+    """A marker row exactly as stored, whatever its times are (``_seed_plex_marker`` only writes sensible ones)."""
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "INSERT INTO taggings (metadata_item_id,tag_id,[index],text,time_offset,end_time_offset,extra_data) VALUES (1,12,?,?,?,?,?)",
+            (index, kind, start, end, extra),
+        )
+
+
+@pytest.mark.parametrize("stored", [(1242638, 1244638), (50000, 50000), (90000, 10000)])
+def test_a_marker_of_the_replaced_kind_with_an_empty_or_backwards_span_is_replaced_and_undo_puts_it_back(case, stored):
+    # (1242638, 1244638) is the row Plex holds for Community S02E11: it serves as ending before it starts.
+    c = case
+    _seed_plex_marker(c["plex"], "intro", 10000, 20000, 0)
+    _seed_row(c["plex"], "credits", *stored, 1, "pv%3Aversion=4")
+    result = _approve(c, [("credits", 60000, 80000)])
+    before = _rows(c["plex"])
+    junk = [r for r in _plex_marker_rows(c["plex"]) if r[2] == "credits"]
+    intro = [r for r in _plex_marker_rows(c["plex"]) if r[2] == "intro"][0]
+
+    prepared = c["publisher"].prepare(c["version"].id, result.result_revision, c["identity"], "owner")
+
+    [recorded] = [m for m in prepared["before_markers"] if m["type"] == "credits"]
+    # The broken row is recorded as Plex had it, so undo can put it back.
+    assert recorded["unchanged"] is False and recorded["start_ms"] >= recorded["end_ms"]
+    assert {"type": "credits", "start_ms": 60000, "end_ms": 80000, "rating_key": "1", "unchanged": False} in prepared[
+        "after_markers"
+    ]
+    c["publisher"].apply(prepared["id"], "owner")
+    rows = _plex_marker_rows(c["plex"])
+    credits = [r for r in rows if r[2] == "credits"]
+    assert len(credits) == 1 and credits[0][3:5] == (58000, 82000) and credits[0][0] != junk[0][0]
+    assert [(r[0], *r[2:]) for r in rows if r[2] == "intro"] == [(intro[0], *intro[2:])]  # the intro is left alone
+    c["publisher"].undo(prepared["id"], "owner")
+    assert _rows(c["plex"]) == before and [r for r in _plex_marker_rows(c["plex"]) if r[2] == "credits"] == junk
+
+
+@pytest.mark.parametrize(
+    ("broken_kind", "stored", "extra"),
+    [("intro", (20000, 10000), "pv%3Aversion=5"), ("credits", (1242638, 1244638), "pv%3Aversion=4")],
+)
+def test_a_marker_with_a_broken_span_of_a_kind_that_is_not_sent_still_refuses(case, broken_kind, stored, extra):
+    c = case
+    _seed_row(c["plex"], broken_kind, *stored, 0, extra)
+    result = _approve(c, [("credits", 60000, 80000) if broken_kind == "intro" else ("intro", 10000, 20000)])
+    before = _rows(c["plex"])
+
+    with pytest.raises(ValueError, match="Existing Plex marker bounds are unsupported"):
+        c["publisher"].prepare(c["version"].id, result.result_revision, c["identity"], "owner")
+
+    assert _rows(c["plex"]) == before
+
+
 @pytest.mark.parametrize("kept_kind", ["intro", "credits"])
 def test_unsupported_encoding_of_the_kept_kind_still_refuses(case, kept_kind):
     c = case

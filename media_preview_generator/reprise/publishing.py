@@ -343,6 +343,10 @@ class ReprisePublisher:
         old = [r for r in before["taggings"] if r["tag_id"] in marker_tags]
         if any(r["tag_id"] != tag_id or r["text"] not in ("intro", "credits") for r in old):
             raise ValueError("Existing Plex marker representation is unsupported")
+        # Only approved kinds are replaced. A row of one of them whose span is empty or runs backwards plays nothing in
+        # Plex (a failed credits detection left one on Community S02E11): it goes with the rest of its kind, and the
+        # change's `before` snapshot keeps it as it was, so undo puts it back byte for byte.
+        approved_kinds = {kind for kind, _, _ in projection}
         for row in old:
             try:
                 fields, _ = plex_db.decode_extra_data(row["extra_data"])
@@ -360,11 +364,10 @@ class ReprisePublisher:
             start, end = plex_db._served_times(
                 MarkerType(row["text"]), row["time_offset"], row["end_time_offset"], fields.get("pv:final") == "1"
             )
-            if not 0 <= start < end:
+            if not 0 <= start < end and row["text"] not in approved_kinds:
                 raise ValueError("Existing Plex marker bounds are unsupported")
-        # Only approved kinds are replaced. Rows and part payloads of any other kind stay exactly as Plex has them
-        # (they were still validated above), so fixing credits never touches Plex's intro, and the reverse.
-        approved_kinds = {kind for kind, _, _ in projection}
+        # Rows and part payloads of any other kind stay exactly as Plex has them (they were still validated above), so
+        # fixing credits never touches Plex's intro, and the reverse.
         columns = [r[1] for r in conn.execute("PRAGMA table_info(taggings)")]
         known = {
             "id",
