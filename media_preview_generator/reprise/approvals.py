@@ -584,16 +584,20 @@ def _send_one(service, version_id):
 
 
 def _episode(rows, version_id):
-    meta = rows[version_id]["metadata"]
+    row = rows.get(version_id)
+    if row is None:  # an id the caller named that is no longer an episode of the library
+        return {"media_version_id": version_id, "episode": None, "label": "an episode"}
+    meta = row["metadata"]
     return {"media_version_id": version_id, "episode": meta.get("episode"), "label": episode_label(meta)}
 
 
-def send(service, show, season, scope, *, to_plex=True, now=None):
+def send(service, show, season, scope, *, to_plex=True, now=None, only=None):
     """Approve and send one season. ``scope`` ``sure`` first approves the season's sure ones (and only those) as the
     owner's own exact skips; ``approved`` takes what the owner already approved. With ``to_plex`` they are then sent:
     Plex's database is backed up first (no backup, no write) and every change goes through the publisher's own checks,
-    one episode at a time. Without it (sending is off) the sure ones are only approved. Returns what was approved,
-    sent and left, with the ids ``undo`` needs."""
+    one episode at a time. Without it (sending is off) the sure ones are only approved. ``only`` (episode ids) limits
+    all of this to those episodes: any other is never touched, and one of them that is not sure any more is reported
+    in ``failed``. Returns what was approved, sent and left, with the ids ``undo`` needs."""
     state = sending(service)
     if to_plex and not state["enabled"]:
         raise ReviewRefused(state["message"])
@@ -602,10 +606,9 @@ def send(service, show, season, scope, *, to_plex=True, now=None):
     rows = _tv_rows(service)
     title = _pick_show(sorted({str(r["metadata"]["show_title"]) for r in rows.values()}), show)
     group = _scan(service, title, season).get((title, season)) or {SURE: [], NEEDS: [], "ready": []}
-    todo = sorted(
-        {i["media_version_id"] for i in group[SURE if scope == "sure" else "ready"]},
-        key=lambda v: (rows[v]["metadata"].get("episode") or 0, v),
-    )
+    wanted = None if only is None else set(only)
+    ids = {i["media_version_id"] for i in group[SURE if scope == "sure" else "ready"]}
+    todo = sorted(ids if wanted is None else ids & wanted, key=lambda v: (rows[v]["metadata"].get("episode") or 0, v))
     if not todo:
         raise ReviewRefused(
             "There is nothing sure left to approve in this season."
@@ -615,7 +618,7 @@ def send(service, show, season, scope, *, to_plex=True, now=None):
     backup = _backup(service, todo, now) if to_plex else None
     approved, failed, spans_of = [], [], {}
     if scope == "sure":
-        outcome = service.approve_confident(title, season)
+        outcome = service.approve_confident(title, season, only=wanted)
         failed = [{**_episode(rows, s["id"]), "reason": s["reason"]} for s in outcome["skipped"]]
         kinds_of = {}
         for entry in outcome["approved"]:

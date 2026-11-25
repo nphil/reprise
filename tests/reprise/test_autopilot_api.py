@@ -205,12 +205,13 @@ def test_the_real_app_starts_automatic_mode_and_its_sharing_page_holds_the_panel
     # Everything is on until the owner turns a switch off; each switch is kept in its own setting.
     assert (shown["auto_send"], shown["backfill"], shown["alerts"]) == (True, True, True)
     # A new install has not allowed sending to Plex yet, and the page says so.
-    assert shown["status"] == {
+    assert {k: v for k, v in shown["status"].items() if k != "notifications"} == {
         "queue_length": 0,
         "last_reconcile": None,
         "last_alert": None,
         "auto_send_blocked": "Sending to Plex is switched off, so nothing is sent.",
     }
+    assert shown["status"]["notifications"]["enabled"] is True
     assert (changed["auto_send"], changed["backfill"], changed["alerts"]) == (False, True, False)
     assert changed["status"]["auto_send_blocked"] is None  # nothing to report while the switch is off
     assert (stored.get("reprise_auto_send"), stored.get("reprise_alerts_enabled")) == (False, False)

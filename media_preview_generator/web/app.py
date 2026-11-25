@@ -925,6 +925,7 @@ def create_app(config_dir: str | None = None) -> Flask:
     from ..reprise.service import RepriseService, SettingsRegistry, set_service
     from ..reprise.store import RepriseStore
     from .routes.api_reprise import create_reprise_blueprint
+    from .routes.api_reprise_notify import create_notify_blueprint
 
     reprise_store = RepriseStore(get_marker_store(config_dir))
     _end_interrupted_reprise_analyses(reprise_store)
@@ -945,6 +946,7 @@ def create_app(config_dir: str | None = None) -> Flask:
         logger.exception("Reprise's automatic mode could not start; everything else works as before")
     app.extensions["reprise"] = reprise_service
     app.register_blueprint(create_reprise_blueprint(reprise_service))
+    app.register_blueprint(create_notify_blueprint(reprise_service))
     _resume_reprise_after_restart(reprise_service)
 
     @app.context_processor
