@@ -376,7 +376,7 @@ class TestSignedInTestClientsSkipIt:
 
 
 class TestTheSharingSwitchSaysWhatIsMissing:
-    """The refusal text is the guide's sentence, and it reaches the page instead of "Invalid request or operation"."""
+    """The refusal text is the guide's sentence, and it reaches the page instead of the generic "couldn't do that"."""
 
     def test_the_refusal_reaches_the_client_in_plain_words(self, make_app, tmp_path):
         client = make_app(settings={"setup_complete": True}).test_client()
@@ -398,4 +398,7 @@ class TestTheSharingSwitchSaysWhatIsMissing:
 
         answer = client.patch("/api/reprise/settings", json={"writes_enabled": "yes"})
 
-        assert (answer.status_code, answer.get_json()) == (400, {"error": "Invalid request or operation"})
+        assert (answer.status_code, answer.get_json()) == (
+            400,
+            {"error": "Reprise couldn't do that. Refresh the page and try again."},
+        )

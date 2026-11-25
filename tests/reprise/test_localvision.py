@@ -302,8 +302,8 @@ def test_a_new_verdict_is_an_approve_only_suggestion_with_its_confidence_and_rea
         ("Local model",),
     )
     assert suggestion.reason == (
-        "Suggested by a local vision model that looked at the episode's pictures — not confirmed by Reprise. "
-        "Confidence: high."
+        "Suggested by a local vision model that looked at the episode's pictures. "
+        "Reprise didn't find it in other episodes. Confidence: high."
     )
     [evidence] = out.evidence
     assert evidence.metrics["local_model"]["confidence"] == "high"

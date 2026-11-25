@@ -51,7 +51,7 @@ from tests.reprise.test_autosend import (
 )
 from tests.reprise.test_plex_report import flags_of, get, marker, rng, season  # noqa: F401 - season is a fixture
 
-NOTHING_TO_SEND = "Plex already has exactly the skip you set, so there is nothing to publish"
+NOTHING_TO_SEND = "Plex already has exactly the skip you set, so there's nothing to send"
 SET_BY_OWNER = "You set a skip yourself, so sending it is up to you."
 ALWAYS_APPROVED = (
     "A skip you set is always approved and locked. Give only its type (intro or credits) and its start and end times."
@@ -60,8 +60,8 @@ TWO_OF_A_KIND = "Set one exact skip for the intro and one for the credits, not t
 STAYS_A_SKIP = "A skip you set stays a skip: reject it, or set it again."
 NO_KIND_OR_TIMES = "Say whether the skip is the intro or the credits, and where it starts and ends."
 OUTSIDE_THE_FILE = "The skip must start before it ends, and both times must be inside the episode."
-LAST_TWO_SECONDS = "The final two seconds cannot be projected safely to Plex"
-CREDITS_START = "Plex cannot represent this credits start exactly"
+LAST_TWO_SECONDS = "Plex can't safely skip the last two seconds of an episode"
+CREDITS_START = "Plex can't start the credits in the first two seconds"
 ALREADY_SENT = "It was already sent to Plex by you."
 
 IDENTITY = PlaybackIdentity("machine", "1", "2", "3", "/part", 8, DURATION, "1")
@@ -294,7 +294,7 @@ def test_plexs_own_limits_still_refuse_an_exact_skip(kind, start, end, limit):
 
 
 def test_a_result_that_is_not_complete_and_current_sends_nothing():
-    with pytest.raises(ValueError, match="not complete and current"):
+    with pytest.raises(ValueError, match="isn't finished or is out of date"):
         projected(replace(result_of(span("intro", 10_000, 20_000)), freshness="stale"))
 
 
@@ -1185,7 +1185,10 @@ def test_the_review_route_still_refuses_what_is_not_an_edit(client, lab):
 
     for edits in ([{"range_id": None}], [{"range_id": None, "kind": "intro"}], [{"kind": "intro"}], ["intro"], [{}]):
         answer = patch(client, lab, ep, edits)
-        assert (answer.status_code, answer.get_json()) == (400, {"error": "Invalid request or operation"}), edits
+        assert (answer.status_code, answer.get_json()) == (
+            400,
+            {"error": "Reprise couldn't do that. Refresh the page and try again."},
+        ), edits
 
 
 def test_the_publication_routes_say_nothing_to_publish_in_a_plain_sentence_and_send_what_differs(client, lab):

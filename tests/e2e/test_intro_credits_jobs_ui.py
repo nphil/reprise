@@ -1572,7 +1572,7 @@ class TestFilesPanel:
         expect(details).not_to_contain_text("Chapters")
         expect(details.locator(".job-result-item", has_text="Previews updated")).to_have_attribute(
             "title",
-            "This run completed publication for these files. Older results do not record which preview output changed.",
+            "This run finished writing previews for these files. Older results don't record which previews changed.",
         )
         self._open_files(page, preview, [])
         modal = page.locator("#logsModal")

@@ -42,7 +42,7 @@ TABLES = ("tags", "taggings", "metadata_items", "media_items", "media_parts", "m
 NOTHING_SURE = "Nothing in it is confirmed for sure by picture and sound."
 OWNER_NOTE = "You changed, locked or keep something in the intro, so it needs your approval."
 ALREADY_APPROVED = "You already approved part of it, so sending it is up to you."
-NOT_ELIGIBLE = "Approved skips are not fully eligible for this playback identity"
+NOT_ELIGIBLE = "Some approved skips can't be sent for this copy of the file"
 NOT_FINISHED = "An earlier change to Plex for it is not finished."
 UNDONE = "A change sent to Plex for it was undone, so what happens next is yours to decide."
 REFUSED_TITLE = "Plex refused an automatic change"
@@ -668,13 +668,13 @@ def test_the_dry_run_accepts_a_run_every_audio_track_confirmed():
 
 def test_the_dry_run_refuses_a_run_one_audio_track_was_not_reviewed():
     result, bindings, runs = _projection_inputs("intro", 10_000, 20_000, tracks=("1", "2"))
-    with pytest.raises(ValueError, match="not fully eligible"):
+    with pytest.raises(ValueError, match="can't be sent for this copy"):
         AutoSender._shape(result, bindings, runs, ["intro"])
 
 
 def test_the_dry_run_refuses_a_run_whose_sound_was_never_compared():
     result, bindings, runs = _projection_inputs("intro", 10_000, 20_000, checked=())
-    with pytest.raises(ValueError, match="not fully eligible"):
+    with pytest.raises(ValueError, match="can't be sent for this copy"):
         AutoSender._shape(result, bindings, runs, ["intro"])
 
 
@@ -683,9 +683,9 @@ def test_the_dry_run_refuses_a_run_whose_sound_was_never_compared():
     [
         ("intro", 0, 20_000, None),
         ("credits", 2_000, 50_000, None),
-        ("credits", 1_999, 50_000, "Plex cannot represent this credits start exactly"),
+        ("credits", 1_999, 50_000, "Plex can't start the credits in the first two seconds"),
         ("credits", 80_000, 97_999, None),
-        ("credits", 80_000, 98_000, "The final two seconds cannot be projected safely to Plex"),
+        ("credits", 80_000, 98_000, "Plex can't safely skip the last two seconds of an episode"),
     ],
 )
 def test_the_dry_run_edges_of_what_plex_can_take(kind, start, end, error):
@@ -1267,7 +1267,7 @@ def test_credits_starting_in_the_first_two_seconds_are_not_sent(lab):
     assert lab.sweep(T0) == 0
 
     assert_declined(
-        lab, ep, before, "The credits can't be sent exactly: Plex cannot represent this credits start exactly."
+        lab, ep, before, "The credits can't be sent exactly: Plex can't start the credits in the first two seconds."
     )
 
 
@@ -1282,7 +1282,7 @@ def test_credits_ending_within_two_seconds_of_the_file_end_are_not_sent(lab):
         lab,
         ep,
         before,
-        "The credits can't be sent exactly: The final two seconds cannot be projected safely to Plex.",
+        "The credits can't be sent exactly: Plex can't safely skip the last two seconds of an episode.",
     )
 
 

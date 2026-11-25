@@ -164,9 +164,11 @@ def _protected(r):
     return r.origin == "manual" or r.locked or r.review_status != "proposed"
 
 
-# What an analysis from before the per-kind facts said when no episode shared anything (analysis.py ``_no_repeat_found``).
+# What an analysis says when no episode shared anything (analysis.py ``_no_repeat_found``), in the current wording and
+# in the wording saved analyses from before it was rewritten still carry.
 _NOTHING_REPEATED = re.compile(
-    r"^Compared with (\d+) other episodes? of this season, but no repeating intro or credits"
+    r"^(?:Compared with|Reprise compared this with) (\d+) other episodes? of this season"
+    r"(?:, but no repeating intro or credits| and found no intro or credits that repeat)"
 )
 
 

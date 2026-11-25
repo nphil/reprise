@@ -68,10 +68,7 @@ SOUND_CORRELATION = PROFILE_SPEC["sound_offset"]["correlation"]
 SOUND_GAIN_LIMIT = PROFILE_SPEC["sound_offset"]["gain_limit"]
 SOUND_RATE = canonical.SOUND_RATE
 HINT_TICK_MS = Fraction(PROFILE_SPEC["timing"]["hint_tick_ms"])
-WARNING = (
-    "Recurrence of the canonical picture and sound within the profile's limits; "
-    "not certified rendered equivalence. Unspecified interpretation and sufficiently small semantic differences are not established."
-)
+WARNING = "Reprise found the same picture and sound in other episodes."
 
 
 def _workers():
@@ -113,22 +110,21 @@ PROGRESS_EVERY_FRAMES = 24
 FALLBACK_WINDOW_MS = 90000  # how much of the file's start / end is checked when Plex has no marker for it
 OPENING_WINDOW = "opening-window"  # candidate source for the start of the file when Plex has no intro marker
 ENDING_WINDOW = "ending-window"  # candidate source for the end of the file when Plex has no credits marker
-NO_REFERENCES = "There are no other episodes of this season to compare with, so nothing could be confirmed."
-NO_USABLE_REFERENCES = "None of the other episodes of this season could be used for the comparison."
+NO_REFERENCES = "There are no other episodes of this season to compare with, so Reprise couldn't confirm anything."
+NO_USABLE_REFERENCES = "Reprise couldn't use any of the other episodes of this season for the comparison."
 NO_OTHER_EPISODES = "This is the only episode of its season in the library, so there is nothing to compare it with."
-OTHER_EPISODES_NOT_READY = "Other episodes of this season are in the library but none are ready to compare yet. Refresh the library and try again."
+OTHER_EPISODES_NOT_READY = "Other episodes of this season are in the library, but none are ready to compare yet. Refresh the library and try again."
 MOVIE_NOTE = (
-    "A film has no other episodes to compare with, so its credits can only be suggested (by Plex and the online "
-    "databases). Nothing is confirmed, so a suggestion waits for your approval."
+    "A film has no other episodes to compare with. Its credits can only come from Plex or the online databases, "
+    "as suggestions that you have to approve."
 )
-FILM_NOT_CONFIRMED = "There is nothing in a film to confirm it against."
+FILM_NOT_CONFIRMED = "A film has no other episodes to check it against."
 COPY_PICTURE_DIFFERS = (
     "This copy of the episode has a different picture format from every other episode of its season, "
-    "so it can't be compared with them and nothing could be confirmed."
+    "so Reprise can't compare them."
 )
 COPY_AUDIO_DIFFERS = (
-    "This copy of the episode has audio tracks that no other episode of its season has, "
-    "so it can't be compared with them and nothing could be confirmed."
+    "This copy of the episode has audio tracks that no other episode of its season has, so Reprise can't compare them."
 )
 # Why a nearer episode was left out of the comparison (the next nearest takes its place), for one and for several.
 _LEFT_OUT = {
@@ -136,15 +132,17 @@ _LEFT_OUT = {
     "audio": ("has different audio tracks", "have different audio tracks"),
     "unreadable": ("could not be read", "could not be read"),
 }
-COMPARISON_UNAVAILABLE = "A comparison with another episode could not be completed."
+COMPARISON_UNAVAILABLE = "Reprise couldn't finish comparing this with another episode."
 ONLINE_NOT_COMPARED = (
-    "The online times for the {kind} could not be compared with another episode, so they stay a suggestion."
+    "Reprise couldn't check the online times for the {kind} against another episode, so they stay a suggestion."
 )
-ONLINE_HINT_FAILED = "Searching where the online times point in another episode for the {kind} could not be completed."
-UNREADABLE_MEDIA = "Analysis stopped because this file could not be read."
-UNCOMPARABLE_MEDIA = "Analysis stopped because this file can't be compared exactly."
-COMPARISON_FAILED = "This episode can't be compared exactly with the others, so nothing could be confirmed."
-COMPARISON_UNREADABLE = "This episode could not be read for comparison, so nothing could be confirmed."
+ONLINE_HINT_FAILED = "Reprise couldn't look for the {kind} where the online times pointed in another episode."
+UNREADABLE_MEDIA = (
+    "Reprise couldn't read this file, so the analysis stopped. Check that the file still plays, then try again."
+)
+UNCOMPARABLE_MEDIA = "Reprise can't compare this file with other episodes, so the analysis stopped."
+COMPARISON_FAILED = "Reprise can't compare this episode with the others, so it couldn't confirm anything."
+COMPARISON_UNREADABLE = "Reprise couldn't read this episode to compare it, so it couldn't confirm anything."
 _FALLBACK_NOTES = {
     OPENING_WINDOW: f"Plex has no intro marker for this episode, so only its first {FALLBACK_WINDOW_MS // 1000} seconds were checked.",
     ENDING_WINDOW: f"Plex has no credits marker for this episode, so only its last {FALLBACK_WINDOW_MS // 1000} seconds were checked.",
@@ -153,7 +151,7 @@ _FALLBACK_NOTES = {
 
 def _no_repeat_found(count):
     others = "1 other episode" if count == 1 else f"{count} other episodes"
-    return f"Compared with {others} of this season, but no repeating intro or credits could be confirmed."
+    return f"Reprise compared this with {others} of this season and found no intro or credits that repeat."
 
 
 def _one_of_a_kind_note(kind, facts):
@@ -176,12 +174,12 @@ def _left_out_notes(left_out):
 
 
 PLEX_SOURCE = "plex"  # CandidateWindow.source of a marker Plex itself detected for this exact file
-PLEX_EVIDENCE_TEXT = "Plex has a marker here, but comparing episodes did not confirm it."
+PLEX_EVIDENCE_TEXT = "Plex has a marker here, but Reprise didn't find it in other episodes."
 ONLINE_SOURCE = "online"  # CandidateWindow.source of the times online databases give for this exact episode
 SUGGESTED_SOURCES = (PLEX_SOURCE, ONLINE_SOURCE)  # windows that are suggestions when comparing cannot confirm them
 PLEX_END_SLACK_MS = 1000  # Plex rounds: a marker may end up to a second after its file does, and then ends with it
 ONLINE_AGREE_MS = PROFILE_SPEC["online"]["agree_ms"]  # an online time and Plex's marker agree within this at both ends
-NOT_CONFIRMED = "Reprise could not confirm it by comparing episodes."
+NOT_CONFIRMED = "Reprise didn't find it in other episodes."
 TOO_LONG_TO_COMPARE = f"It is longer than the {MAX_CANDIDATE_MS // 60000} minutes Reprise can compare."
 PLEX_CONFIRMED_SHARE = Fraction(PROFILE_SPEC["candidate"]["plex_confirmed_share"])
 BRIDGE_MAX_GAP_MS = PROFILE_SPEC["bridge"]["max_gap_ms"]
@@ -191,7 +189,9 @@ BRIDGED = "bridged"  # the reason code of a hole filled between two confirmed pi
 def _confirmed_only(covered_ms):
     seconds = max(1, round(covered_ms / 1000))
     span = "1 second" if seconds == 1 else f"{seconds} seconds"
-    return f"Comparing episodes confirmed only {span} of it, less than half, so that part is not proposed on its own."
+    return (
+        f"Reprise found only {span} of it in other episodes. That is less than half, so it isn't suggested on its own."
+    )
 
 
 def _seconds(ms):
@@ -199,7 +199,7 @@ def _seconds(ms):
 
 
 def _bridged_text(whose, length_ms):
-    return f"A short gap ({_seconds(length_ms)}) between two parts of {whose} that Reprise confirmed, filled in."
+    return f"A short gap ({_seconds(length_ms)}) between two parts of {whose} that Reprise matched, filled in."
 
 
 def _bridges_note(whose, lengths):
@@ -269,7 +269,7 @@ def _fit_windows(windows, duration):
         if 0 <= window.start_ms < end <= duration:
             fitted.add(replace(window, end_ms=end))
         else:
-            ignored.append(f"Plex's {window.kind} marker does not fit this file, so it was ignored.")
+            ignored.append(f"Plex's {window.kind} marker doesn't fit this file, so Reprise ignored it.")
     return sorted(fitted, key=lambda w: (w.start_ms, w.end_ms, w.kind, w.source)), ignored
 
 
@@ -292,18 +292,18 @@ def _suggestion(media, window, names, tracks, movie=False):
     eid_parts = (media.id, PROFILE_ID, PROFILE_FINGERPRINT, window.kind, window.start_ms, window.end_ms)
     eid = _id(*eid_parts, "plex") if names == ("Plex",) else _id(*eid_parts, window.source, names)
     if names == ("Plex",):
-        claim = "Plex's own marker; not confirmed by comparing episodes"
+        claim = "Plex's own marker; not found by comparing episodes"
         text = (
-            "Plex has a marker here, but a film has no other episode to confirm it against."
+            "Plex has a marker here, but a film has no other episodes to check it against."
             if movie
             else PLEX_EVIDENCE_TEXT
         )
     else:
-        claim = f"{who}'s times; not confirmed by comparing episodes"
+        claim = f"{who}'s times; not found by comparing episodes"
         text = (
-            f"{who} put the {window.kind} here, but a film has no other episode to confirm it against."
+            f"{who} put the {window.kind} here, but a film has no other episodes to check it against."
             if movie
-            else f"{who} put the {window.kind} here, but comparing episodes did not confirm it."
+            else f"{who} put the {window.kind} here, but Reprise didn't find it in other episodes."
         )
     metrics = {
         "verification_profile": PROFILE_ID,
@@ -351,7 +351,7 @@ def _suggestion(media, window, names, tracks, movie=False):
         False,
         ORIGIN_PLEX if plex else ORIGIN_ONLINE,
         REASON_PLEX_SUGGESTION if plex else REASON_ONLINE_SUGGESTION,
-        f"Suggested by {_by(who)} — not confirmed by Reprise.",
+        f"Suggested by {_by(who)}. Reprise didn't find it in other episodes.",
         (eid,),
         tuple(t[0] for t in tracks),
         False,
@@ -387,15 +387,17 @@ def with_local_model(draft, media, verdicts):
             if same.origin in SUGGESTION_ORIGINS and localvision.SOURCE_NAME not in same.suggested_by:
                 names = (*(same.suggested_by or ("Plex",)), localvision.SOURCE_NAME)
                 ranges[ranges.index(same)] = replace(same, suggested_by=names)
-                reasons.append(f"A local vision model looking at frames put the {kind} in the same place.")
+                reasons.append(f"An AI model looking at frames put the {kind} in the same place.")
             continue
         window = CandidateWindow(kind, verdict.start_ms, verdict.end_ms, ONLINE_SOURCE)
         found, suggestion = _suggestion(media, window, (localvision.SOURCE_NAME,), tracks)
         if verdict.method == "pictures":
-            looked = f"A local vision model compared this episode's pictures with other episodes and read this stretch as the {kind}."
+            looked = (
+                f"An AI model compared this episode's pictures with other episodes and read this stretch as the {kind}."
+            )
         else:
             counts = Counter(scene for _, scene, _ in verdict.frames)
-            looked = f"A local vision model looked at {len(verdict.frames)} frames and read this stretch as the {kind}: {dict(counts)}."
+            looked = f"An AI model looked at {len(verdict.frames)} frames and read this stretch as the {kind}: {dict(counts)}."
         found = replace(
             found,
             reason=" ".join([looked, *verdict.reasons]),
@@ -414,7 +416,7 @@ def with_local_model(draft, media, verdicts):
         evidence.append(found)
         ranges.append(suggestion)
         reasons.append(
-            f"A local vision model suggested the {kind} ({_clock(verdict.start_ms)} to {_clock(verdict.end_ms)}), "
+            f"An AI model suggested the {kind} ({_clock(verdict.start_ms)} to {_clock(verdict.end_ms)}), "
             f"confidence {verdict.confidence}. It stays a suggestion until you approve it."
         )
     return replace(draft, evidence=tuple(evidence), ranges=tuple(ranges), reasons=tuple(reasons))
@@ -458,8 +460,8 @@ def _with_online(windows, found):
             notes.append(online.note)
         if online.dissent:
             notes.append(
-                f"{_names_text(online.dissent)} gave other times for the {online.kind} than {_names_text(names)}; "
-                f"{_names_text(names)}'s were used."
+                f"{_names_text(online.dissent)} gave other times for the {online.kind} than {_names_text(names)}. "
+                f"Reprise used {_names_text(names)}'s."
             )
         marks = [w for w in windows if w.source == PLEX_SOURCE and w.kind == online.kind]
         same = next(
@@ -476,7 +478,7 @@ def _with_online(windows, found):
         elif any(w.start_ms < online.end_ms and online.start_ms < w.end_ms for w in marks):
             notes.append(
                 f"{_names_text(names)} put the {online.kind} from {_clock(online.start_ms)} to {_clock(online.end_ms)}, "
-                "which differs from Plex's marker; only Plex's was used."
+                "which differs from Plex's marker. Reprise used only Plex's."
             )
         else:
             window = CandidateWindow(online.kind, online.start_ms, online.end_ms, ONLINE_SOURCE)
@@ -1212,7 +1214,7 @@ def _analyze(
             searched: set[str] = set()
             sound: set[str] = set()
             outcomes[window] = (searched, sound)
-            report(number, 0.0, "Verifying native audiovisual recurrence")
+            report(number, 0.0, "Comparing picture and sound")
             ts, te = max(0, window.start_ms - CONTEXT_MS), min(media.duration_ms, window.end_ms + CONTEXT_MS)
             try:
                 hints, declarations, unspecified = _scan(
@@ -1225,7 +1227,7 @@ def _analyze(
                     threads,
                     ffmpeg_path=ffmpeg_path,
                     on_progress=lambda fraction, number=number: report(
-                        number, TARGET_SCAN_SHARE * fraction, "Verifying native audiovisual recurrence"
+                        number, TARGET_SCAN_SHARE * fraction, "Comparing picture and sound"
                     ),
                 )
             except decoder.Cancelled:
@@ -1536,8 +1538,8 @@ def _analyze(
                 for entry in verified
             ):
                 hint_notes.append(
-                    f"The online times for the {window.kind} showed where to look in another episode, and comparing "
-                    "there confirmed it."
+                    f"The online times for the {window.kind} showed where to look in another episode, and Reprise "
+                    "found it there."
                 )
             # Episodes further off. The nearest may simply not carry what this window holds (a special's own title
             # sequence, a variant of it that only two episodes share), and a window Plex or an online database suggests
@@ -1664,7 +1666,11 @@ def _analyze(
             if bridge:
                 text = _bridged_text(_whose(window, suggested_by[window]), hi - lo)
             else:
-                text = WARNING if support else "Content or timing could not be verified; preserve it."
+                text = (
+                    WARNING
+                    if support
+                    else "Reprise couldn't match this part with another episode, so it won't be skipped."
+                )
             eid = _id(
                 media.id,
                 PROFILE_ID,

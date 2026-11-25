@@ -144,7 +144,7 @@ class RepriseApi:
                 "result_revision": 1,
                 "ranges": [],
                 "reasons": [
-                    "Analysis stopped because this file can't be compared exactly.",
+                    "Reprise can't compare this file with other episodes, so the analysis stopped.",
                     "audio timestamps drift by 1 ms",
                 ],
             },
@@ -404,7 +404,7 @@ class TestReviewingAnEpisode:
         _open(authed_page, app_url)
         authed_page.locator(".rp-episode-open").nth(2).click()
         outcome = authed_page.locator("#rpOutcome")
-        expect(outcome).to_contain_text("Analysis stopped because this file can't be compared exactly.")
+        expect(outcome).to_contain_text("Reprise can't compare this file with other episodes, so the analysis stopped.")
         technical = outcome.get_by_text("audio timestamps drift by 1 ms")
         expect(technical).to_be_hidden()
         outcome.get_by_text("Details").click()
@@ -528,7 +528,7 @@ class TestPlexSuggestions:
     def test_a_failed_comparison_still_shows_plex_suggestions_with_the_plain_headline(
         self, authed_page: Page, api: RepriseApi, app_url: str
     ) -> None:
-        headline = "This episode can't be compared exactly with the others, so nothing could be confirmed."
+        headline = "Reprise can't compare this episode with the others, so it couldn't confirm anything."
         technical = "Native audio timestamps are discontinuous"
         _suggest(api, _plex("p-intro", "intro", 0, 45_000), reasons=(headline, technical))
         _open(authed_page, app_url)
@@ -873,7 +873,7 @@ class TestShellStatus:
         _open(authed_page, app_url)
         chip = authed_page.locator("#rpSafety")
         expect(chip).to_have_attribute("data-state", "on")
-        expect(chip).to_contain_text("Plex publishing is on")
+        expect(chip).to_contain_text("Sending to Plex is on")
 
     def test_the_library_says_whether_analysis_uses_the_gpu_and_can_turn_it_off(
         self, authed_page: Page, api: RepriseApi, app_url: str

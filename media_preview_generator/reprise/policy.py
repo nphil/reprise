@@ -24,9 +24,9 @@ def span_limit(
     set to end exactly at the file's end: Plex holds that exactly, as its final credits marker."""
     final_credits = owner and kind == "credits" and end_ms == duration_ms and not terminal
     if not final_credits and (terminal or end_ms >= duration_ms - END_MARGIN_MS):
-        return "The final two seconds cannot be projected safely to Plex"
+        return "Plex can't safely skip the last two seconds of an episode"
     if kind == "credits" and start_ms < END_MARGIN_MS:
-        return "Plex cannot represent this credits start exactly"
+        return "Plex can't start the credits in the first two seconds"
     return None
 
 

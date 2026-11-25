@@ -2250,7 +2250,7 @@ function _renderPublishersBlock(job, options) {
         if (legacyPreviewUpdates) {
             badgeSpecs.push({
                 label: 'Previews updated', cls: 'bg-success', count: legacyPreviewUpdates,
-                tip: 'This run completed publication for these files. Older results do not record which preview output changed.'
+                tip: 'This run finished writing previews for these files. Older results don\'t record which previews changed.'
             });
         }
         if (hasChapters) {

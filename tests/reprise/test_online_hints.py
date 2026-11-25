@@ -313,7 +313,9 @@ def test_online_times_that_overlap_a_different_plex_marker_are_not_added_but_not
     plex = CandidateWindow(INTRO, 1000, 15000, "plex")
     windows, names, notes = _with_online([plex], (window(INTRO, 9000, 30000, "IntroDB"),))
     assert windows == [plex] and names == {plex: ("Plex",)}
-    assert notes == ["IntroDB put the intro from 0:09 to 0:30, which differs from Plex's marker; only Plex's was used."]
+    assert notes == [
+        "IntroDB put the intro from 0:09 to 0:30, which differs from Plex's marker. Reprise used only Plex's."
+    ]
     elsewhere, names, _ = _with_online([plex], (window(INTRO, 40000, 60000, "IntroDB"),))
     assert [(w.start_ms, w.source) for w in elsewhere] == [(1000, "plex"), (40000, "online")]
     assert names[CandidateWindow(INTRO, 40000, 60000, "online")] == ("IntroDB",)
@@ -321,7 +323,7 @@ def test_online_times_that_overlap_a_different_plex_marker_are_not_added_but_not
 
 def test_sources_that_disagree_are_named_in_a_note():
     windows, names, notes = _with_online([], (window(INTRO, 1000, 9000, "SkipDB", dissent=("IntroDB",)),))
-    assert notes == ["IntroDB gave other times for the intro than SkipDB; SkipDB's were used."]
+    assert notes == ["IntroDB gave other times for the intro than SkipDB. Reprise used SkipDB's."]
     assert len(windows) == 1
 
 
@@ -340,7 +342,7 @@ def test_online_times_nothing_confirmed_are_an_approve_only_suggestion(library, 
     )
     assert (suggestion.action, suggestion.review_status, suggestion.locked) == ("skip", "proposed", False)
     assert (suggestion.start_ms, suggestion.end_ms) == (2000, 12000)
-    assert suggestion.reason == "Suggested by IntroDB — not confirmed by Reprise."
+    assert suggestion.reason == "Suggested by IntroDB. Reprise didn't find it in other episodes."
     [evidence] = [e for e in draft.evidence if e.id in suggestion.evidence_ids]
     assert evidence.verdict == "unknown" and evidence.metrics["candidate_source"] == "online"
     assert evidence.metrics["suggested_by"] == ["IntroDB"]
@@ -391,7 +393,7 @@ def test_plex_and_online_that_agree_are_one_suggestion_naming_both(library, targ
     [suggestion] = suggestions(draft)
     assert (suggestion.origin, suggestion.reason_code) == ("plex", "plex_suggestion")
     assert suggestion.suggested_by == ("Plex", "IntroDB")
-    assert suggestion.reason == "Suggested by Plex and IntroDB — not confirmed by Reprise."
+    assert suggestion.reason == "Suggested by Plex and IntroDB. Reprise didn't find it in other episodes."
     assert (suggestion.start_ms, suggestion.end_ms) == (1000, 15000)
     assert any(reason.startswith("Plex and IntroDB suggested the intro") for reason in draft.reasons)
 
@@ -399,7 +401,9 @@ def test_plex_and_online_that_agree_are_one_suggestion_naming_both(library, targ
 def test_plex_alone_reads_exactly_as_it_did(library, target, unrelated):
     draft, _ = compare(library, target, unrelated, [PLEX])
     [suggestion] = suggestions(draft)
-    assert suggestion.suggested_by == ("Plex",) and suggestion.reason == "Suggested by Plex — not confirmed by Reprise."
+    assert suggestion.suggested_by == ("Plex",) and suggestion.reason == (
+        "Suggested by Plex. Reprise didn't find it in other episodes."
+    )
     assert any(reason.startswith("Plex suggested the intro (from 0:01 to 0:15).") for reason in draft.reasons)
 
 
@@ -742,7 +746,7 @@ def test_chapter_marks_nothing_confirmed_are_an_approve_only_suggestion_with_a_p
         "proposed",
         ("Chapter marks",),
     )
-    assert suggestion.reason == "Suggested by the file's own chapter marks — not confirmed by Reprise."
+    assert suggestion.reason == "Suggested by the file's own chapter marks. Reprise didn't find it in other episodes."
     assert (
         eligible_ranges(
             AnalysisResult(target.id, "a", 1, "complete", "current", "s", POLICY_VERSION, (suggestion,), (), ()), "123"

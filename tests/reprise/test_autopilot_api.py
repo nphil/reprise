@@ -12,7 +12,7 @@ from media_preview_generator.servers.registry import ServerRegistry
 from media_preview_generator.web.routes.api_reprise import create_reprise_blueprint
 from tests.auth_helpers import sign_in
 
-NOT_AVAILABLE = "Automatic work is not available right now."
+NOT_AVAILABLE = "Automatic sending isn't available right now."
 STATUS = {
     "queue_length": 7,
     "last_reconcile": "2026-11-22T10:00:00Z",

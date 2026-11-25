@@ -28,15 +28,15 @@
         $('rpWritesEnabled').checked = !!settings.writes_enabled; $('rpWritesEnabled').disabled = !settings.publication_available;
         const note = $('rpWriteState');
         note.textContent = settings.publication_available
-            ? (settings.writes_enabled ? 'Sending to Plex is on. Applying a change still needs your confirmation each time.' : 'Sending to Plex is off. Reprise cannot change any Plex markers.')
-            : 'Sending to Plex is not available. It needs a Plex connection, which is set up in Connections.';
+            ? (settings.writes_enabled ? 'Sending to Plex is on. You still confirm each change yourself.' : "Sending to Plex is off. Reprise can't change anything in Plex.")
+            : "Sending to Plex isn't available yet. Connect Plex first, in Connections.";
         if (!settings.publication_available) { const link = el('a', 'Open Connections'); link.href = '/servers'; note.append(link); }
         showAutopilot(settings.autopilot);
         window.dispatchEvent(new CustomEvent('rp:settings', { detail: settings }));
     }
     $('rpWritesEnabled').addEventListener('change', async event => {
         const enabled = event.target.checked;
-        if (enabled && !await ask('Reprise will be able to send reviewed changes to Plex. Nothing is sent yet: each change still needs your confirmation.', { title: 'Allow sending to Plex?', confirmText: 'Allow', variant: 'warning' })) { event.target.checked = false; return; }
+        if (enabled && !await ask("Reprise will be able to send the changes you've reviewed to Plex. Nothing is sent yet. You still confirm each change.", { title: 'Allow sending to Plex?', confirmText: 'Allow', variant: 'warning' })) { event.target.checked = false; return; }
         event.target.disabled = true;
         try { showSettings(await api('/api/reprise/settings', { method: 'PATCH', body: { writes_enabled: enabled } })); }
         catch (error) {
@@ -154,7 +154,7 @@
         try { message((await copyKey()) ? 'Key copied.' : 'The key is selected. Press Ctrl+C (or Cmd+C) to copy it.'); } catch (error) { fail(error); }
     });
     $('rpSecretClose').addEventListener('click', async () => {
-        if (!await ask('It cannot be shown again, so make sure you have copied it first.', { title: 'Hide this key?', confirmText: 'Hide key', variant: 'warning' })) return;
+        if (!await ask("It can't be shown again, so make sure you've copied it first.", { title: 'Hide this key?', confirmText: 'Hide key', variant: 'warning' })) return;
         $('rpSecret').hidden = true; $('rpSecretValue').textContent = ''; state.secret = false; $('rpClientOpen').disabled = false;
     });
     window.addEventListener('beforeunload', event => { if (state.secret) { event.preventDefault(); event.returnValue = ''; } });

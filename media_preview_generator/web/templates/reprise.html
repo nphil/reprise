@@ -8,15 +8,15 @@
       <h1>Library</h1>
       <p>Pick episodes, analyze them, then review the intros and credits Reprise finds.</p>
       <p class="rp-hardware" id="rpHardware" hidden><span class="rp-hw"><i class="bi bi-cpu" aria-hidden="true"></i><span id="rpHardwareLabel"></span></span><button type="button" class="rp-btn quiet" id="rpHardwareToggle"></button></p>
-      <p class="rp-hardware rp-vram" id="rpVramWrap" hidden><label>GPU memory limit<select id="rpVram" aria-describedby="rpVramHelp"></select></label><span id="rpVramHelp">The most video memory comparisons may use at once. Reprise also always leaves 1 GB of the card free for your other programs, and gives all of it back when an analysis ends.</span></p>
+      <p class="rp-hardware rp-vram" id="rpVramWrap" hidden><label>GPU memory limit<select id="rpVram" aria-describedby="rpVramHelp"></select></label><span id="rpVramHelp">The most graphics card memory Reprise can use at once. It always leaves 1 GB free for your other programs, and gives it all back when an analysis ends.</span></p>
       <div class="rp-online" id="rpOnline" hidden>
         <div class="form-check form-switch rp-switch"><input class="form-check-input" id="rpOnlineToggle" type="checkbox" role="switch" aria-describedby="rpOnlineHelp"><label class="form-check-label" for="rpOnlineToggle">Look up intro times online (IntroDB, SkipDB)</label></div>
-        <p class="rp-note" id="rpOnlineHelp">Reprise asks these public databases where an episode's intro and credits are (it sends the show's id, season, episode and the file's length, nothing else). Their times only tell it where to look and are offered as suggestions you must approve; they are never applied on their own.</p>
+        <p class="rp-note" id="rpOnlineHelp">Reprise asks these public databases where an episode's intro and credits are. It sends only the show's ID, the season, the episode number and how long the file is. Reprise uses their answers as hints for where to look. Anything it suggests still needs your approval.</p>
       </div>
       <div class="rp-online" id="rpVision" hidden>
-        <div class="form-check form-switch rp-switch"><input class="form-check-input" id="rpVisionToggle" type="checkbox" role="switch" aria-describedby="rpVisionHelp"><label class="form-check-label" for="rpVisionToggle">Let a local AI model check unconfirmed intros and credits</label></div>
-        <p class="rp-note" id="rpVisionHelp">After an analysis, where Reprise could not confirm an intro or credits by comparing episodes, a vision model on your own network looks at a few small pictures from the episode and may suggest a span. It only uses a model that is already loaded, never changes what Reprise found, and its suggestions are never sent until you approve them. Off by default.</p>
-        <p class="rp-hardware" id="rpVisionFields" hidden><label>Address<input id="rpVisionUrl" type="url" autocomplete="off" spellcheck="false"></label> <label>Model<input id="rpVisionModel" type="text" autocomplete="off" spellcheck="false"></label> <button type="button" class="rp-btn quiet" id="rpVisionSave">Save</button></p>
+        <div class="form-check form-switch rp-switch"><input class="form-check-input" id="rpVisionToggle" type="checkbox" role="switch" aria-describedby="rpVisionHelp"><label class="form-check-label" for="rpVisionToggle">Let an AI model check intros and credits Reprise isn't sure about</label></div>
+        <p class="rp-note" id="rpVisionHelp">Sometimes Reprise can't confirm an intro or credits by comparing episodes. Then an AI model on your own network looks at a few small pictures from the episode and may suggest where it is. It only uses a model that is already loaded. It never changes what Reprise found, and nothing goes to Plex until you approve it. Off by default.</p>
+        <p class="rp-hardware" id="rpVisionFields" hidden><label>Model server address<input id="rpVisionUrl" type="url" autocomplete="off" spellcheck="false"></label> <label>Model name<input id="rpVisionModel" type="text" autocomplete="off" spellcheck="false"></label> <button type="button" class="rp-btn quiet" id="rpVisionSave">Save</button></p>
       </div>
     </div>
     <div class="rp-actions"><a class="rp-btn" id="rpReportLink" href="{{ url_for('main.reprise_report_page') }}"><i class="bi bi-clipboard-data" aria-hidden="true"></i>Plex report</a><button type="button" class="rp-btn" id="rpRefresh"><i class="bi bi-arrow-repeat" aria-hidden="true"></i>Refresh library</button></div>
@@ -34,7 +34,7 @@
       <div class="rp-section-head"><h2 id="rpLibraryTitle">Episodes</h2></div>
       <label class="rp-search" data-tour="library-search"><span class="rp-sr">Search shows and episodes</span><i class="bi bi-search" aria-hidden="true"></i><input id="rpSearch" type="search" autocomplete="off" placeholder="Search shows and episodes"></label>
       <div class="rp-filter-row"><label><span class="rp-sr">Show</span><select id="rpShow"><option value="">All shows</option></select></label><label><span class="rp-sr">Season</span><select id="rpSeason"><option value="">All seasons</option></select></label></div>
-      <div class="rp-listbar"><p class="rp-hint" id="rpLibraryHint">Tick episodes to analyze them, or open one to see its results.</p><button type="button" class="rp-btn quiet" id="rpSelectAll" hidden>Select all</button><button type="button" class="rp-btn" id="rpApproveConfident" hidden title="Approve the local vision model's confident suggestions for this season as your own skips. Nothing is sent to Plex.">Approve confident suggestions</button></div>
+      <div class="rp-listbar"><p class="rp-hint" id="rpLibraryHint">Tick episodes to analyze them, or open one to see its results.</p><button type="button" class="rp-btn quiet" id="rpSelectAll" hidden>Select all</button><button type="button" class="rp-btn" id="rpApproveConfident" hidden title="Approve every suggestion the AI model is sure about in this season. They become your own skips. Nothing is sent to Plex.">Approve the sure suggestions</button></div>
       <div id="rpLibraryState" class="rp-state" role="status" aria-live="polite">Loading library…</div>
       <div class="rp-scroll" id="rpScroll" hidden>
         <div id="rpLibraryList" class="rp-episodes"></div>
@@ -88,20 +88,20 @@
 
         <div class="rp-timeline-block">
           <div class="rp-section-head"><h3>Timeline</h3><span id="rpDuration" class="rp-note"></span></div>
-          <div id="rpTimeline" class="rp-timeline" role="img" aria-label="Skip, keep and evidence timeline; exact times are listed under What Reprise found and in the evidence."></div>
-          <ul class="rp-legend" aria-label="Timeline key"><li><i class="skip"></i>Skip: can be skipped once approved</li><li><i class="suggested"></i>Plex suggestion: not confirmed by Reprise</li><li><i class="keep"></i>Keep: protected, never skipped</li><li><i class="evidence"></i>Evidence</li></ul>
+          <div id="rpTimeline" class="rp-timeline" role="img" aria-label="Timeline of skips and protected scenes. The exact times are listed under What Reprise found."></div>
+          <ul class="rp-legend" aria-label="Timeline key"><li><i class="skip"></i>Skip: will be skipped once you approve it</li><li><i class="suggested"></i>Plex suggestion: Reprise didn't confirm it</li><li><i class="keep"></i>Protected: never skipped</li><li><i class="evidence"></i>Where Reprise found a match</li></ul>
         </div>
 
         <section class="rp-ranges-block" aria-labelledby="rpRangesTitle">
           <div class="rp-section-head"><h3 id="rpRangesTitle">What Reprise found</h3><div class="rp-actions"><button type="button" class="rp-btn" id="rpSetSkip" aria-expanded="false" aria-controls="rpSpanForm"><i class="bi bi-bullseye" aria-hidden="true"></i>Set a skip exactly</button><button type="button" class="rp-btn" id="rpAddKeep"><i class="bi bi-shield-plus" aria-hidden="true"></i>Protect a scene</button></div></div>
-          <p class="rp-note">Open a section to preview it before you approve or reject it. Quiet or very short changes can be missed, and anything marked Keep is never skipped. Saving a review never changes Plex.</p>
+          <p class="rp-note">Open one to watch it before you approve or reject it. Reprise can miss very short or quiet changes. Anything you protect is never skipped. Saving your review doesn't change Plex.</p>
           <form class="rp-plex-confirm rp-span-form" id="rpSpanForm" aria-labelledby="rpSpanTitle" hidden novalidate>
             <p id="rpSpanTitle"><strong>Set a skip exactly</strong></p>
-            <p class="rp-note">Reprise skips exactly these times, even where it could not confirm them, and this skip replaces every other skip of its type. A new analysis never changes it, and it cannot cover a scene you protected.</p>
+            <p class="rp-note">Reprise will skip exactly these times, even if it couldn't confirm them. This skip replaces any other skip of the same type. Running another analysis won't change it, and it can't cover a scene you protected.</p>
             <div class="rp-fine-grid">
               <label class="rp-span-kind">Type<select id="rpSpanKind"><option value="intro">Intro</option><option value="credits">Credits</option></select></label>
-              <div class="rp-set"><label>Start (milliseconds)<input type="number" id="rpSpanStart" min="0" step="1"></label><button type="button" class="rp-btn" id="rpSpanStartNow">Use video time</button></div>
-              <div class="rp-set"><label>End (milliseconds)<input type="number" id="rpSpanEnd" min="0" step="1"></label><button type="button" class="rp-btn" id="rpSpanEndNow">Use video time</button></div>
+              <div class="rp-set"><label>Start (milliseconds)<input type="number" id="rpSpanStart" min="0" step="1"></label><button type="button" class="rp-btn" id="rpSpanStartNow">Use current time</button></div>
+              <div class="rp-set"><label>End (milliseconds)<input type="number" id="rpSpanEnd" min="0" step="1"></label><button type="button" class="rp-btn" id="rpSpanEndNow">Use current time</button></div>
             </div>
             <div class="rp-actions"><button type="submit" class="rp-btn primary">Add this skip</button><button type="button" class="rp-btn quiet" id="rpSpanCancel">Cancel</button></div>
           </form>
@@ -127,15 +127,15 @@
         <details class="rp-disclosure" id="rpEvidenceBox">
           <summary>How Reprise decided</summary>
           <div class="rp-disclosure-body">
-            <p class="rp-note">Reprise compares the picture and every channel of the selected audio between episodes. It does not understand the story, so a skip is only a suggestion. Scores rank suggestions; they are not probabilities. Subtitles and player overlays are not analyzed.</p>
-            <p class="rp-note">The comparison tolerates normal encoding noise, so tiny visual edits and quiet or brief changes can be missed. Preview every proposed skip and protect any scene you want to keep. Known colour and format details must match between files; they are never assumed.</p>
+            <p class="rp-note">Reprise compares the picture and the sound between episodes. It doesn't understand the story, so every skip is a suggestion. A score only ranks suggestions. It isn't a percentage chance. Reprise ignores subtitles and anything the player draws on top of the picture.</p>
+            <p class="rp-note">Reprise ignores the small differences that come from how a file was encoded. Because of that, it can miss tiny edits and quiet or brief changes. Watch each suggested skip, and protect any scene you want to keep. It only compares files whose colour and format settings are known to match.</p>
             <div id="rpEvidence"></div>
           </div>
         </details>
         <details class="rp-disclosure" id="rpPublicationBox">
           <summary>Send to Plex</summary>
           <div class="rp-disclosure-body">
-            <p class="rp-note">Saving a review never changes Plex. Sending results to Plex is a separate step, and it is switched off unless you turn it on under <a href="{{ url_for('main.reprise_sharing_page') }}">Settings, Sharing</a>.</p>
+            <p class="rp-note">Saving a review doesn't change Plex. Sending to Plex is a separate step, and it's off until you turn it on in <a href="{{ url_for('main.reprise_sharing_page') }}">Settings, Sharing</a>.</p>
             <div id="rpPublication"></div>
           </div>
         </details>

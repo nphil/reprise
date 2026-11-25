@@ -503,7 +503,7 @@ def test_a_films_suggestion_is_not_eligible_to_skip_until_the_owner_approves_it(
 def test_a_films_suggestion_cannot_be_published_or_approved_without_a_deliberate_approval(film_library):
     fx = film_library
     film, identity, result, _ = analysed_film(fx, markers=[marker("credits", *CREDITS)])
-    with pytest.raises(ValueError, match="not fully eligible"):
+    with pytest.raises(ValueError, match="can't be sent for this copy"):
         plex_projection(result, identity, ())
     approve = [{"range_id": result.ranges[0].id, "review_status": "approved"}]
     with pytest.raises(ReviewRefused, match="deliberate approval"):
@@ -818,7 +818,7 @@ def test_plex_and_an_online_database_agreeing_on_a_films_credits_are_one_suggest
     )
     (evidence,) = result.evidence
     assert evidence.reason == (
-        "Plex and IntroDB put the credits here, but a film has no other episode to confirm it against."
+        "Plex and IntroDB put the credits here, but a film has no other episodes to check it against."
     )
     assert done["outcome"]["state"] == "suggested"
 
@@ -831,7 +831,7 @@ def test_online_times_alone_are_an_unapproved_suggestion_for_a_film_and_an_intro
         ("credits", "skip", "online", "proposed", ("IntroDB",))
     ]
     (evidence,) = result.evidence
-    assert evidence.reason == "IntroDB put the credits here, but a film has no other episode to confirm it against."
+    assert evidence.reason == "IntroDB put the credits here, but a film has no other episodes to check it against."
     assert result.reasons[0] == MOVIE_NOTE
     assert eligible_ranges(result, identity.audio_stream_id) == ()
     assert done["outcome"]["state"] == "suggested"

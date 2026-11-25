@@ -43,7 +43,7 @@
         if (!settings) {
             chip.dataset.state = 'unknown'; title.textContent = 'Plex status unavailable'; note.textContent = 'Open Sharing to check.';
         } else if (settings.writes_enabled) {
-            chip.dataset.state = 'on'; title.textContent = 'Plex publishing is on'; note.textContent = 'Each change still needs your confirmation.';
+            chip.dataset.state = 'on'; title.textContent = 'Sending to Plex is on'; note.textContent = 'You still confirm each change.';
         } else {
             chip.dataset.state = 'off'; title.textContent = 'Review only'; note.textContent = 'Reprise is not changing Plex.';
         }

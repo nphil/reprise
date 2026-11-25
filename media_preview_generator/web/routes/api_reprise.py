@@ -182,22 +182,22 @@ def create_reprise_blueprint(service):
         def wrapped(*args, **kwargs):
             secret = bearer_secret()
             if secret and store.authenticate_client(secret) is not None:
-                return jsonify(error="Owner access required"), 403
+                return jsonify(error="Only the owner can do that."), 403
             if (
                 request.headers.get("Authorization") or request.headers.get("X-Auth-Token")
             ) and not _check_token_headers():
-                return jsonify(error="Owner access required"), 403
+                return jsonify(error="Only the owner can do that."), 403
             return view(*args, **kwargs)
 
         return wrapped
 
     @bp.errorhandler(KeyError)
     def missing(_error):
-        return jsonify(error="Not found"), 404
+        return jsonify(error="Reprise couldn't find that."), 404
 
     @bp.errorhandler(FileNotFoundError)
     def missing_file(_error):
-        return jsonify(error="Not found"), 404
+        return jsonify(error="Reprise couldn't find that."), 404
 
     @bp.errorhandler(AnalysisRefused)
     def refused(error):
@@ -213,11 +213,11 @@ def create_reprise_blueprint(service):
 
     @bp.errorhandler(ValueError)
     def invalid(_error):
-        return jsonify(error="Invalid request or operation"), 400
+        return jsonify(error="Reprise couldn't do that. Refresh the page and try again."), 400
 
     @bp.errorhandler(PermissionError)
     def forbidden(_error):
-        return jsonify(error="Operation not permitted"), 403
+        return jsonify(error="You don't have permission to do that."), 403
 
     @bp.errorhandler(Exception)
     def error(exc):
@@ -226,8 +226,10 @@ def create_reprise_blueprint(service):
         if isinstance(exc, HTTPException):
             return jsonify(error=exc.name), exc.code
         if type(exc).__name__ in {"RevisionConflict", "PublicationConflict", "ConflictError"}:
-            return jsonify(error="Conflict; refresh and try again"), 409
-        return jsonify(error="Operation failed"), 500
+            return jsonify(error="This changed while you were working on it. Refresh the page and try again."), 409
+        return jsonify(
+            error="Something went wrong in Reprise. Try again, and check the logs if it keeps happening."
+        ), 500
 
     @bp.get("/api/v1/results")
     @require_client(store, "results:read")
@@ -571,7 +573,7 @@ def create_reprise_blueprint(service):
             raise KeyError(action)
         return jsonify(_json(service.control_job(job_id, action)))
 
-    no_autopilot = "Automatic work is not available right now."
+    no_autopilot = "Automatic sending isn't available right now."
 
     @bp.route("/api/reprise/settings", methods=["GET", "PATCH"])
     @owner
@@ -717,7 +719,7 @@ def create_reprise_blueprint(service):
     @owner
     def publications():
         if service.publisher is None:
-            return jsonify(error="Publication is unavailable"), 503
+            return jsonify(error="Sending to Plex isn't available right now."), 503
         if (
             set(request.args) != {"media_version_id"}
             or not request.args["media_version_id"]
@@ -730,7 +732,7 @@ def create_reprise_blueprint(service):
     @owner
     def prepare():
         if service.publisher is None:
-            return jsonify(error="Publication is unavailable"), 503
+            return jsonify(error="Sending to Plex isn't available right now."), 503
         data = _body(
             {"media_version_id", "expected_revision", "identity"}, {"media_version_id", "expected_revision", "identity"}
         )
@@ -746,20 +748,20 @@ def create_reprise_blueprint(service):
         except PublicationRefused as error:
             return jsonify(error=str(error)), 409
         except ValueError:
-            return jsonify(error="Publication conflict; refresh and try again"), 409
+            return jsonify(error="This changed while you were working on it. Refresh the page and try again."), 409
         return jsonify(_json(result))
 
     @bp.post("/api/reprise/publications/<change_id>/<action>")
     @owner
     def publication(change_id, action):
         if service.publisher is None:
-            return jsonify(error="Publication is unavailable"), 503
+            return jsonify(error="Sending to Plex isn't available right now."), 503
         if action not in {"apply", "undo", "recover"}:
             raise KeyError(action)
         try:
             result = getattr(service.publisher, action)(change_id, "owner")
         except ValueError:
-            return jsonify(error="Publication conflict; refresh and try again"), 409
+            return jsonify(error="This changed while you were working on it. Refresh the page and try again."), 409
         return jsonify(_json(result))
 
     return bp

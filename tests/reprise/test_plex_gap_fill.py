@@ -192,7 +192,7 @@ def test_filled_time_counts_toward_the_half_a_plex_marker_needs(compare, monkeyp
     monkeypatch.setattr(analysis, "BRIDGE_MAX_GAP_MS", 0)
     unfilled = compare(differing)
     assert [r.origin for r in unfilled.ranges] == ["plex"] and unfilled.ranges[0].review_status == "proposed"
-    assert any("confirmed only" in reason and "less than half" in reason for reason in unfilled.reasons)
+    assert any("found only" in reason and "less than half" in reason for reason in unfilled.reasons)
     monkeypatch.undo()
     draft = compare(differing)
     assert len(filled(draft)) == 6

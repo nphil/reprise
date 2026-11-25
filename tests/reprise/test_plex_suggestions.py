@@ -16,7 +16,7 @@ ACKNOWLEDGED = {"acknowledge_plex_suggestion": True}
 
 
 def suggestion(name, kind, start, end, audio=("a",)):
-    reason = "Suggested by Plex — not confirmed by Reprise."
+    reason = "Suggested by Plex. Reprise didn't find it in other episodes."
     return DecisionRange(
         name,
         kind,

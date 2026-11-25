@@ -76,7 +76,7 @@
         [/^Reference media is stale or unavailable$/i, 'An episode used for comparison has changed or is unavailable. Analyze again.'],
         [/^Reference unsupported/i, "Another episode couldn't be used for comparison because it uses a different video or audio format."],
         [/^No exact registered Plex playback identity$/i, "Reprise hasn't read this episode from Plex yet. Refresh the library."],
-        [/^Playback identity is ambiguous$/i, 'Plex lists this file more than once, so Reprise cannot tell which copy to use.'],
+        [/^Playback identity is ambiguous$/i, "Plex lists this file more than once, so Reprise can't tell which copy to use."],
     ];
     function plainReason(reason) {
         const text = typeof reason === 'string' ? reason : (reason && (reason.message || reason.code)) || '';
@@ -84,6 +84,15 @@
         return isCode(text) ? 'Reprise needs attention here. Open Details for the technical reason.' : text;
     }
     const rawReasons = result => (result.reasons || []).filter(reason => reason !== 'unapproved_or_unverified');
+    /* Evidence rows come from stored results, so analyses saved before the wording changed still show their old sentences; these show them in the current words. */
+    const verdictLabel = verdict => ({ match: 'Match', unknown: 'No match' }[verdict] || verdict || 'No match');
+    const EVIDENCE_TEXT = [
+        [/^Recurrence of the canonical picture and sound/, 'Reprise found the same picture and sound in other episodes.'],
+        [/^Content or timing could not be verified; preserve it\.?$/, "Reprise couldn't match this part with another episode, so it won't be skipped."],
+        [/^Plex has a marker here, but comparing episodes did not confirm it\.?$/, "Plex has a marker here, but Reprise didn't find it in other episodes."],
+    ];
+    const plainEvidence = text => { const found = EVIDENCE_TEXT.find(([pattern]) => pattern.test(text || '')); return found ? found[1] : text || ''; };
+    const CHANGE_STATUS = { prepared: 'Ready to send to Plex', applying: 'Sending to Plex…', applied: 'Sent to Plex', undoing: 'Undoing…', undone: 'Undone', uncertain: 'Not sure it went through', failed: 'Could not send', refused: 'Not sent' };
 
     /* ── status of an episode (list rows and review header) ─────────────────────────────────────────────── */
     function jobMediaIds(job) { return job.media_version_ids || state.jobMedia.get(job.id) || null; }
@@ -249,11 +258,11 @@
        exact skips, like setting each by hand; nothing is sent to Plex. Shown only with a show and season picked. */
     function renderConfident() {
         const n = $('rpShow').value && $('rpSeason').value ? state.items.reduce((sum, i) => sum + (i.confident || 0), 0) : 0, more = n > 0 && state.cursor ? ' or more' : '';
-        const approve = $('rpApproveConfident'); approve.hidden = !n; approve.textContent = `Approve ${n}${more} confident ${n === 1 && !more ? 'suggestion' : 'suggestions'}`;
+        const approve = $('rpApproveConfident'); approve.hidden = !n; approve.textContent = `Approve ${n}${more} sure ${n === 1 && !more ? 'suggestion' : 'suggestions'}`;
     }
     async function approveConfident() {
         const show = $('rpShow').value, season = Number($('rpSeason').value);
-        if (!show || !season || !confirm(`Approve the local model's confident suggestions for ${show}, season ${season}? They become your own skips. Nothing is sent to Plex until you apply it.`)) return;
+        if (!show || !season || !confirm(`Approve the suggestions the AI model is sure about for ${show}, season ${season}? They become your own skips. Nothing goes to Plex until you send it.`)) return;
         const approve = $('rpApproveConfident'); approve.disabled = true;
         try {
             const result = await api('/api/reprise/approve-local-model', { method: 'POST', body: { show, season } });
@@ -281,7 +290,7 @@
             message(`Analyzing ${plural(usable.length, 'episode')}. You can leave this page; results appear here when it finishes.` + (skipped ? ` ${plural(skipped, 'file')} changed and ${skipped === 1 ? 'was' : 'were'} skipped.` : ''));
             await loadQueue(); renderLibrary(); if (state.item) renderOutcome();
         } catch (error) {
-            message(/Invalid request|Request failed \(400\)/.test(error.message) ? "Reprise couldn't start the analysis. The file may have changed or moved: refresh the library and try again." : error.message, true);
+            message(/couldn't do that|Request failed \(400\)/i.test(error.message) ? "Reprise couldn't start the analysis. The file may have changed or moved. Refresh the library and try again." : error.message, true);
         }
     }
 
@@ -337,7 +346,7 @@
     async function loadHistory(id, request) {
         if (!state.settings?.publication_available) return;
         try { const history = await api('/api/reprise/publications?media_version_id=' + encodeURIComponent(id)); if (request === reviewRequest && Array.isArray(history.items)) { state.changes = history.items; renderPublication(); } }
-        catch (error) { if (request === reviewRequest) message('Publication history unavailable: ' + error.message, true); }
+        catch (error) { if (request === reviewRequest) message("Reprise couldn't load the changes already sent to Plex: " + error.message, true); }
     }
 
     /* What the open episode's analysis amounts to, in one place a person looks first. */
@@ -502,7 +511,7 @@
         const bar = (cls, a, b, title) => { const s = el('span', null, `rp-timeline-segment ${cls}`); s.style.left = `${Math.max(0, a / duration * 100)}%`; s.style.width = `${Math.max(0, Math.min(duration, b) - a) / duration * 100}%`; s.title = title; timeline.append(s); };
         if (duration) {
             for (const range of state.edits) if (range.end_ms > range.start_ms) bar(range.action === 'keep' ? 'keep' : isReplaced(range) || isSuggestion(range) && range.review_status !== 'approved' ? 'skip suggested' : 'skip', range.start_ms, range.end_ms, `${isOwnerSpan(range) ? 'set by you' : isReplaced(range) ? 'replaced by your skip' : isSuggestion(range) ? suggestionBadge(range) : range.action} ${ms(range.start_ms)}–${ms(range.end_ms)}`);
-            for (const e of r.evidence || []) if (e.end_ms > e.start_ms) bar('evidence', e.start_ms, e.end_ms, `${e.verdict || 'Evidence'} ${ms(e.start_ms)}–${ms(e.end_ms)}`);
+            for (const e of r.evidence || []) if (e.end_ms > e.start_ms) bar('evidence', e.start_ms, e.end_ms, `${verdictLabel(e.verdict)} ${ms(e.start_ms)}–${ms(e.end_ms)}`);
         }
         if (rebuild) {
             const list = $('rpRanges'); clear(list);
@@ -518,13 +527,13 @@
     }
     function renderEvidence() {
         const box = $('rpEvidence'), r = state.result; clear(box);
-        const codes = (r.reasons || []).filter(isCode); if (codes.length) box.append(el('p', 'Technical reasons: ' + codes.join(', '), 'rp-note'));
+        const codes = (r.reasons || []).filter(isCode); if (codes.length) box.append(el('p', 'Reason codes (for bug reports): ' + codes.join(', '), 'rp-note'));
         const evidence = r.evidence || [];
-        if (!evidence.length) { box.append(el('p', 'No evidence was recorded for this episode.', 'rp-state')); return; }
+        if (!evidence.length) { box.append(el('p', 'Reprise has nothing to show here for this episode.', 'rp-state')); return; }
         evidence.forEach(e => {
             const row = el('div', null, 'rp-evidence-row'), head = el('div', null, 'rp-actions');
-            head.append(el('strong', ms(e.start_ms) + ' – ' + ms(e.end_ms)), el('span', e.verdict || 'unknown', 'rp-chip'));
-            row.append(head, el('p', [e.modality, e.reason].filter(Boolean).join(' · '), 'rp-note'));
+            head.append(el('strong', ms(e.start_ms) + ' – ' + ms(e.end_ms)), el('span', verdictLabel(e.verdict), 'rp-chip'));
+            row.append(head, el('p', plainEvidence(e.reason), 'rp-note'));
             if (e.reference_version_id && e.reference_start_ms != null && e.reference_end_ms != null) {
                 row.append(button('Compare with the matching episode', async () => {
                     try {
@@ -574,7 +583,7 @@
         const numberField = (text, key) => {
             const wrap = el('div', null, 'rp-set'), label = el('label', text), input = el('input'); input.type = 'number'; input.min = '0'; input.step = '1'; input.value = range[key] ?? '';
             input.addEventListener('input', () => { range[key] = input.value === '' ? NaN : Number(input.value); changed(); }); label.append(input);
-            wrap.append(label, button('Use video time', () => { const v = fileTime($('rpVideo')); range[key] = v; input.value = String(v); changed(); })); return wrap;
+            wrap.append(label, button('Use current time', () => { const v = fileTime($('rpVideo')); range[key] = v; input.value = String(v); changed(); })); return wrap;
         };
         const selectField = (text, key, values) => {
             const label = el('label', text), input = el('select'); values.forEach(([v, t]) => input.append(option(v, t))); input.value = range[key] ?? '';
@@ -602,34 +611,34 @@
     function renderPublication() {
         const root = $('rpPublication'); clear(root);
         const identities = state.result?.identities || state.item?.identities || [];
-        if (!identities.length) { root.append(el('p', 'This file has no verified Plex identity, so it cannot be sent to Plex.', 'rp-state')); return; }
+        if (!identities.length) { root.append(el('p', "Reprise hasn't matched this file to an item in Plex yet, so it can't be sent. Refresh the library first.", 'rp-state')); return; }
         const label = el('label', 'Which Plex copy'), select = el('select');
         identities.forEach((id, i) => select.append(option(String(i), `Plex item ${id.rating_key} · media ${id.media_id} · part ${id.part_id} · audio ${id.audio_stream_id}`))); label.append(select); root.append(label);
         const available = state.settings?.publication_available, enabled = state.settings?.writes_enabled;
-        if (!available || !enabled) root.append(el('p', 'Sending to Plex is switched off, so nothing can be prepared or applied.', 'rp-note'));
-        const prepare = button('Prepare a Plex change', async () => {
+        if (!available || !enabled) root.append(el('p', 'Sending to Plex is off, so nothing can be sent.', 'rp-note'));
+        const prepare = button('Preview the change for Plex', async () => {
             try { const result = await api('/api/reprise/publications/prepare', { method: 'POST', body: { media_version_id: state.item.id, expected_revision: state.result.result_revision, identity: identities[Number(select.value)] } }); state.changes.unshift(result); renderPublication(); } catch (error) { fail(error); }
         });
         prepare.disabled = !available || !enabled || state.dirty || state.result?.result_revision == null; root.append(prepare);
         state.changes.forEach(change => {
-            const row = el('div', null, 'rp-job'), info = el('div', null, 'rp-job-main'); info.append(el('strong', `Plex change ${change.status || 'unknown'}`), el('span', change.message || change.reason || '', 'rp-note')); row.append(info);
+            const row = el('div', null, 'rp-job'), info = el('div', null, 'rp-job-main'); info.append(el('strong', CHANGE_STATUS[change.status] || 'Change for Plex'), el('span', change.message || change.reason || '', 'rp-note')); row.append(info);
             const summaryValid = [change.before_markers, change.after_markers].every(markers => Array.isArray(markers) && markers.every(marker => typeof marker.type === 'string' && marker.rating_key != null && Number.isInteger(marker.start_ms) && Number.isInteger(marker.end_ms)));
             if (summaryValid) {
-                for (const [heading, markers] of [['Current markers', change.before_markers], ['Proposed markers', change.after_markers]]) {
+                for (const [heading, markers] of [['In Plex now', change.before_markers], ['After this change', change.after_markers]]) {
                     info.append(el('strong', heading));
-                    if (!markers.length) info.append(el('span', 'None', 'rp-note')); else markers.forEach(marker => info.append(el('span', marker.type + ' · ' + ms(marker.start_ms) + ' – ' + ms(marker.end_ms) + ' · item ' + marker.rating_key + (marker.unchanged ? ' · unchanged, kept as Plex has it' : ''), 'rp-note')));
+                    if (!markers.length) info.append(el('span', 'None', 'rp-note')); else markers.forEach(marker => info.append(el('span', marker.type + ' · ' + ms(marker.start_ms) + ' – ' + ms(marker.end_ms) + ' · item ' + marker.rating_key + (marker.unchanged ? ' · already in Plex, left as it is' : ''), 'rp-note')));
                 }
             }
             if (change.status === 'prepared') {
-                const apply = button('Apply to Plex', async () => { if (!confirm('Apply this prepared marker change to Plex?')) return; try { Object.assign(change, await api('/api/reprise/publications/' + encodeURIComponent(change.id) + '/apply', { method: 'POST', body: {} })); renderPublication(); } catch (error) { fail(error); } }, 'rp-btn primary');
-                apply.disabled = !summaryValid; if (apply.disabled) info.append(el('span', 'Change details are unavailable, so applying is disabled.', 'rp-note')); row.append(apply);
+                const apply = button('Send to Plex', async () => { if (!confirm('Send this change to Plex?')) return; try { Object.assign(change, await api('/api/reprise/publications/' + encodeURIComponent(change.id) + '/apply', { method: 'POST', body: {} })); renderPublication(); } catch (error) { fail(error); } }, 'rp-btn primary');
+                apply.disabled = !summaryValid; if (apply.disabled) info.append(el('span', "Reprise can't show what would change, so it won't send this.", 'rp-note')); row.append(apply);
             }
             if (change.status === 'applying' || change.status === 'undoing') {
-                info.append(el('span', 'This change was interrupted. Check its state without repeating it.', 'rp-note'));
-                row.append(button('Check state', async () => { try { Object.assign(change, await api('/api/reprise/publications/' + encodeURIComponent(change.id) + '/recover', { method: 'POST', body: {} })); renderPublication(); } catch (error) { fail(error); } }));
+                info.append(el('span', "This change was interrupted. Check what happened. Reprise won't send it again by itself.", 'rp-note'));
+                row.append(button('Check what happened', async () => { try { Object.assign(change, await api('/api/reprise/publications/' + encodeURIComponent(change.id) + '/recover', { method: 'POST', body: {} })); renderPublication(); } catch (error) { fail(error); } }));
             }
-            if (change.status === 'uncertain') info.append(el('span', 'The result is uncertain. Nothing will be repeated automatically.', 'rp-note'));
-            if (change.status === 'applied') row.append(button('Undo', async () => { if (!confirm('Undo this published marker change?')) return; try { Object.assign(change, await api(`/api/reprise/publications/${encodeURIComponent(change.id)}/undo`, { method: 'POST', body: {} })); renderPublication(); } catch (error) { fail(error); } }));
+            if (change.status === 'uncertain') info.append(el('span', "Reprise can't tell whether this went through. It won't try again by itself.", 'rp-note'));
+            if (change.status === 'applied') row.append(button('Undo', async () => { if (!confirm('Undo this change in Plex?')) return; try { Object.assign(change, await api(`/api/reprise/publications/${encodeURIComponent(change.id)}/undo`, { method: 'POST', body: {} })); renderPublication(); } catch (error) { fail(error); } }));
             root.append(row);
         });
     }
@@ -845,7 +854,7 @@
         catch (error) { fail(error); }
         finally { renderVision(); }
     }
-    $('rpVisionToggle').addEventListener('change', event => saveVision({ enabled: event.target.checked }, event.target.checked ? 'A local model will check unconfirmed intros and credits.' : 'The local model check is off.'));
+    $('rpVisionToggle').addEventListener('change', event => saveVision({ enabled: event.target.checked }, event.target.checked ? 'An AI model will check intros and credits Reprise could not confirm.' : 'The AI model check is off.'));
     $('rpVisionSave').addEventListener('click', () => saveVision({ base_url: $('rpVisionUrl').value, model: $('rpVisionModel').value }, 'Saved.'));
     const renderSettings = () => { renderHardware(); renderVram(); renderOnline(); renderVision(); };
     window.addEventListener('rp:settings', event => { state.settings = event.detail; renderSettings(); if (state.result) renderPublication(); });

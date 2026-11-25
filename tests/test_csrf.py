@@ -296,7 +296,7 @@ class TestWebhookReceivers:
         headers = {"Authorization": f"Bearer {created.get_json()['secret']}"}
         response = client.post(url, json=body, headers=headers)
         assert response.status_code == 400
-        assert response.get_json() == {"error": "Invalid request or operation"}
+        assert response.get_json() == {"error": "Reprise couldn't do that. Refresh the page and try again."}
         with patch(
             "media_preview_generator.reprise.service.RepriseService.enqueue_analysis", return_value={"id": "job"}
         ) as enqueue:

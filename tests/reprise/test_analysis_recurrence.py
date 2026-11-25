@@ -411,7 +411,7 @@ def test_a_plex_marker_is_fitted_to_the_file_and_one_that_does_not_fit_is_ignore
     result = analyze_windows(target, windows, catalog)
     assert result.status == "complete", result.reasons
     assert [(r.kind, r.start_ms, r.end_ms) for r in result.ranges] == [("intro", 6000, 7000)]
-    assert "Plex's credits marker does not fit this file, so it was ignored." in result.reasons
+    assert "Plex's credits marker doesn't fit this file, so Reprise ignored it." in result.reasons
 
 
 def test_only_a_plex_marker_may_be_too_long_to_compare(tmp_path, catalog):
@@ -441,7 +441,7 @@ def test_a_plex_marker_is_still_offered_when_the_episode_cannot_be_compared(tmp_
         1000,
         6000,
     )
-    assert result.reasons[0] == "This episode can't be compared exactly with the others, so nothing could be confirmed."
+    assert result.reasons[0] == "Reprise can't compare this episode with the others, so it couldn't confirm anything."
     assert any("discontinuous" in reason for reason in result.reasons)  # the technical detail comes last
     # with no Plex marker the same failure is still a failure: there is nothing to offer instead
     guess = [CandidateWindow("intro", 1000, 6000, "opening-window")]
@@ -481,9 +481,12 @@ def test_a_sound_that_stops_a_second_early_confirms_only_what_it_holds(tmp_path,
     "seconds,headline",
     [
         # the comparison reads from 2 s before the marker, so it finds 1 s of sound there: outside the marker
-        (3, "Compared with 1 other episode of this season, but no repeating intro or credits could be confirmed."),
+        (
+            3,
+            "Reprise compared this with 1 other episode of this season and found no intro or credits that repeat.",
+        ),
         # nothing of what the comparison reads is in the sound: the failure is the old one, unchanged
-        (1.5, "This episode can't be compared exactly with the others, so nothing could be confirmed."),
+        (1.5, "Reprise can't compare this episode with the others, so it couldn't confirm anything."),
     ],
 )
 def test_a_marker_that_starts_after_the_sound_has_ended_is_never_confirmed(tmp_path, catalog, seconds, headline):
@@ -525,8 +528,9 @@ def test_an_episode_in_another_picture_format_is_passed_over_for_the_next_neares
     assert "1 other episode of this season has a different picture format, so it was left out of the comparison." in (
         result.reasons
     )
-    assert "Compared with 3 other episodes of this season, but no repeating intro or credits could be confirmed." in (
-        result.reasons
+    assert (
+        "Reprise compared this with 3 other episodes of this season and found no intro or credits that repeat."
+        in result.reasons
     )
     assert [name for name in probed if name != "target.mkv"] == [f"episode-{n}.mkv" for n in (2, 3, 4, 5)]  # not 6
 
@@ -633,7 +637,7 @@ def test_sound_out_of_step_with_the_picture_is_found_within_the_search_window_an
     assert result.status == "complete", result.reasons
     if not confirmed:
         assert not skips(result) and not matches(result), result.ranges
-        assert any(reason.startswith("Compared with 1 other episode") for reason in result.reasons)
+        assert any(reason.startswith("Reprise compared this with 1 other episode") for reason in result.reasons)
         return
     assert overlaps(3000, 4000, skips(result)), result.reasons
     expected = Fraction(shift_ms if delayed == "reference" else -shift_ms)
@@ -725,8 +729,8 @@ def test_a_plex_marker_stays_a_suggestion_unless_half_of_it_is_confirmed(tmp_pat
         assert [(r.kind, r.start_ms, r.end_ms, r.review_status) for r in plex] == [("intro", 1000, 6000, "proposed")]
         assert all(r.origin == "plex" for r in result.ranges)
         assert not matches(result)  # the confirmed fragment is dropped, not proposed on its own
-        assert any("confirmed only" in reason and "less than half" in reason for reason in result.reasons)
-        assert not any(reason.startswith("Compared with 1 other episode") for reason in result.reasons)
+        assert any("found only" in reason and "less than half" in reason for reason in result.reasons)
+        assert not any(reason.startswith("Reprise compared this with 1 other episode") for reason in result.reasons)
     else:
         assert not plex
         assert overlaps(3000, 4000, skips(result)), result.reasons

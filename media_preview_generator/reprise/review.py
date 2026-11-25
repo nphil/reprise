@@ -32,7 +32,7 @@ def plex_projection(result, identity, eligible, plex_now=None):
     hold the ranges it suggested.
     """
     if result.analysis_status != "complete" or result.freshness != "current":
-        raise ValueError("Analysis is not complete and current")
+        raise ValueError("This episode's analysis isn't finished or is out of date. Analyze it again.")
     spans = [r for r in result.ranges if is_owner_span(r) and r.review_status == "approved"]
     for span in spans:
         blockers = owner_blockers(result.ranges, span)
@@ -57,11 +57,11 @@ def plex_projection(result, identity, eligible, plex_now=None):
     )
     eligible = sorted((r for r in eligible if sent(r)), key=lambda r: (r.start_ms, r.end_ms, r.id))
     if spans and not approved:
-        raise NothingToPublish("Plex already has exactly the skip you set, so there is nothing to publish")
+        raise NothingToPublish("Plex already has exactly the skip you set, so there's nothing to send")
     if not approved and any(r.review_status == "approved" and r.origin == ORIGIN_PLEX for r in result.ranges):
-        raise NothingToPublish("Plex's own suggestions are already in Plex; there is nothing to publish")
+        raise NothingToPublish("Those suggestions are already in Plex, so there's nothing to send")
     if not approved or approved != eligible:
-        raise ValueError("Approved skips are not fully eligible for this playback identity")
+        raise ValueError("Some approved skips can't be sent for this copy of the file")
     seen = set()
     previous = None
     merged = []
@@ -70,21 +70,21 @@ def plex_projection(result, identity, eligible, plex_now=None):
         # between them is a protected moment Plex can't represent, so it still refuses.
         joins = previous is not None and previous.kind == item.kind and item.start_ms == previous.end_ms
         if item.kind not in ("intro", "credits") or (item.kind in seen and not joins):
-            raise ValueError("Plex cannot represent this set of skip ranges exactly")
+            raise ValueError("Plex can't hold these skips exactly as they are")
         if (
             type(item.start_ms) is not int
             or type(item.end_ms) is not int
             or not 0 <= item.start_ms < item.end_ms <= identity.duration_ms
             or (previous is not None and item.start_ms < previous.end_ms)
         ):
-            raise ValueError("Skip ranges overlap or have invalid bounds")
+            raise ValueError("The skips overlap, or have times that don't fit this episode")
         limit = span_limit(
             item.kind, item.start_ms, item.end_ms, identity.duration_ms, item.terminal, owner=is_owner_span(item)
         )
         if limit:
             raise ValueError(limit)
         if identity.audio_stream_id not in item.audio_stream_ids:
-            raise ValueError("Selected audio track was not reviewed")
+            raise ValueError("You haven't reviewed this audio track yet")
         if joins:
             merged[-1] = replace(merged[-1], end_ms=item.end_ms)
         else:

@@ -151,7 +151,9 @@ def test_a_window_nothing_suggested_is_compared_with_the_nearest_only(catalog, m
     result = compare(catalog, media, [*media.others[:3], media.repeats], CandidateWindow("intro", 1000, 6000, "test"))
     assert not skips(result) and not matches(result), result.ranges
     assert media.repeats.id not in scanned
-    assert any(reason.startswith("Compared with 3 other episodes") for reason in result.reasons), result.reasons
+    assert any(reason.startswith("Reprise compared this with 3 other episodes") for reason in result.reasons), (
+        result.reasons
+    )
 
 
 def test_a_further_episode_confirms_only_what_is_identical_in_picture_and_sound(catalog, media, scanned):  # noqa: F811
