@@ -322,7 +322,8 @@ def create_reprise_blueprint(service):
     @bp.get("/api/reprise/approvals")
     @owner
     def approvals_queue():
-        """Everything waiting for the owner, by show and season, from the store alone (Plex is not read)."""
+        """Everything waiting for the owner, by show and season: the store plus one batched read of what Plex serves, so
+        a skip Plex already has is not listed as work. If Plex cannot be read nothing is taken out."""
         return jsonify(_json(approvals.queue(service)))
 
     @bp.get("/api/reprise/approvals/season")

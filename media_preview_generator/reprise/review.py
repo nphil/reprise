@@ -2,7 +2,7 @@
 
 from dataclasses import replace
 
-from .models import ORIGIN_PLEX, PublicationRefused, is_owner_span
+from .models import ORIGIN_PLEX, NothingToPublish, PublicationRefused, is_owner_span
 from .policy import blocked_sentence, owner_blockers, span_limit
 
 
@@ -57,9 +57,9 @@ def plex_projection(result, identity, eligible, plex_now=None):
     )
     eligible = sorted((r for r in eligible if sent(r)), key=lambda r: (r.start_ms, r.end_ms, r.id))
     if spans and not approved:
-        raise PublicationRefused("Plex already has exactly the skip you set, so there is nothing to publish")
+        raise NothingToPublish("Plex already has exactly the skip you set, so there is nothing to publish")
     if not approved and any(r.review_status == "approved" and r.origin == ORIGIN_PLEX for r in result.ranges):
-        raise PublicationRefused("Plex's own suggestions are already in Plex; there is nothing to publish")
+        raise NothingToPublish("Plex's own suggestions are already in Plex; there is nothing to publish")
     if not approved or approved != eligible:
         raise ValueError("Approved skips are not fully eligible for this playback identity")
     seen = set()

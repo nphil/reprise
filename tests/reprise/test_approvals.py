@@ -128,6 +128,91 @@ def test_an_episode_the_owner_approved_is_waiting_to_be_sent_until_it_is_sent(la
     assert approvals.queue(lab.service)["totals"] == {"sure": 0, "needs": 0, "ready": 0, "seasons": 0}
 
 
+def published_then_reanalysed(lab, number=1):
+    """An episode whose credits skip the owner approved and Reprise sent, after which the analysis ran again: the result
+    moved on to a new revision, so nothing in the journal matches it any more, yet Plex serves exactly what was sent
+    (``lab.plex_markers`` is Plex's answer to the queue, the real Plex file is what a send reads)."""
+    ep = analyse(lab, lab.episode(number), SURE_CREDITS)
+    approvals.send(lab.service, "Community", 1, "sure")
+    lab.plex_markers[str(number)] = [{"kind": "credits", "start_ms": 80_000, "end_ms": DURATION}]
+    analyse(lab, ep, ("credits", 82_000, DURATION, localvision.HIGH))  # a different answer: a new revision
+    return ep
+
+
+EMPTY_QUEUE = {"sure": 0, "needs": 0, "ready": 0, "seasons": 0}
+
+
+def test_a_skip_plex_already_serves_is_not_waiting_to_be_sent_even_after_the_analysis_ran_again(lab):
+    ep = published_then_reanalysed(lab)
+    assert [r.review_status for r in owner_spans(lab, ep)] == ["approved"]  # still the owner's skip, never undone
+
+    assert approvals.queue(lab.service)["totals"] == EMPTY_QUEUE
+
+
+def test_an_approved_skip_that_differs_from_plex_even_slightly_still_waits_to_be_sent(lab):
+    published_then_reanalysed(lab)
+    lab.plex_markers["1"] = [{"kind": "credits", "start_ms": 80_400, "end_ms": DURATION}]  # a few tenths of a second
+
+    assert counts(approvals.queue(lab.service)) == {"sure": 0, "needs": 0, "ready": 1}
+
+
+def test_when_plex_cannot_be_read_nothing_is_taken_out_of_the_queue(lab, monkeypatch):
+    published_then_reanalysed(lab)
+    analyse(lab, lab.episode(2), ("intro", 5_000, 20_000, localvision.MEDIUM))
+    monkeypatch.setattr(approvals, "read_plex_markers", lambda server, keys: ({}, "Plex did not answer"))
+
+    assert counts(approvals.queue(lab.service)) == {"sure": 0, "needs": 1, "ready": 1}
+
+
+def test_an_asked_for_skip_is_ready_only_for_what_plex_does_not_have(lab):
+    ep = published_then_reanalysed(lab)
+    approvals.decide(lab.service, ep.vid, lab.revision(ep), "intro", "skip", start_ms=6_000, end_ms=21_000)
+
+    [item] = approvals.season_plan(lab.service, "Community", 1)["ready"]
+
+    assert [(s["kind"], s["change"]) for s in item["skips"]] == [("intro", "new")]  # the credits skip is in Plex
+
+
+def test_a_suggestion_plex_already_has_is_nothing_to_look_at_but_a_different_one_is(lab):
+    for number in (1, 2, 3):
+        analyse(lab, lab.episode(number), ("intro", 5_000, 20_000, localvision.MEDIUM))
+    lab.plex_markers = {
+        "1": [{"kind": "intro", "start_ms": 5_042, "end_ms": 19_960}],  # Plex found the same one
+        "2": [{"kind": "intro", "start_ms": 9_000, "end_ms": 24_000}],  # Plex has a different one
+    }
+
+    plan = approvals.season_plan(lab.service, "Community", 1)
+
+    assert [(i["episode"], i["change"]) for i in plan["needs"]] == [(2, "moved"), (3, "new")]
+    assert counts(approvals.queue(lab.service)) == {"sure": 0, "needs": 2, "ready": 0}
+
+
+def test_a_season_whose_skips_plex_all_has_is_not_listed_at_all(lab):
+    for number in (1, 2):
+        ep = lab.episode(number)
+        analyse(lab, ep, ("intro", 5_000, 20_000, localvision.MEDIUM), SURE_CREDITS)
+        lab.plex_markers[str(number)] = [
+            {"kind": "intro", "start_ms": 5_000, "end_ms": 20_000},
+            {"kind": "credits", "start_ms": 80_000, "end_ms": DURATION},
+        ]
+
+    assert approvals.queue(lab.service)["totals"] == EMPTY_QUEUE
+
+
+def test_pieces_that_touch_are_one_skip_and_pieces_with_a_gap_or_of_another_kind_are_not():
+    piece = lambda kind, start, end: SimpleNamespace(kind=kind, start_ms=start, end_ms=end)  # noqa: E731
+
+    skips = approvals._joined(
+        [piece("intro", 0, 5), piece("intro", 5, 9), piece("credits", 9, 12), piece("intro", 10, 14), piece("x", 1, 2)]
+    )
+
+    assert [(s["kind"], s["start_ms"], s["end_ms"]) for s in skips] == [
+        ("intro", 0, 9),
+        ("credits", 9, 12),
+        ("intro", 10, 14),
+    ]
+
+
 # ── one decision at a time ────────────────────────────────────────────────────────────────────────────────────────
 
 
@@ -208,19 +293,18 @@ def test_a_season_says_in_plain_words_what_sending_would_change(lab):
         analyse(lab, lab.episode(number), SURE_CREDITS)
     lab.plex_markers = {
         "1": [{"kind": "credits", "start_ms": 68_000, "end_ms": DURATION}],  # ours starts 12 s later
-        "2": [{"kind": "credits", "start_ms": 80_400, "end_ms": DURATION}],  # within a second
+        "2": [{"kind": "credits", "start_ms": 80_400, "end_ms": DURATION}],  # within a second: Plex has it already
     }  # episode 3 has none
 
     plan = approvals.season_plan(lab.service, "community", 1)
 
+    assert [(i["episode"], i["change"]) for i in plan["sure"]] == [(1, "moved"), (3, "new")]  # nothing to decide on 2
     assert plan["changes"]["sure"]["lines"] == [
         "Credits skip is added on 1 episode where Plex has none.",
         "Credits skip starts about 12 s later on 1 episode.",
-        "Credits skip already matches Plex on 1 episode.",
     ]
-    assert plan["changes"]["sure"]["counts"] == {"new": 1, "same": 1, "moved": 1, "unknown": 0}
+    assert plan["changes"]["sure"]["counts"] == {"new": 1, "same": 0, "moved": 1, "unknown": 0}
     assert plan["plex"]["status"] == "read"
-    assert {i["change"] for i in plan["sure"]} == {"new", "same", "moved"}
 
 
 def test_a_move_of_more_than_half_a_minute_is_called_out_and_an_unreadable_plex_is_said_to_be_unknown(lab, monkeypatch):
@@ -249,6 +333,45 @@ def sure_season(lab, episodes=(1, 2)):
     sure = [analyse(lab, lab.episode(number), SURE_CREDITS) for number in episodes]
     unsure = analyse(lab, lab.episode(9), ("intro", 6_000, 21_000, localvision.MEDIUM))
     return sure, unsure
+
+
+def test_sending_what_plex_already_has_says_so_plainly_writes_nothing_and_the_season_leaves_the_queue(lab):
+    published_then_reanalysed(lab)
+    before, backups = lab.rows(), len(lab.backups.calls)
+
+    done = approvals.send(lab.service, "Community", 1, "approved")
+
+    assert done["message"] == "Plex already has these skips. Nothing to send."
+    assert done["sent"] == [] and done["failed"] == [] and done["approved"] == [] and done["stopped"] is None
+    assert [(a["label"], a["kinds"]) for a in done["already"]] == [("S01E01", ["credits"])]
+    assert lab.rows() == before and len(lab.backups.calls) == backups  # not even a backup was needed
+    assert approvals.queue(lab.service)["totals"] == EMPTY_QUEUE
+
+
+def test_a_send_that_finds_plex_already_has_the_skip_is_not_a_failure_even_if_plex_could_not_be_read_first(
+    lab, monkeypatch
+):
+    published_then_reanalysed(lab)
+    monkeypatch.setattr(approvals, "read_plex_markers", lambda server, keys: ({}, "Plex did not answer"))
+    before = lab.rows()
+
+    done = approvals.send(lab.service, "Community", 1, "approved")  # the publisher itself finds nothing to publish
+
+    assert done["message"] == "Plex already has these skips. Nothing to send."
+    assert done["failed"] == [] and done["sent"] == [] and [a["label"] for a in done["already"]] == ["S01E01"]
+    assert lab.rows() == before
+
+
+def test_with_one_episode_sent_and_one_already_there_the_answer_counts_both_and_has_no_message(lab):
+    published_then_reanalysed(lab)  # episode 1: already in Plex
+    ep = analyse(lab, lab.episode(2), SURE_CREDITS)
+    approvals.decide(lab.service, ep.vid, lab.revision(ep), "credits", "skip", start_ms=80_000, end_ms=DURATION)
+
+    done = approvals.send(lab.service, "Community", 1, "approved")
+
+    assert [s["label"] for s in done["sent"]] == ["S01E02"]
+    assert [a["label"] for a in done["already"]] == ["S01E01"] and done["message"] is None
+    assert done["failed"] == []
 
 
 def test_one_click_backs_plex_up_then_approves_and_sends_only_the_sure_ones(lab):

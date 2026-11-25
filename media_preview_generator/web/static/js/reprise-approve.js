@@ -362,8 +362,10 @@
       if (trouble) { view.tone = 'lu-warn'; view.mark = 'exclamation-circle'; }
     } else if (r.approved.length) {
       view.title = 'Approved ' + plural(approvedSkips, 'skip');
-      view.detail.push(r.failed.length ? 'Not sent' : 'Not sent: sending to Plex is turned off');
+      view.detail.push(r.failed.length ? 'Not sent' : (r.already || []).length ? 'Plex already has them' : 'Not sent: sending to Plex is turned off');
       view.mark = 'check2-all'; view.tone = trouble ? 'lu-warn' : 'lu-pos';
+    } else if ((r.already || []).length && !r.failed.length) {
+      view.title = 'Plex already has these skips'; view.detail.push('Nothing to send'); view.mark = 'check2-all';
     } else {
       view.title = 'Nothing was sent'; view.tone = 'lu-warn'; view.mark = 'exclamation-circle';
     }

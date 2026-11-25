@@ -9,8 +9,12 @@ and only the first can ever be approved in bulk:
   approves. A Medium or Low one is never in this group.
 * **needs you**: every other skip Reprise suggested that would change Plex (a Medium or Low guess of the local model,
   the file's chapter marks, an online database, a skip found by comparing episodes that was not sent by itself). Plex's
-  own marker is not one of them: confirming it would change nothing.
-* **ready**: skips the owner approved that Plex does not have yet.
+  own marker is not one of them: confirming it would change nothing. Nor is a suggestion Plex already serves.
+* **ready**: skips the owner approved that Plex does not have yet. A skip Plex already serves exactly is not waiting,
+  whether Reprise sent it, an older version of Reprise did, or Plex found it itself.
+
+What Plex serves is read in a few batched calls (one per 40 episodes) each time the queue is built, so a show that is
+finished in Plex is never listed as work. When Plex cannot be read nothing is taken out: the episodes stay listed.
 
 Films are not here: the comparisons, the local model's grading and the sender all work on episodes.
 """
@@ -25,14 +29,15 @@ from loguru import logger
 
 from ..markers.publishers import plex_db
 from . import plexbackup
-from .models import ORIGIN_PLEX, SUGGESTION_ORIGINS, ReviewRefused, is_owner_span
-from .report import TOLERANCE_MS, _hidden_kinds, _pick_show, read_plex_markers
+from .models import ORIGIN_PLEX, SUGGESTION_ORIGINS, NothingToPublish, ReviewRefused, is_owner_span
+from .report import PLEX_BATCH, TOLERANCE_MS, _hidden_kinds, _pick_show, read_plex_markers
 
 OWNER = "owner"
 KINDS = ("intro", "credits")
 KIND_WORD = {"intro": "Intro", "credits": "Credits"}
 SURE, NEEDS = "sure", "needs"
 BIG_MOVE_MS = 30000  # a skip that moves this far from Plex's is worth a look before it is sent
+NOTHING_TO_SEND = "Plex already has these skips. Nothing to send."
 
 
 # ── words ────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -145,6 +150,20 @@ def _decisions(version_id, meta, result, duration_ms):
     return items
 
 
+def _joined(pieces):
+    """The skips these approved pieces make, as Plex holds them: pieces of one kind that touch exactly are one skip."""
+    skips = []
+    for piece in pieces:
+        if piece.kind not in KINDS:
+            continue
+        prior = next((s for s in reversed(skips) if s["kind"] == piece.kind), None)
+        if prior and prior["end_ms"] == piece.start_ms:
+            prior["end_ms"] = piece.end_ms
+        else:
+            skips.append({"kind": piece.kind, "start_ms": piece.start_ms, "end_ms": piece.end_ms})
+    return skips
+
+
 def _ready(service, version_id, meta, result, duration_ms, settled):
     """What the owner approved for this episode that Plex does not have yet, or None. An episode already sent (or sent
     and then undone on purpose) at this very revision has nothing left to send."""
@@ -166,7 +185,7 @@ def _ready(service, version_id, meta, result, duration_ms, settled):
         "label": episode_label(meta),
         "duration_ms": duration_ms,
         "revision": result.result_revision,
-        "skips": [{"kind": p.kind, "start_ms": p.start_ms, "end_ms": p.end_ms} for p in pieces if p.kind in KINDS],
+        "skips": _joined(pieces),
     }
 
 
@@ -179,9 +198,70 @@ def _tv_rows(service):
     return rows
 
 
-def _scan(service, show=None, season=None):
-    """Everything waiting, grouped: ``{(show, season): {"sure": [...], "needs": [...], "ready": [...]}}``. Only the
-    episodes that hold a proposed or an approved skip are read."""
+class _Groups(defaultdict):
+    """What ``_scan`` found, by ``(show, season)``. ``plex`` is what Plex answered while it ran, ``(markers, hidden,
+    errors)`` as ``_plex_view`` returns them (None when Plex was not asked)."""
+
+    plex = None
+
+
+def _empty():
+    return {SURE: [], NEEDS: [], "ready": [], "already": []}
+
+
+def _held(markers, hidden, skip):
+    """Whether Plex serves exactly this skip right now. An episode Plex did not answer for, or a kind its library
+    hides, says nothing."""
+    if markers is None or skip["kind"] in hidden:
+        return False
+    return any(
+        m["kind"] == skip["kind"] and (m["start_ms"], m["end_ms"]) == (skip["start_ms"], skip["end_ms"])
+        for m in markers
+    )
+
+
+def _prune(service, groups, rows):
+    """Take out of ``groups`` what Plex already settles, and return Plex's answer for the rest. A suggestion Plex serves
+    to within a second is no decision (confirming it would change nothing); an approved skip Plex serves exactly is not
+    waiting to be sent, so its episode moves to ``already``. What Plex cannot answer for stays where it is."""
+    versions = {
+        item["media_version_id"]: rows[item["media_version_id"]]["metadata"]
+        for group in groups.values()
+        for bucket in (SURE, NEEDS, "ready")
+        for item in group[bucket]
+    }
+    view = _plex_view(service, versions.items()) if versions else ({}, {}, set())
+    markers, hidden, _ = view
+    for group in groups.values():
+        for bucket in (SURE, NEEDS):
+            group[bucket] = [
+                item
+                for item in group[bucket]
+                if _compare(
+                    item["kind"],
+                    item["start_ms"],
+                    item["end_ms"],
+                    markers.get(item["media_version_id"]),
+                    hidden.get(item["media_version_id"], ()),
+                )["change"]
+                != "same"
+            ]
+        waiting = []
+        for item in group["ready"]:
+            version_id = item["media_version_id"]
+            left = [s for s in item["skips"] if not _held(markers.get(version_id), hidden.get(version_id, ()), s)]
+            if left:
+                waiting.append({**item, "skips": left})
+            else:
+                group["already"].append(item)
+        group["ready"] = waiting
+    return view
+
+
+def _scan(service, show=None, season=None, *, plex=True):
+    """Everything waiting, grouped: ``{(show, season): {"sure": [...], "needs": [...], "ready": [...], "already": [...]}}``.
+    Only the episodes that hold a proposed or an approved skip are read, then Plex is asked once (in batches) what it
+    serves for them and what it already has is taken out (see ``_prune``); ``plex=False`` leaves that out."""
     store, publisher = service.store, service.publisher
     rows = _tv_rows(service)
 
@@ -193,7 +273,7 @@ def _scan(service, show=None, season=None):
             return False
         return season is None or meta.get("season") == season
 
-    groups = defaultdict(lambda: {SURE: [], NEEDS: [], "ready": []})
+    groups = _Groups(_empty)
     proposed = {v for v in store.versions_with_skips("proposed") if wanted(v)}
     approved = {v for v in store.versions_with_skips("approved") if wanted(v)}
     settled = publisher.settled_states(sorted(approved)) if publisher is not None and approved else {}
@@ -215,6 +295,8 @@ def _scan(service, show=None, season=None):
         group[SURE].sort(key=lambda i: (i["episode"] or 0, i["kind"]))
         group[NEEDS].sort(key=lambda i: (i["episode"] or 0, i["kind"]))
         group["ready"].sort(key=lambda i: i["episode"] or 0)
+    if plex:
+        groups.plex = _prune(service, groups, rows)
     return groups
 
 
@@ -233,8 +315,9 @@ def sending(service):
 
 
 def queue(service):
-    """The whole queue for the "To approve" page: counts only, from the store (no read of Plex), seasons sorted by what
-    needs the owner most (most decisions first, then most sure ones, then most waiting to be sent)."""
+    """The whole queue for the "To approve" page: counts only, from the store and one batched read of what Plex serves
+    (so a show that is already finished in Plex is not listed), seasons sorted by what needs the owner most (most
+    decisions first, then most sure ones, then most waiting to be sent)."""
     seasons = []
     for (show, number), group in _scan(service).items():
         episodes = {i["media_version_id"] for bucket in (SURE, NEEDS, "ready") for i in group[bucket]}
@@ -355,7 +438,13 @@ def _plex_view(service, versions):
         if server is None:
             errors.add("Plex is not connected")
             continue
-        found, error = read_plex_markers(server, [e[2] for e in group])
+        found, error = {}, None
+        keys = [e[2] for e in group]
+        for start in range(0, len(keys), PLEX_BATCH):  # a Plex that does not answer is asked once, not once per batch
+            part, error = read_plex_markers(server, keys[start : start + PLEX_BATCH])
+            found.update(part)
+            if error:
+                break
         if error:
             errors.add(error)
         kinds = {library: _hidden_kinds(server, library) for library in {e[3] for e in group}}
@@ -372,12 +461,13 @@ def season_plan(service, show, season):
     rows = _tv_rows(service)
     titles = sorted({str(r["metadata"]["show_title"]) for r in rows.values()})
     title = _pick_show(titles, show)
-    group = _scan(service, title, season).get((title, season)) or {SURE: [], NEEDS: [], "ready": []}
+    groups = _scan(service, title, season)
+    group = groups.get((title, season)) or _empty()
     versions = {}
     for bucket in (SURE, NEEDS, "ready"):
         for item in group[bucket]:
             versions[item["media_version_id"]] = rows[item["media_version_id"]]["metadata"]
-    markers, hidden, errors = _plex_view(service, versions.items())
+    markers, hidden, errors = groups.plex
     for bucket in (SURE, NEEDS):
         for item in group[bucket]:
             version_id = item["media_version_id"]
@@ -548,8 +638,8 @@ def _backup(service, versions, now):
 
 def _send_one(service, version_id):
     """Prepare and apply one episode through the publisher, as a manual send does. ``(state, detail)``: ``sent`` with
-    the change, ``failed`` with a reason (nothing reached Plex), ``unreachable`` (Plex could not be reached) or
-    ``uncertain`` (nobody can tell whether Plex took it)."""
+    the change, ``already`` (Plex holds exactly what was approved: nothing to send), ``failed`` with a reason (nothing
+    reached Plex), ``unreachable`` (Plex could not be reached) or ``uncertain`` (nobody can tell whether Plex took it)."""
     publisher, store = service.publisher, service.store
     result = store.get_result(version_id)
     bindings = service._bindings(version_id)
@@ -557,6 +647,8 @@ def _send_one(service, version_id):
         return "failed", "It is no longer in the library."
     try:
         change = publisher.prepare(version_id, result.result_revision, bindings[0][0], OWNER)
+    except NothingToPublish:
+        return "already", NOTHING_TO_SEND
     except Exception as exc:
         if _transient(exc):
             return "unreachable", "Plex could not be reached."
@@ -593,7 +685,8 @@ def send(service, show, season, scope, *, to_plex=True, now=None):
     owner's own exact skips; ``approved`` takes what the owner already approved. With ``to_plex`` they are then sent:
     Plex's database is backed up first (no backup, no write) and every change goes through the publisher's own checks,
     one episode at a time. Without it (sending is off) the sure ones are only approved. Returns what was approved,
-    sent and left, with the ids ``undo`` needs."""
+    sent and left, with the ids ``undo`` needs. ``already`` lists the episodes where Plex holds exactly what was
+    approved (nothing to send, not a failure); when that is all there was, ``message`` says so in plain words."""
     state = sending(service)
     if to_plex and not state["enabled"]:
         raise ReviewRefused(state["message"])
@@ -601,18 +694,24 @@ def send(service, show, season, scope, *, to_plex=True, now=None):
         raise ReviewRefused("Say whether to approve the sure ones or to send the ones you approved.")
     rows = _tv_rows(service)
     title = _pick_show(sorted({str(r["metadata"]["show_title"]) for r in rows.values()}), show)
-    group = _scan(service, title, season).get((title, season)) or {SURE: [], NEEDS: [], "ready": []}
+    group = _scan(service, title, season).get((title, season)) or _empty()
     todo = sorted(
         {i["media_version_id"] for i in group[SURE if scope == "sure" else "ready"]},
         key=lambda v: (rows[v]["metadata"].get("episode") or 0, v),
     )
-    if not todo:
+    already = []
+    if scope == "approved":  # approved earlier, and Plex serves exactly that now: the scan took them out of the queue
+        already = [
+            {**_episode(rows, i["media_version_id"]), "kinds": sorted({s["kind"] for s in i["skips"]})}
+            for i in group["already"]
+        ]
+    if not todo and not already:
         raise ReviewRefused(
             "There is nothing sure left to approve in this season."
             if scope == "sure"
             else "Nothing in this season is waiting to be sent."
         )
-    backup = _backup(service, todo, now) if to_plex else None
+    backup = _backup(service, todo, now) if to_plex and todo else None
     approved, failed, spans_of = [], [], {}
     if scope == "sure":
         outcome = service.approve_confident(title, season)
@@ -640,6 +739,9 @@ def send(service, show, season, scope, *, to_plex=True, now=None):
                 }
             )
             continue
+        if status == "already":
+            already.append({**_episode(rows, version_id), "kinds": sorted(kinds_of.get(version_id, ()))})
+            continue
         failed.append({**_episode(rows, version_id), "reason": detail})
         if status in ("unreachable", "uncertain"):
             stopped = detail
@@ -654,8 +756,10 @@ def send(service, show, season, scope, *, to_plex=True, now=None):
         "approved": approved,
         "sent": sent,
         "failed": failed,
+        "already": already,
         "stopped": stopped,
         "backup": backup,
+        "message": NOTHING_TO_SEND if already and not (approved or sent or failed) else None,
     }
 
 

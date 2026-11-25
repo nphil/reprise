@@ -155,3 +155,7 @@ class ReportRefused(ValueError):
 class PublicationRefused(ValueError):
     """A change the owner asked to send that Reprise will not make, or that has nothing to send (an exact skip Plex
     already has); the message is a plain sentence that is safe to show as is."""
+
+
+class NothingToPublish(PublicationRefused):
+    """Plex already holds exactly what was approved, so there is nothing to send. Not a failure: the owner is told so."""
