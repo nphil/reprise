@@ -208,13 +208,11 @@ class Autopilot:
         last = self.state.get("last_reconcile")
         alert = self.alerts.last()
         blocked = self.sender.blocked(self._clock()) if self._on(SETTING_AUTO_SEND) else None
-        endings_blocked = self.local_sender.blocked(self._clock()) if self._local_kinds() else None
         return {
             "queue_length": self._queue_length(),
             "last_reconcile": _iso(last) if last else None,
             "last_alert": {key: alert[key] for key in ("kind", "title", "at")} if alert else None,
             "auto_send_blocked": blocked,
-            "auto_send_endings_blocked": endings_blocked,
         }
 
     def send_test_alert(self):
