@@ -65,8 +65,8 @@
         const row = el('div', null, 'rp-auto-row'), wrap = el('div', null, 'form-check form-switch rp-switch');
         const box = el('input', null, 'form-check-input');
         box.id = 'rpAutoSendIntros'; box.type = 'checkbox'; box.setAttribute('role', 'switch'); box.setAttribute('aria-describedby', 'rpAutoSendIntrosHelp');
-        const label = el('label', 'Send high-confidence intros to Plex automatically', 'form-check-label'); label.htmlFor = box.id;
-        const help = el('p', 'When the local vision model is very sure where an intro starts and ends, Reprise sends that skip to Plex itself. Needs “Allow sending to Plex” above. Only episodes, never films, and never over anything you set or protected. Every automatic change can be undone.', 'rp-note');
+        const label = el('label', 'Send the sure intros to Plex automatically', 'form-check-label'); label.htmlFor = box.id;
+        const help = el('p', 'When the AI model is sure where an intro starts and ends, Reprise sends that skip to Plex on its own. Turn on “Allow sending to Plex” above first. It only does this for episodes, never films, and never over anything you set or protected. You can undo every automatic change.', 'rp-note');
         help.id = 'rpAutoSendIntrosHelp';
         wrap.append(box, label); row.append(wrap, help); slot.append(row);
         bindSwitch(box, 'auto_send_intros');

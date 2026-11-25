@@ -447,9 +447,7 @@ def test_one_episode_plex_refuses_is_reported_and_the_rest_are_still_sent(lab, m
     done = approvals.send(lab.service, "Community", 1, "sure")
 
     assert [s["label"] for s in done["sent"]] == ["S01E02"]
-    assert [(f["label"], f["reason"]) for f in done["failed"]] == [
-        ("S01E01", "Plex's data did not allow it: Plex rows changed.")
-    ]
+    assert [(f["label"], f["reason"]) for f in done["failed"]] == [("S01E01", "Plex rows changed.")]
     assert counts(approvals.queue(lab.service))["ready"] == 1  # the refused one stays approved, waiting to be sent
 
 

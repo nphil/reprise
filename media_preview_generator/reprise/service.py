@@ -146,7 +146,9 @@ def _kinds_text(ranges):
 
 def _suggesters_text(ranges):
     """Who suggested these ranges, in plain words ("Plex", "Plex and IntroDB")."""
-    listed = _suggesters(ranges)
+    from .localvision import DISPLAY_NAME, SOURCE_NAME
+
+    listed = [DISPLAY_NAME if name == SOURCE_NAME else name for name in _suggesters(ranges)]
     return listed[0] if len(listed) == 1 else f"{', '.join(listed[:-1])} and {listed[-1]}"
 
 
@@ -171,7 +173,7 @@ def _analysis_summary(ranges, reasons):
             f"{_suggesters_text(suggested)} suggested the {_kinds_text(suggested)}, but Reprise could not confirm {it} "
             f"by comparing episodes. Review {it} before approving."
         )
-    return "nothing_found", reasons[0] if reasons else "Nothing was found to skip."
+    return "nothing_found", reasons[0] if reasons else "Reprise found nothing to skip."
 
 
 def _unfinished_warning(counts):
@@ -214,7 +216,7 @@ def set_service(service):
 
 def get_service():
     if _SERVICE is None:
-        raise RuntimeError("Reprise service is not initialized")
+        raise RuntimeError("Reprise hasn't finished starting up. Try again in a moment.")
     return _SERVICE
 
 
@@ -411,12 +413,12 @@ def _vision_media(version):
 
 def _vision_hints(ranges):
     """``{kind: [Hint]}``: where other sources put each kind's skips, to corroborate what the pictures show."""
-    from .localvision import Hint
+    from .localvision import Hint, display_names
 
     hints = {}
     for r in ranges:
         if r.action == "skip" and r.kind in ("intro", "credits"):
-            who = " and ".join(r.suggested_by) if r.suggested_by else "Plex" if r.origin == "plex" else "Reprise"
+            who = display_names(r.suggested_by) if r.suggested_by else "Plex" if r.origin == "plex" else "Reprise"
             hints.setdefault(r.kind, []).append(Hint(r.start_ms, r.end_ms, who))
     return hints
 
@@ -453,7 +455,7 @@ class RepriseService:
 
     def set_writes_enabled(self, enabled):
         if type(enabled) is not bool or self.publisher is None:
-            raise ValueError("Publication is unavailable")
+            raise ValueError("Sending to Plex isn't available right now.")
         if enabled:
             plex = [
                 cfg for cfg in self.registry.configs() if cfg.enabled and getattr(cfg.type, "value", cfg.type) == "plex"
@@ -1468,10 +1470,10 @@ class RepriseService:
         stopped = {"state": "cancelled", "message": "Not analyzed because the job stopped first."}
         per_media = [{"id": media_id, **recorded.get(media_id, stopped)} for media_id in ids]
         if status == "cancelled":
-            return {"state": "cancelled", "message": "Analysis was cancelled.", "per_media": per_media}
+            return {"state": "cancelled", "message": "The analysis was cancelled.", "per_media": per_media}
         if status == "failed":
             failed = next((entry for entry in per_media if entry["state"] == "failed"), None)
-            message = failed["message"] if failed else "Analysis could not be completed."
+            message = failed["message"] if failed else "The analysis didn't finish."
             return {"state": "failed", "message": message, "per_media": per_media}
         found = [entry for entry in per_media if entry["state"] == "found"]
         suggested = [entry for entry in per_media if entry["state"] == "suggested"]
@@ -1805,7 +1807,7 @@ class RepriseService:
                     for member in member_policies(groups)
                 ):
                     break
-                self.job_manager.update_progress(job_id, current_item="Waiting for a local CPU preview worker")
+                self.job_manager.update_progress(job_id, current_item="Waiting for a free processor")
                 time.sleep(0.2)
             while not acquired:
                 freeze.hold(cancel_check=cancel)
@@ -1893,7 +1895,7 @@ class RepriseService:
                     else:
                         self.job_manager.complete_job(
                             job_id,
-                            error="Library refresh incomplete; episodes that could not be read kept their entries",
+                            error="The library refresh didn't finish. Episodes Reprise couldn't read keep what it already knew about them.",
                         )
 
                 if not self.job_manager.commit_if_active(job_id, finish_partial):

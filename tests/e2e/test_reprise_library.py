@@ -925,7 +925,7 @@ class TestShellStatus:
         endings = authed_page.locator("#rpAutoSendEndings")
         expect(endings).to_be_visible()
         expect(endings).not_to_be_checked()
-        expect(authed_page.locator("#rpAutoSendEndingsHelp")).to_contain_text("very sure where the end credits start")
+        expect(authed_page.locator("#rpAutoSendEndingsHelp")).to_contain_text("sure where the end credits start")
         expect(authed_page.locator("#rpAutoSendIntros")).to_have_count(0)
         endings.check()
         expect(endings).to_be_checked()
@@ -948,7 +948,7 @@ class TestShellStatus:
         authed_page.goto(f"{app_url}/reprise/sharing")
         intros = authed_page.locator("#rpAutoSendIntros")
         expect(intros).to_be_visible()
-        expect(authed_page.get_by_label("Send high-confidence intros to Plex automatically")).not_to_be_checked()
+        expect(authed_page.get_by_label("Send the sure intros to Plex automatically")).not_to_be_checked()
         intros.check()
         expect(intros).to_be_checked()
         assert api.settings_patches == [{"auto_send_intros": True}]

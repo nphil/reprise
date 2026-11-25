@@ -96,7 +96,7 @@ class TestStillFailing:
         _run(svc, {"server_id": "s", "library_id": "1", "candidate_paths": ["/m/a.mkv"]})
 
         (call,) = svc.job_manager.complete_job.call_args_list
-        assert call.kwargs["error"].startswith("Library refresh incomplete")
+        assert call.kwargs["error"].startswith("The library refresh didn't finish")
         assert "warning" not in call.kwargs
 
     def test_the_refresh_before_an_analysis_still_fails(self):
@@ -104,7 +104,7 @@ class TestStillFailing:
 
         assert _run(svc, {"server_id": "s", "library_id": "1"}, for_analysis=True) is None
 
-        assert svc.job_manager.complete_job.call_args.kwargs["error"].startswith("Library refresh incomplete")
+        assert svc.job_manager.complete_job.call_args.kwargs["error"].startswith("The library refresh didn't finish")
 
     def test_plex_being_unreachable_still_raises(self):
         svc = _service(BROKEN)
@@ -153,7 +153,7 @@ class TestAutomaticJobsCarryOn:
         ids = svc._run_refresh("job", {"server_id": "s", "library_id": "1"}, lambda: False, for_analysis=True)
 
         assert ids is None
-        assert svc.job_manager.complete_job.call_args.kwargs["error"].startswith("Library refresh incomplete")
+        assert svc.job_manager.complete_job.call_args.kwargs["error"].startswith("The library refresh didn't finish")
 
     def test_an_automatic_job_that_read_nothing_still_fails(self):
         svc = self._svc("autopilot", registers=False)
@@ -161,7 +161,7 @@ class TestAutomaticJobsCarryOn:
         ids = svc._run_refresh("job", {"server_id": "s", "library_id": "1"}, lambda: False, for_analysis=True)
 
         assert ids is None
-        assert svc.job_manager.complete_job.call_args.kwargs["error"].startswith("Library refresh incomplete")
+        assert svc.job_manager.complete_job.call_args.kwargs["error"].startswith("The library refresh didn't finish")
 
 
 class TestJobJson:

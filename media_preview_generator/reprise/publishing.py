@@ -36,6 +36,116 @@ class PublicationConflict(RevisionConflict, ValueError):
 AUTO_ACTOR = "reprise-auto"
 
 
+# What the owner is told when sending to Plex is refused. The refusals above and in ``review.py`` are worded for the
+# code (they name generations, bindings and revisions); each group of them is one sentence here that says what happened
+# and what to do. Keyed by the exact refusal text, without its final full stop.
+_CHANGED_SINCE_REVIEW = "This episode changed after you reviewed it. Analyze it again, then review it."
+_NO_MATCH = "The Plex item no longer matches the file you reviewed. Refresh the library, then analyze it again."
+_FILE_CHANGED = "The file's size or length changed in Plex. Refresh the library, then analyze it again."
+_SETTINGS_CHANGED = "The Plex server or library settings in Reprise changed. Check Connections, then try again."
+_UNREADABLE_MARKER = (
+    "Plex has a skip marker here that Reprise can't read, so it left it alone. "
+    "Remove or fix that marker in Plex, then try again."
+)
+_UNKNOWN_DATABASE = "This version of Plex's database isn't one Reprise knows how to change. Nothing was sent."
+_DATABASE_MOVED = "Plex's database changed while Reprise was working, so nothing was sent. Try again."
+_WHICH_COPY = "Reprise doesn't know which copy of this file in Plex to use. Refresh the library, then try again."
+_OWNER_SENTENCES = {
+    "Reprise Plex writes are disabled": "Sending to Plex is turned off. Turn it on in Settings, Sharing, then try again.",
+    "A trusted service actor is required": "Only Reprise itself can send this. Try again from Reprise.",
+    "The bound Plex server is not enabled": "This episode's Plex server isn't turned on in Reprise. Turn it on in Connections.",
+    "Publication requires the local Plex database": "Reprise can't see Plex's database folder. Check Settings, Sharing.",
+    "The local database belongs to a different Plex server": (
+        "The Plex database Reprise can see belongs to a different Plex server. Check the folder in Settings, Sharing."
+    ),
+    "The connected Plex server identity changed": (
+        "The Plex server behind this connection has changed. Check Connections, then refresh the library."
+    ),
+    "This Plex version has not been verified for database publication": (
+        "Reprise hasn't been tested with this version of Plex, so it won't change Plex's database. Nothing was sent."
+    ),
+    "Plex no longer resolves the exact metadata item": (
+        "Plex no longer lists this episode the way it did. Refresh the library, then try again."
+    ),
+    "Plex no longer resolves the exact single-part media version": (
+        "Plex no longer lists this file the way it did. Refresh the library, then try again."
+    ),
+    "Plex playback part, duration, size, or selected audio changed": (
+        "The file's length, size or audio changed in Plex. Refresh the library, then analyze it again."
+    ),
+    "The local Plex database did not pass its safety checks": (
+        "Plex's database failed Reprise's safety checks, so nothing was changed. Try again later."
+    ),
+    "An exact playback identity is required": _WHICH_COPY,
+    "An exact playback identity and revision are required": _WHICH_COPY,
+    "The publication target is not current and uniquely bound": (
+        "Reprise can't be sure which Plex item this is. Refresh the library, then try again."
+    ),
+    "The selected library or path mapping is no longer authorized": (
+        "This library or folder isn't set up in Reprise any more. Check Connections, then try again."
+    ),
+    "Plex no longer has the selected part": "Plex no longer has this file. Refresh the library.",
+    "Plex metadata is missing or deleted": "Plex no longer has this item. Refresh the library.",
+    "The Plex database schema is unsupported": _UNKNOWN_DATABASE,
+    "Plex tagging columns differ from the verified representation": _UNKNOWN_DATABASE,
+    "Shared-file metadata is too ambiguous to publish": (
+        "Several Plex items share this file, and Reprise can't tell which one to change. Nothing was sent."
+    ),
+    "Stacked or missing playable parts are unsupported": "Reprise can't send skips for a file that is split into parts.",
+    "Every playable version and shared-file sibling needs an unambiguous reviewed binding": (
+        "Every copy of this episode in Plex has to be matched to a file and reviewed first. Analyze it again."
+    ),
+    "A playable media version or its evidence is no longer current": _CHANGED_SINCE_REVIEW,
+    "The reviewed revision changed": _CHANGED_SINCE_REVIEW,
+    "The approved revision, evidence, or track bindings changed": _CHANGED_SINCE_REVIEW,
+    "Every playable audio track must be bound and reviewed": (
+        "Every audio track of this file has to be reviewed first. Open the episode and review each track."
+    ),
+    "The selected audio stream generation changed": _CHANGED_SINCE_REVIEW,
+    "The media file generation changed": _CHANGED_SINCE_REVIEW,
+    "Plex media size or duration changed": _FILE_CHANGED,
+    "Plex part duration changed": _FILE_CHANGED,
+    "The bound server configuration disappeared": _SETTINGS_CHANGED,
+    "The bound library, path mapping, or authorization changed": _SETTINGS_CHANGED,
+    "Plex now points to a different media file": (
+        "Plex now points to a different file. Refresh the library, then analyze it again."
+    ),
+    "The exact playback binding changed": _NO_MATCH,
+    "Playback identity differs from the reviewed file": _NO_MATCH,
+    "The selected exact playback identity is not current": _NO_MATCH,
+    "The selected playback identity is not uniquely bound": _NO_MATCH,
+    "The playback binding generation changed": _NO_MATCH,
+    "The part key is not an exact token-free playback path": "Plex gave a file address Reprise can't use. Nothing was sent.",
+    "Playable versions, audio tracks, or shared-file siblings disagree": (
+        "The copies of this episode in Plex don't agree with each other. Nothing was sent."
+    ),
+    "Plex must have exactly one existing marker tag": _UNREADABLE_MARKER,
+    "Existing Plex marker representation is unsupported": _UNREADABLE_MARKER,
+    "Existing Plex marker encoding is unsupported": _UNREADABLE_MARKER,
+    "Existing Plex marker bounds are unsupported": _UNREADABLE_MARKER,
+    "Existing Plex part encoding is unsupported": _UNREADABLE_MARKER,
+    "Existing Plex part markers are unsupported": _UNREADABLE_MARKER,
+    "The Plex database file was replaced": _DATABASE_MOVED,
+    "Plex database generation changed": _DATABASE_MOVED,
+    "Plex rows or part generation changed; publication refused": _DATABASE_MOVED,
+    "Plex did not retain the exact planned state": (
+        "Plex didn't keep the change exactly as Reprise sent it. Check the episode in Plex."
+    ),
+    "Publication is not in the required state; recover interrupted intents instead of replaying": (
+        "This change was interrupted. Check what happened instead of sending it again."
+    ),
+    "The publication intent was already recovered": "This interrupted change was already checked.",
+}
+
+
+def owner_sentence(exc):
+    """Why a send, or an undo, was refused, as one plain sentence with what to do next. A refusal this table does not
+    know is already worded for the owner (the limits in ``policy.py`` and ``review.py``, Plex's own database errors)
+    and is shown as it came."""
+    text = str(exc).strip().rstrip(".") or type(exc).__name__
+    return _OWNER_SENTENCES.get(text) or f"{text}."
+
+
 def _json(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 

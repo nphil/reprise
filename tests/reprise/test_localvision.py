@@ -302,7 +302,7 @@ def test_a_new_verdict_is_an_approve_only_suggestion_with_its_confidence_and_rea
         ("Local model",),
     )
     assert suggestion.reason == (
-        "Suggested by a local vision model that looked at the episode's pictures. "
+        "Suggested by an AI model that looked at the episode's pictures. "
         "Reprise didn't find it in other episodes. Confidence: high."
     )
     [evidence] = out.evidence
@@ -358,7 +358,7 @@ def test_other_sources_times_become_hints_named_for_who_gave_them():
         )
     )
     assert [(h.start_ms, h.name) for h in hints["intro"]] == [(0, "Plex")]
-    assert [h.name for h in hints["credits"]] == ["Chapter marks and Local model", "Reprise"]
+    assert [h.name for h in hints["credits"]] == ["Chapter marks and AI model", "Reprise"]
 
 
 def test_only_high_confidence_local_model_suggestions_are_up_for_bulk_approval():

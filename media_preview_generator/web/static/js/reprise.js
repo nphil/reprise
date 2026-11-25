@@ -24,7 +24,8 @@
     const isOwnerSpan = r => r.action === 'skip' && r.origin === 'owner';
     const ownedKinds = () => new Set(state.edits.filter(r => isOwnerSpan(r) && r.review_status === 'approved').map(r => r.kind));
     const isReplaced = r => r.action === 'skip' && !isOwnerSpan(r) && ownedKinds().has(r.kind);
-    const suggesters = r => (Array.isArray(r.suggested_by) && r.suggested_by.length ? r.suggested_by : ['Plex']);
+    /* "Local model" is how the AI model's suggestions are stored; the owner reads "AI model". */
+    const suggesters = r => (Array.isArray(r.suggested_by) && r.suggested_by.length ? r.suggested_by : ['Plex']).map(name => name === 'Local model' ? 'AI model' : name);
     const suggesterNames = ranges => [...new Set(ranges.flatMap(suggesters))];
     const suggestionBadge = r => suggesters(r).join(' + ') + ' suggestion';
     const option = (value, label) => { const n = el('option', label); n.value = value; return n; };

@@ -38,8 +38,9 @@ from . import visionmatch as vm
 
 logger = logging.getLogger(__name__)
 
-SOURCE_NAME = "Local model"
-SOURCE_REASON = "a local vision model that looked at the episode's pictures"
+SOURCE_NAME = "Local model"  # stored with each suggestion and matched on later; never reworded
+DISPLAY_NAME = "AI model"  # what the owner reads in its place
+SOURCE_REASON = "an AI model that looked at the episode's pictures"
 SETTING = "reprise_local_vision"  # the owner's switch, address and model; off unless turned on
 DEFAULT_URL = "http://192.168.1.69:9292/v1"
 DEFAULT_MODEL = "qwen3-vl-4b"
@@ -684,10 +685,10 @@ def _pictures_verdict(
         reasons.append("At least two of them agree on both ends to within a second.")
     elif found.compared >= 2:
         reasons.append(
-            "The other episodes do not agree on both ends to within a second, so the narrower times were taken."
+            "The other episodes don't agree on both ends to within a second, so Reprise used the narrower times."
         )
     else:
-        reasons.append("Only one other episode could be compared, so nothing confirms it.")
+        reasons.append("Only one other episode could be compared, so nothing else backs this up.")
     sharp = found.start_hard and end_hard
     reasons.append(
         "Both ends fall on a hard cut."
@@ -697,14 +698,14 @@ def _pictures_verdict(
     clean = True
     if outcome == "kept":
         reasons.append(
-            f"The model read the last {round((duration - found.end) / 1000)} seconds as a next-episode preview, so the suggestion runs to the end of the file."
+            f"The AI model read the last {round((duration - found.end) / 1000)} seconds as a preview of the next episode, so the suggestion runs to the end of the file."
         )
     elif outcome == "left":
         reasons.append(
-            "What follows the credits is left out: the model read it as story, or it is too long for a preview."
+            "What comes after the credits is left out: the AI model read it as story, or it is too long to be a preview."
         )
     elif outcome == "unsure":
-        reasons.append("The model could not be asked about what follows the credits, so that stretch is left out.")
+        reasons.append("The AI model couldn't be asked about what comes after the credits, so that part is left out.")
         clean = False
     note, conflict = _chapter_note(chapter, found.start, end)
     if note:
@@ -802,7 +803,7 @@ def _labelled(ctx: _Ctx, kind: str, hints: Sequence[Hint], chapter: tuple[int, i
     if end - start < MIN_SPAN_MS:
         return None
     reasons = [
-        f"The model read {len(picks)} frames and took the {'first' if kind == 'intro' else 'last'} stretch of titles or credits; there was no other episode to compare with, so nothing confirms it.",
+        f"The AI model read {len(picks)} frames and took the {'first' if kind == 'intro' else 'last'} stretch of titles or credits. There was no other episode to compare with, so nothing else backs this up.",
     ]
     note, conflict = _chapter_note(chapter, start, end)
     agree = _agrees(hints, start, end)
@@ -864,3 +865,8 @@ def check(
         if verdict is not None:
             verdicts[kind] = verdict
     return verdicts
+
+
+def display_names(names):
+    """``names`` (who suggested a skip) as the owner reads them: the stored ``SOURCE_NAME`` becomes ``DISPLAY_NAME``."""
+    return " and ".join(DISPLAY_NAME if name == SOURCE_NAME else name for name in names)

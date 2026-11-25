@@ -355,7 +355,7 @@ class Notifier:
                 "Sending to Plex is off, so nothing was sent."
             )
         if failed:
-            text += f" {len(failed)} could not be done: {failed[0]['reason']}"
+            text += f" {len(failed)} didn't go through. {failed[0]['reason']}"
             self._drop(f"season:{show}|{season}")  # so the next pass tells the owner what is still waiting
         body = {"ok": bool(done), "message": text, "approved": approved, "sent": sent, "failed": len(failed)}
         return (200 if done else 409), body
@@ -368,7 +368,7 @@ class Notifier:
         else:
             text = "Nothing was put back."
         if failed:
-            text += f" {_plural(len(failed), 'episode', 'episodes')} could not be put back: {failed[0]['reason']}"
+            text += f" {_plural(len(failed), 'episode', 'episodes')} couldn't be put back. {failed[0]['reason']}"
         body = {"ok": bool(restored), "message": text, "restored": len(restored), "failed": len(failed)}
         return (200 if restored else 409), body
 

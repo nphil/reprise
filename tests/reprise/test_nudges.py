@@ -627,7 +627,7 @@ def test_an_undo_that_cannot_put_everything_back_says_which(env):
     status, body = env.notifier.act(token_of(env.post.calls[0]))
 
     assert status == 409
-    assert body["message"] == "Nothing was put back. 1 episode could not be put back: Plex could not be reached."
+    assert body["message"] == "Nothing was put back. 1 episode couldn't be put back. Plex could not be reached."
 
 
 # ── settings ─────────────────────────────────────────────────────────────────────────────────────────────────────

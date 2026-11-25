@@ -31,7 +31,7 @@ from ..shutdown import is_shutting_down
 from . import plexbackup
 from .models import ORIGIN_OWNER, REASON_OWNER_SPAN, DecisionRange, NothingToPublish, ReviewRefused, is_owner_span
 from .policy import eligible_ranges
-from .publishing import AUTO_ACTOR
+from .publishing import AUTO_ACTOR, owner_sentence
 from .review import plex_projection
 from .store import RevisionConflict
 from .verification_profile import POLICY_VERSION
@@ -126,10 +126,6 @@ def label_of(meta):
 def _transient(exc):
     """True for a failure that says nothing about the episode itself: Plex or its database was busy or unreachable."""
     return isinstance(exc, OSError | sqlite3.OperationalError)
-
-
-def _sentence(exc):
-    return str(exc).strip().rstrip(".") or type(exc).__name__
 
 
 class AutoSender:
@@ -256,7 +252,7 @@ class AutoSender:
             return self._decline(
                 version_id,
                 revision,
-                " ".join(notes) or "Nothing in it is confirmed for sure by picture and sound.",
+                " ".join(notes) or "Reprise isn't sure about any of it.",
                 now,
             )
         return self._dispatch(version_id, revision, result, bindings, meta, runs, now)
@@ -285,7 +281,7 @@ class AutoSender:
                 self._shape(result, bindings, runs, [kind])
                 good.append(kind)
             except ValueError as exc:
-                why.append(f"The {kind} can't be sent exactly: {_sentence(exc)}.")
+                why.append(f"The {kind} can't be sent. {owner_sentence(exc)}")
         if len(good) > 1:
             try:
                 self._shape(result, bindings, runs, good)
@@ -307,10 +303,10 @@ class AutoSender:
             projected = plex_projection(trial, identity, eligible_ranges(trial, identity.audio_stream_id))
             shapes.add(tuple((p.kind, p.start_ms, p.end_ms) for p in projected))
         if len(shapes) != 1:
-            raise ValueError("the audio tracks do not agree on where it is")
+            raise ValueError("The audio tracks disagree about where it is")
         found = {kind: (runs[kind][0].start_ms, runs[kind][-1].end_ms) for kind in kinds}
         if {kind: (start, end) for kind, start, end in next(iter(shapes))} != found:
-            raise ValueError("it would not be sent exactly as it was found")
+            raise ValueError("Plex would store it a little differently from what Reprise found")
 
     # ── the backup ────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -347,7 +343,7 @@ class AutoSender:
         try:
             ids, new_revision = self._approve(version_id, revision, pieces, now)
         except ReviewRefused as exc:
-            return self._decline(version_id, revision, f"It can't be sent: {_sentence(exc)}.", now)
+            return self._decline(version_id, revision, f"It can't be sent. {owner_sentence(exc)}", now)
         except (RevisionConflict, ValueError):
             return self._retry(version_id, revision, "It changed while Reprise was about to send it.", now, wait=60)
         return self._publish(version_id, revision, new_revision, identity, label, kinds, ids, now)
@@ -372,7 +368,7 @@ class AutoSender:
             back = self._take_back(version_id, new_revision, ids)
             if _transient(exc):
                 return self._wait_for_plex(version_id, revision, now)
-            return self._fail(version_id, (revision, back), f"Plex's data did not allow it: {_sentence(exc)}.", now)
+            return self._fail(version_id, (revision, back), owner_sentence(exc), now)
         try:
             publisher.apply(change["id"], AUTO_ACTOR)
         except Exception as exc:
@@ -402,7 +398,7 @@ class AutoSender:
             if _transient(exc):
                 return self._wait_for_plex(version_id, revision, now)
             self._refused(label, now)
-            return self._fail(version_id, (revision, back), f"Plex refused it: {_sentence(exc)}.", now)
+            return self._fail(version_id, (revision, back), owner_sentence(exc), now)
         # Plex may or may not hold the change. Nothing is repeated or undone from here; the owner decides.
         self._uncertain(version_id, revision, change_id, ids, now)
         return "uncertain"
@@ -413,7 +409,7 @@ class AutoSender:
         self.state.put("send_refusals", refusals)
         repeated = refusals >= REPEATED_REFUSALS
         wait = REPEATED_REFUSAL_PAUSE_S if repeated else REFUSED_PAUSE_S
-        self._pause(now, wait, "Paused for a while: Plex refused an automatic change.")
+        self._pause(now, wait, "Paused for a while because Plex refused an automatic change.")
         self.concerns.raise_problem(
             REFUSED_KEY,
             "Plex refused an automatic change",
@@ -433,19 +429,19 @@ class AutoSender:
             range_ids=ids,
             change_id=change_id,
         )
-        self._pause(now, UNCERTAIN_PAUSE_S, "Paused for a while: Reprise can't tell whether Plex took a change.")
+        self._pause(now, UNCERTAIN_PAUSE_S, "Paused for a while because Reprise can't tell whether Plex took a change.")
         bindings = self.service._bindings(version_id)
         label = label_of(bindings[0][2]) if bindings else "an episode"
         self.concerns.raise_problem(
             f"{UNCERTAIN_KEY}:{version_id}",
             "Check an automatic change in Plex",
             f"Reprise can't tell whether Plex took the automatic change for {label}. It paused automatic sending for "
-            "6 hours and will not repeat the change. Please check it in Reprise.",
+            "6 hours and won't send it again. Check the episode in Reprise.",
         )
 
     def _wait_for_plex(self, version_id, revision, now):
         """Plex or its database could not be reached: nothing is recorded, so the episode comes up again soon."""
-        self._pause(now, PLEX_RETRY_S, "Waiting a few minutes: Plex could not be reached.")
+        self._pause(now, PLEX_RETRY_S, "Waiting a few minutes because Plex couldn't be reached.")
         with self.service.store.transaction() as conn:
             conn.execute(
                 f"DELETE FROM {self.TABLE} WHERE version_id=? AND revision=? AND outcome='working'",
@@ -596,7 +592,7 @@ def local_runs(result, kinds, decided):
         elif any(r.action == "skip" and r.kind == kind and r.review_status == "rejected" for r in result.ranges):
             notes.append(f"You turned down the {kind}, so it is left alone.")
         elif len(found) != 1:
-            notes.append(f"The local model gave more than one {kind}, so it needs your approval.")
+            notes.append(f"The AI model gave more than one {kind}, so it needs your approval.")
         elif any(
             (r.action == "keep" or r.locked or r.id in decided) and _meets(r.start_ms, r.end_ms, *_span(found[0]))
             for r in result.ranges
@@ -646,7 +642,7 @@ class LocalModelSender(AutoSender):
             return self._decline(
                 version_id,
                 revision,
-                " ".join(notes) or "The local vision model has no high-confidence skip for it.",
+                " ".join(notes) or "The AI model isn't sure about any skip for it.",
                 now,
             )
         tracks = tuple(sorted({identity.audio_stream_id for identity, _server, _meta in bindings}))
@@ -726,14 +722,14 @@ class LocalModelSender(AutoSender):
             bindings = self.service._bindings(version_id)
             label = label_of(bindings[0][2]) if bindings else "an episode"
             later = (
-                "It will not try again: the skip waits for you in To approve."
+                "It won't try again. The skip waits for you in To approve."
                 if outcome == "declined"
                 else "It will try again later."
             )
             self.concerns.raise_problem(
                 f"{LOCAL_FAILED_KEY}:{version_id}",
-                "An automatic send did not work",
-                f"Reprise tried to send a skip to Plex by itself for {label}, but it did not work: {detail} "
+                "An automatic send didn't work",
+                f"Reprise tried to send a skip for {label} on its own, but it didn't work. {detail} "
                 f"It put everything back the way it was, so nothing changed in Plex. {later}",
             )
         return outcome

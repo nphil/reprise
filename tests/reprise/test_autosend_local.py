@@ -35,7 +35,7 @@ CREDITS_SPAN = {
     "review_status": "approved",
     "acknowledge_owner_span": True,
 }
-FAILED_TITLE = "An automatic send did not work"
+FAILED_TITLE = "An automatic send didn't work"
 
 
 @pytest.fixture
@@ -131,7 +131,7 @@ def test_only_high_is_sent_and_a_medium_suggestion_is_left_alone(lab):
     assert lab.local.sweep(T0) == 0
 
     assert_untouched(lab, ep, before)
-    assert last_detail(lab, ep) == "The local vision model has no high-confidence skip for it."
+    assert last_detail(lab, ep) == "The AI model isn't sure about any skip for it."
 
 
 def test_a_film_is_never_sent(lab):

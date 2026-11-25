@@ -30,8 +30,9 @@ from loguru import logger
 
 from ..markers.publishers import plex_db
 from . import plexbackup
+from .localvision import display_names
 from .models import ORIGIN_PLEX, SUGGESTION_ORIGINS, NothingToPublish, ReviewRefused, is_owner_span
-from .publishing import AUTO_ACTOR
+from .publishing import AUTO_ACTOR, owner_sentence
 from .report import PLEX_BATCH, TOLERANCE_MS, _hidden_kinds, _pick_show, read_plex_markers
 
 OWNER = "owner"
@@ -56,10 +57,6 @@ def _secs(ms):
 
 def _count(number, noun):
     return f"{number} {noun}" if number == 1 else f"{number} {noun}s"
-
-
-def _sentence(exc):
-    return str(exc).strip().rstrip(".") or type(exc).__name__
 
 
 def _transient(exc):
@@ -143,7 +140,7 @@ def _decisions(version_id, meta, result, duration_ms):
                 "end_ms": best.end_ms,
                 "duration_ms": duration_ms,
                 "how_sure": "confirmed" if best.origin not in SUGGESTION_ORIGINS else grade,
-                "source": " and ".join(best.suggested_by) or "Reprise",
+                "source": display_names(best.suggested_by) or "Reprise",
                 "reason": (best.reason or next((why[e] for e in best.evidence_ids if e in why), ""))[:240],
                 "range_ids": [r.id for r in candidates],
                 "revision": result.result_revision,
@@ -654,7 +651,7 @@ def _send_one(service, version_id):
     except Exception as exc:
         if _transient(exc):
             return "unreachable", "Plex could not be reached."
-        return "failed", f"Plex's data did not allow it: {_sentence(exc)}."
+        return "failed", owner_sentence(exc)
     try:
         return "sent", publisher.apply(change["id"], OWNER)
     except Exception as exc:
@@ -673,7 +670,7 @@ def _send_one(service, version_id):
                     logger.opt(exception=True).warning("Reprise could not close a change that never started")
             if _transient(exc):
                 return "unreachable", "Plex could not be reached."
-            return "failed", f"Plex refused it: {_sentence(exc)}."
+            return "failed", owner_sentence(exc)
         return "uncertain", "Reprise can't tell whether Plex took it. Check it in the Library."
 
 
@@ -807,7 +804,7 @@ def undo(service, changes):
 def _undo_reason(exc):
     if _transient(exc):
         return "Plex could not be reached."
-    return f"It could not be put back: {_sentence(exc)}."
+    return owner_sentence(exc)
 
 
 # ── what Reprise sent by itself ──────────────────────────────────────────────────────────────────────────────────

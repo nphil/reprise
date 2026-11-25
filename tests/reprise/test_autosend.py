@@ -39,19 +39,19 @@ INTRO = "intro-10000"  # the range id that ``confirmed(ep, "intro", 10_000, ...)
 CREDITS = "credits-80000"
 TABLES = ("tags", "taggings", "metadata_items", "media_items", "media_parts", "media_streams")
 
-NOTHING_SURE = "Nothing in it is confirmed for sure by picture and sound."
+NOTHING_SURE = "Reprise isn't sure about any of it."
 OWNER_NOTE = "You changed, locked or keep something in the intro, so it needs your approval."
 ALREADY_APPROVED = "You already approved part of it, so sending it is up to you."
 NOT_ELIGIBLE = "Some approved skips can't be sent for this copy of the file"
 NOT_FINISHED = "An earlier change to Plex for it is not finished."
 UNDONE = "A change sent to Plex for it was undone, so what happens next is yours to decide."
 REFUSED_TITLE = "Plex refused an automatic change"
-REFUSED_PAUSE = "Paused for a while: Plex refused an automatic change."
-UNCERTAIN_PAUSE = "Paused for a while: Reprise can't tell whether Plex took a change."
+REFUSED_PAUSE = "Paused for a while because Plex refused an automatic change."
+UNCERTAIN_PAUSE = "Paused for a while because Reprise can't tell whether Plex took a change."
 UNCERTAIN_TITLE = "Check an automatic change in Plex"
 UNCERTAIN_MESSAGE = (
     "Reprise can't tell whether Plex took the automatic change for Community S01E01. It paused automatic sending "
-    "for 6 hours and will not repeat the change. Please check it in Reprise."
+    "for 6 hours and won't send it again. Check the episode in Reprise."
 )
 BACKUP_WAIT = "Waiting: Reprise could not back up Plex's database."
 
@@ -1068,8 +1068,8 @@ def test_a_refused_write_changes_nothing_pauses_sending_and_alerts_once(lab, mon
     assert [c["state"] for c in lab.publisher.list_changes(ep.vid)] == ["not_applied"]
     assert lab.ranges(ep)[INTRO].review_status == "proposed"  # the approval was taken back
     assert [(a["revision"], a["outcome"], a["tries"], a["detail"]) for a in lab.attempts(ep)] == [
-        (1, "failed", 1, "Plex refused it: Plex said no."),
-        (3, "failed", 1, "Plex refused it: Plex said no."),
+        (1, "failed", 1, "Plex said no."),
+        (3, "failed", 1, "Plex said no."),
     ]
     assert lab.post.titles() == [REFUSED_TITLE]
     assert lab.post.messages() == [
@@ -1267,7 +1267,7 @@ def test_credits_starting_in_the_first_two_seconds_are_not_sent(lab):
     assert lab.sweep(T0) == 0
 
     assert_declined(
-        lab, ep, before, "The credits can't be sent exactly: Plex can't start the credits in the first two seconds."
+        lab, ep, before, "The credits can't be sent. Plex can't start the credits in the first two seconds."
     )
 
 
@@ -1282,7 +1282,7 @@ def test_credits_ending_within_two_seconds_of_the_file_end_are_not_sent(lab):
         lab,
         ep,
         before,
-        "The credits can't be sent exactly: Plex can't safely skip the last two seconds of an episode.",
+        "The credits can't be sent. Plex can't safely skip the last two seconds of an episode.",
     )
 
 
@@ -1306,7 +1306,7 @@ def test_a_run_whose_sound_was_never_compared_is_not_sent(lab):
 
     assert lab.sweep(T0) == 0
 
-    assert_declined(lab, ep, before, f"The intro can't be sent exactly: {NOT_ELIGIBLE}.")
+    assert_declined(lab, ep, before, f"The intro can't be sent. {NOT_ELIGIBLE}.")
 
 
 def test_a_scene_the_analysis_itself_keeps_inside_the_run_stops_it_being_sent(lab):
@@ -1316,21 +1316,21 @@ def test_a_scene_the_analysis_itself_keeps_inside_the_run_stops_it_being_sent(la
 
     assert lab.sweep(T0) == 0
 
-    assert_declined(lab, ep, before, f"The intro can't be sent exactly: {NOT_ELIGIBLE}.")
+    assert_declined(lab, ep, before, f"The intro can't be sent. {NOT_ELIGIBLE}.")
 
 
 def test_audio_tracks_that_disagree_decline_the_kind(lab, monkeypatch):
     ep = sure_intro(lab)
 
     def disagree(result, bindings, runs, kinds):
-        raise ValueError("the audio tracks do not agree on where it is")
+        raise ValueError("The audio tracks disagree about where it is")
 
     monkeypatch.setattr(lab.sender, "_shape", disagree)
     before = lab.rows()
 
     assert lab.sweep(T0) == 0
 
-    assert_declined(lab, ep, before, "The intro can't be sent exactly: the audio tracks do not agree on where it is.")
+    assert_declined(lab, ep, before, "The intro can't be sent. The audio tracks disagree about where it is.")
 
 
 def test_when_both_kinds_together_do_not_project_exactly_only_the_first_is_sent(lab, monkeypatch):
@@ -1340,7 +1340,7 @@ def test_when_both_kinds_together_do_not_project_exactly_only_the_first_is_sent(
 
     def together_fails(result, bindings, runs, kinds):
         if len(kinds) > 1:
-            raise ValueError("it would not be sent exactly as it was found")
+            raise ValueError("Plex would store it a little differently from what Reprise found")
         return real(result, bindings, runs, kinds)
 
     monkeypatch.setattr(lab.sender, "_shape", together_fails)
