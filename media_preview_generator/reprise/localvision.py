@@ -194,8 +194,8 @@ def region(kind: str, anchors: Sequence[tuple[int, int]], duration_ms: int) -> t
 
 
 def _runs(frames: Sequence[tuple[int, str]]) -> list[tuple[int, int]]:
-    """Index ranges ``(first, last)`` of consecutive credits frames, a single other frame inside one bridged."""
-    runs = []
+    """Index ranges ``(first, last)`` of consecutive credits frames, up to BRIDGE other frames inside one bridged."""
+    runs: list[tuple[int, int]] = []
     for i, (_, scene) in enumerate(frames):
         if scene != "credits":
             continue
