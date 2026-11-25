@@ -34,7 +34,7 @@
       <div class="rp-section-head"><h2 id="rpLibraryTitle">Episodes</h2></div>
       <label class="rp-search" data-tour="library-search"><span class="rp-sr">Search shows and episodes</span><i class="bi bi-search" aria-hidden="true"></i><input id="rpSearch" type="search" autocomplete="off" placeholder="Search shows and episodes"></label>
       <div class="rp-filter-row"><label><span class="rp-sr">Show</span><select id="rpShow"><option value="">All shows</option></select></label><label><span class="rp-sr">Season</span><select id="rpSeason"><option value="">All seasons</option></select></label></div>
-      <div class="rp-listbar"><p class="rp-hint" id="rpLibraryHint">Tick episodes to analyze them, or open one to see its results.</p><button type="button" class="rp-btn quiet" id="rpSelectAll" hidden>Select all</button></div>
+      <div class="rp-listbar"><p class="rp-hint" id="rpLibraryHint">Tick episodes to analyze them, or open one to see its results.</p><button type="button" class="rp-btn quiet" id="rpSelectAll" hidden>Select all</button><button type="button" class="rp-btn" id="rpApproveConfident" hidden title="Approve the local vision model's confident suggestions for this season as your own skips. Nothing is sent to Plex.">Approve confident suggestions</button></div>
       <div id="rpLibraryState" class="rp-state" role="status" aria-live="polite">Loading library…</div>
       <div class="rp-scroll" id="rpScroll" hidden>
         <div id="rpLibraryList" class="rp-episodes"></div>

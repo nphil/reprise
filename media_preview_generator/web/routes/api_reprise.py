@@ -289,6 +289,18 @@ def create_reprise_blueprint(service):
             return Response(render_text(data), mimetype="text/plain")
         return jsonify(data)
 
+    @bp.post("/api/reprise/approve-local-model")
+    @owner
+    def approve_local_model():
+        """Approve one season's high-confidence local-model suggestions as the owner's own skips. Nothing is sent."""
+        data = _body({"show", "season"}, {"show", "season"})
+        show, season = data["show"], data["season"]
+        if not isinstance(show, str) or not show.strip() or len(show) > 200:
+            raise ReportRefused("Say which show to approve (show=<title>).")
+        if type(season) is not int or not 0 <= season <= 9999:
+            raise ReportRefused("The season must be a number.")
+        return jsonify(_json(service.approve_confident(show.strip(), season)))
+
     @bp.post("/api/reprise/refresh")
     @owner
     def refresh():

@@ -218,7 +218,7 @@
             open.setAttribute('aria-label', `${longName(item)}, ${chip.textContent}`); open.append(copy, chip);
             label.append(check); row.append(label, open); target.append(row);
         }
-        syncScroll(); $('rpMore').hidden = !state.cursor; renderSelection(); renderNext();
+        syncScroll(); $('rpMore').hidden = !state.cursor; renderSelection(); renderConfident(); renderNext();
     }
     function paintStatuses() {
         const byId = new Map(state.items.map(i => [i.id, i]));
@@ -244,6 +244,24 @@
         $('rpAnalyze').textContent = n === 1 ? 'Analyze episode' : `Analyze ${n} episodes`;
         const pickable = state.items.filter(canSelect), all = pickable.length > 0 && pickable.every(i => state.selected.has(i.id)), toggle = $('rpSelectAll');
         toggle.hidden = pickable.length < 2; toggle.textContent = all ? 'Deselect all' : state.cursor ? `Select ${pickable.length} shown` : 'Select all'; /* with more pages to load, "all" would overstate it */
+    }
+    /* One click for a season: approve what the local vision model is sure of (its "high" confidence ones). They become the owner's own
+       exact skips, like setting each by hand; nothing is sent to Plex. Shown only with a show and season picked. */
+    function renderConfident() {
+        const n = $('rpShow').value && $('rpSeason').value ? state.items.reduce((sum, i) => sum + (i.confident || 0), 0) : 0, more = n > 0 && state.cursor ? ' or more' : '';
+        const approve = $('rpApproveConfident'); approve.hidden = !n; approve.textContent = `Approve ${n}${more} confident ${n === 1 && !more ? 'suggestion' : 'suggestions'}`;
+    }
+    async function approveConfident() {
+        const show = $('rpShow').value, season = Number($('rpSeason').value);
+        if (!show || !season || !confirm(`Approve the local model's confident suggestions for ${show}, season ${season}? They become your own skips. Nothing is sent to Plex until you apply it.`)) return;
+        const approve = $('rpApproveConfident'); approve.disabled = true;
+        try {
+            const result = await api('/api/reprise/approve-local-model', { method: 'POST', body: { show, season } });
+            const left = result.skipped.length;
+            message(`Approved ${plural(result.approved.length, 'suggestion')} as your own skips. Nothing was sent to Plex.` + (left ? ` ${plural(left, 'episode')} left as they were: ${result.skipped[0].reason}` : ''));
+            await loadLibrary();
+        } catch (error) { message(error.message, true); }
+        approve.disabled = false;
     }
     async function loadLibraries() {
         if (state.libraries) return state.libraries;
@@ -736,6 +754,7 @@
     $('rpRefreshForm').addEventListener('submit', async event => { event.preventDefault(); const lib = (state.libraries || [])[Number($('rpLibraryChoice').value)]; if (lib) await queueRefresh(lib); });
     $('rpAnalyze').addEventListener('click', () => analyze([...state.selected])); $('rpSelectClear').addEventListener('click', () => { state.selected.clear(); renderLibrary(); });
     $('rpAnalyzeOne').addEventListener('click', () => { if (state.item && (!state.dirty || confirm('Discard unsaved review changes and analyze again?'))) analyze([state.item.id]); });
+    $('rpApproveConfident').addEventListener('click', approveConfident);
     $('rpActivityToggle').addEventListener('click', () => { const root = $('rpQueue'); state.activityHidden = !root.hidden; root.hidden = state.activityHidden; $('rpActivityToggle').textContent = root.hidden ? 'Show' : 'Hide'; $('rpActivityToggle').setAttribute('aria-expanded', String(!root.hidden)); });
     $('rpSelectAll').addEventListener('click', () => {
         const pickable = state.items.filter(canSelect), all = pickable.every(i => state.selected.has(i.id));

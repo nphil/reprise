@@ -401,6 +401,44 @@ def _vision_anchors(ranges, duration_ms, movie):
     return anchors
 
 
+def _vision_media(version):
+    """A file as the local vision check reads it: its path and length, and a stamp that changes with the file."""
+    from .localvision import Media
+
+    return Media(version.canonical_path, version.duration_ms, (version.size_bytes, version.mtime_ns))
+
+
+def _vision_hints(ranges):
+    """``{kind: [Hint]}``: where other sources put each kind's skips, to corroborate what the pictures show."""
+    from .localvision import Hint
+
+    hints = {}
+    for r in ranges:
+        if r.action == "skip" and r.kind in ("intro", "credits"):
+            who = " and ".join(r.suggested_by) if r.suggested_by else "Plex" if r.origin == "plex" else "Reprise"
+            hints.setdefault(r.kind, []).append(Hint(r.start_ms, r.end_ms, who))
+    return hints
+
+
+def _confident_local(ranges, evidence):
+    """The proposed skips only the local vision model suggested and rated high confidence (its own evidence says so), for
+    a kind the owner has set no exact skip for: what 'approve the confident ones' would approve."""
+    from .localvision import HIGH, SOURCE_NAME
+
+    owned = {r.kind for r in ranges if is_owner_span(r) and r.review_status == "approved"}
+    rated = {e.id: (e.metrics.get("local_model") or {}).get("confidence") for e in evidence}
+    return [
+        r
+        for r in ranges
+        if r.action == "skip"
+        and r.review_status == "proposed"
+        and r.origin in SUGGESTION_ORIGINS
+        and tuple(r.suggested_by) == (SOURCE_NAME,)
+        and r.kind not in owned
+        and any(rated.get(evidence_id) == HIGH for evidence_id in r.evidence_ids)
+    ]
+
+
 class RepriseService:
     def __init__(self, store, registry, job_manager):
         self.store, self.registry, self.job_manager = store, registry, job_manager
@@ -973,6 +1011,7 @@ class RepriseService:
                     "freshness": current["freshness"] if current else "unavailable",
                     "stale": _stale(why) if why else None,
                     "ranges": _range_counts(stored.ranges if stored else ()),
+                    "confident": len(_confident_local(stored.ranges, stored.evidence)) if stored else 0,
                     "reasons": list(stored.reasons) if stored else [],
                     "identities": [asdict(b[0]) for b in bindings],
                 }
@@ -1032,6 +1071,69 @@ class RepriseService:
         if result is None or result.freshness != "current" or not self._references_current(result):
             raise ValueError("Analysis is unavailable or stale")
         return self.store.save_review(media_version_id, expected_revision, edits, actor)
+
+    def approve_confident(self, show, season):
+        """Approve, for one season of a show, every suggestion the local vision model rated high confidence, as the
+        owner's own exact skip (the same as setting it by hand and confirming it). Nothing is sent to Plex: that stays
+        a separate step only the owner takes. An episode that changed since it was analyzed, or where Reprise cannot
+        set the skip exactly, is left as it was and reported with the reason."""
+        from .models import ReviewRefused
+        from .report import _pick_show
+        from .store import RevisionConflict
+
+        rows = self.store.catalogue()
+        shows = sorted({str(row["metadata"]["show_title"]) for row in rows if row["metadata"].get("show_title")})
+        title = _pick_show(shows, show)
+        approved, skipped, seen = [], [], set()
+        for row in sorted(rows, key=lambda row: (row["metadata"].get("episode") or 0, row["version_id"])):
+            meta, version_id = row["metadata"], row["version_id"]
+            if version_id in seen or str(meta.get("show_title")) != title or str(meta.get("season")) != str(season):
+                continue
+            seen.add(version_id)
+            stored = self.store.get_result(version_id)
+            picks = _confident_local(stored.ranges, stored.evidence) if stored else []
+            if not picks:
+                continue
+            edits = [
+                {
+                    "range_id": r.id,
+                    "action": r.action,
+                    "kind": r.kind,
+                    "start_ms": r.start_ms,
+                    "end_ms": r.end_ms,
+                    "review_status": r.review_status,
+                    "locked": r.locked,
+                    "reason": r.reason,
+                }
+                for r in stored.ranges
+            ]
+            edits += [
+                {
+                    "range_id": None,
+                    "kind": r.kind,
+                    "start_ms": r.start_ms,
+                    "end_ms": r.end_ms,
+                    "review_status": "approved",
+                    "acknowledge_owner_span": True,
+                }
+                for r in picks
+            ]
+            try:
+                self.review(version_id, stored.result_revision, edits, "owner")
+            except (ReviewRefused, RevisionConflict, ValueError) as exc:
+                skipped.append({"id": version_id, "episode": meta.get("episode"), "reason": str(exc)})
+                continue
+            approved += [
+                {
+                    "id": version_id,
+                    "episode": meta.get("episode"),
+                    "kind": r.kind,
+                    "start_ms": r.start_ms,
+                    "end_ms": r.end_ms,
+                }
+                for r in picks
+            ]
+        return {"show": title, "season": season, "approved": approved, "skipped": skipped}
 
     def _refresh_signature(self, server_id, library_id):
         cfg = self.registry.get_config(server_id)
@@ -1808,12 +1910,14 @@ class RepriseService:
             raise ValueError("Invalid setting")
         return localvision.set_config(enabled, base_url, model)
 
-    def _with_local_model(self, draft, version, bindings, ffmpeg_path):
-        """The draft with the local vision model's advice added, when the owner turned that on. It looks only where the
-        comparison left a kind unconfirmed or cut short, only if the model is already loaded, and nothing here may fail
-        the analysis: any problem leaves the draft as it was."""
+    def _with_local_model(self, draft, version, bindings, ffmpeg_path, references=(), cancel=None):
+        """The draft with the local vision model's advice added, when the owner turned that on. It compares the
+        episode's pictures with its nearest neighbours' (``references``) where the comparison left a kind unconfirmed
+        or cut short, only if the model is already loaded, and nothing here may fail the analysis: any problem leaves
+        the draft as it was."""
         from . import localvision
         from .analysis import with_local_model
+        from .media import paired_ffprobe
 
         try:
             cfg = localvision.config()
@@ -1822,8 +1926,18 @@ class RepriseService:
             anchors = _vision_anchors(draft.ranges, version.duration_ms, bindings[0][2].get("kind") == "movie")
             if not anchors:
                 return draft
+            marks = chapters.spans(
+                chapters.read(paired_ffprobe(ffmpeg_path), version.canonical_path), version.duration_ms
+            )
             verdicts = localvision.check(
-                cfg, lambda ms: localvision.grab(ffmpeg_path, version.canonical_path, ms), version.duration_ms, anchors
+                cfg,
+                localvision.FfmpegSource(ffmpeg_path),
+                _vision_media(version),
+                anchors,
+                references=[_vision_media(ref) for ref in list(references)[: localvision.NEIGHBOURS]],
+                chapters={kind: (found[0], found[1]) for kind, found in marks.items()},
+                hints=_vision_hints(draft.ranges),
+                cancel=cancel,
             )
             return with_local_model(draft, version, verdicts) if verdicts else draft
         except Exception as exc:
@@ -2252,7 +2366,14 @@ class RepriseService:
                 elif not any(self._valid_binding(version, *b) for b in bindings):
                     raise ValueError("Media changed during analysis")
                 else:
-                    draft = self._with_local_model(draft, version, bindings, ffmpeg_path)
+                    draft = self._with_local_model(
+                        draft,
+                        version,
+                        bindings,
+                        ffmpeg_path,
+                        references,
+                        lambda: self.job_manager.is_cancellation_requested(job_id),
+                    )
                     reasons = [no_comparison_note if reason == NO_REFERENCES else reason for reason in draft.reasons]
 
                     def commit(aid=aid, draft=draft, version=version, reasons=reasons, index=index):

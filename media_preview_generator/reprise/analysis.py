@@ -365,7 +365,9 @@ def with_local_model(draft, media, verdicts):
 
     A kind the owner set an exact skip for gets nothing. A verdict that agrees (within ``ONLINE_AGREE_MS`` at both ends)
     with a skip the comparison found adds nothing; with a suggestion it only adds its name to it. Anything else is a
-    new approve-only suggestion carrying the frames' verdicts as evidence. No range the comparison made changes."""
+    new approve-only suggestion carrying the model's confidence (high, medium or low) and the reasons for it as
+    evidence: in its text for the owner, and in the evidence's metrics for the approval of a season's confident ones.
+    No range the comparison made changes."""
     ranges, evidence, reasons = list(draft.ranges), list(draft.evidence), list(draft.reasons)
     tracks = _signature_tracks(media)
     for kind, verdict in verdicts.items():
@@ -389,23 +391,31 @@ def with_local_model(draft, media, verdicts):
             continue
         window = CandidateWindow(kind, verdict.start_ms, verdict.end_ms, ONLINE_SOURCE)
         found, suggestion = _suggestion(media, window, (localvision.SOURCE_NAME,), tracks)
-        counts = Counter(scene for _, scene, _ in verdict.frames)
+        if verdict.method == "pictures":
+            looked = f"A local vision model compared this episode's pictures with other episodes and read this stretch as the {kind}."
+        else:
+            counts = Counter(scene for _, scene, _ in verdict.frames)
+            looked = f"A local vision model looked at {len(verdict.frames)} frames and read this stretch as the {kind}: {dict(counts)}."
         found = replace(
             found,
-            reason=f"A local vision model looked at {len(verdict.frames)} frames and read this stretch as the {kind}: {dict(counts)}.",
+            reason=" ".join([looked, *verdict.reasons]),
             metrics={
                 **found.metrics,
                 "local_model": {
                     "model": verdict.model,
+                    "method": verdict.method,
+                    "confidence": verdict.confidence,
+                    "reasons": list(verdict.reasons),
                     "frames": [{"at_ms": t, "scene": scene, "overlay_text": text} for t, scene, text in verdict.frames],
                 },
             },
         )
+        suggestion = replace(suggestion, reason=f"{suggestion.reason} Confidence: {verdict.confidence}.")
         evidence.append(found)
         ranges.append(suggestion)
         reasons.append(
-            f"A local vision model suggested the {kind} ({_clock(verdict.start_ms)} to {_clock(verdict.end_ms)}). "
-            "It stays a suggestion until you approve it."
+            f"A local vision model suggested the {kind} ({_clock(verdict.start_ms)} to {_clock(verdict.end_ms)}), "
+            f"confidence {verdict.confidence}. It stays a suggestion until you approve it."
         )
     return replace(draft, evidence=tuple(evidence), ranges=tuple(ranges), reasons=tuple(reasons))
 
