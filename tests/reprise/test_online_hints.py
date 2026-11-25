@@ -730,3 +730,22 @@ def test_the_switch_is_part_of_the_settings_api(tmp_path, monkeypatch):
 def test_results_from_before_this_profile_are_stale():
     old = AnalysisResult("m", "a", 1, "complete", "current", "s", "2:" + "0" * 64, (), (), ())
     assert old.policy_version != POLICY_VERSION and eligible_ranges(old, "123") == ()
+
+
+def test_chapter_marks_nothing_confirmed_are_an_approve_only_suggestion_with_a_plain_reason(library, target, unrelated):
+    opening = CandidateWindow(INTRO, 0, 8000, analysis.OPENING_WINDOW)
+    found = {target.id: (window(INTRO, 2000, 12000, "Chapter marks"),)}
+    draft, _ = compare(library, target, unrelated, [opening], found)
+    [suggestion] = suggestions(draft)
+    assert (suggestion.origin, suggestion.review_status, suggestion.suggested_by) == (
+        "online",
+        "proposed",
+        ("Chapter marks",),
+    )
+    assert suggestion.reason == "Suggested by the file's own chapter marks — not confirmed by Reprise."
+    assert (
+        eligible_ranges(
+            AnalysisResult(target.id, "a", 1, "complete", "current", "s", POLICY_VERSION, (suggestion,), (), ()), "123"
+        )
+        == ()
+    )

@@ -121,6 +121,7 @@ class OnlineWindow:
     end_ms: int
     sources: tuple[str, ...]
     dissent: tuple[str, ...] = ()
+    note: str = ""  # a sentence for the owner about this time (the show's other episodes disagree with it), else empty
 
 
 @dataclass(frozen=True)

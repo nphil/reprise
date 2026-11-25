@@ -28,7 +28,7 @@ import numpy as np
 from loguru import logger
 
 from ..gpu.ffmpeg_capabilities import ffmpeg_binary
-from . import acceleration, canonical, container_limits, gpu_pairs, scan_cache
+from . import acceleration, canonical, chapters, container_limits, gpu_pairs, scan_cache
 from . import media as decoder
 from . import recurrence as verify
 from .admission import EXTRA_REFERENCES, MAX_REFERENCES, admit_references
@@ -339,7 +339,7 @@ def _suggestion(media, window, names, tracks, movie=False):
         False,
         ORIGIN_PLEX if plex else ORIGIN_ONLINE,
         REASON_PLEX_SUGGESTION if plex else REASON_ONLINE_SUGGESTION,
-        f"Suggested by {who} — not confirmed by Reprise.",
+        f"Suggested by {who.replace(chapters.SOURCE_NAME, chapters.SOURCE_REASON)} — not confirmed by Reprise.",
         (eid,),
         tuple(t[0] for t in tracks),
         False,
@@ -382,6 +382,8 @@ def _with_online(windows, found):
     kept, suggested_by, notes = list(windows), {}, []
     for online in found:
         names = online.sources
+        if online.note:
+            notes.append(online.note)
         if online.dissent:
             notes.append(
                 f"{_names_text(online.dissent)} gave other times for the {online.kind} than {_names_text(names)}; "

@@ -21,7 +21,7 @@ from loguru import logger
 from ..gpu.ffmpeg_capabilities import ffmpeg_binary
 from ..servers.ownership import apply_path_mappings
 from ..shutdown import is_shutting_down
-from . import recovery, scan_cache
+from . import chapters, recovery, scan_cache
 from .admission import MAX_REFERENCES, admit_references, pair_provenance
 from .identity import currency, media_version
 from .models import SUGGESTION_ORIGINS, AnalysisRefused, CandidateWindow, PlaybackIdentity, is_owner_span
@@ -1803,9 +1803,26 @@ class RepriseService:
         return {version.id: credits} if credits else {}
 
     def _online_windows(self, lookups, version, bindings, references, job):
-        """Where the online databases put the intro and credits of this episode and of each reference, each read on
-        its own file's clock: ``{media version id: (OnlineWindow, ...)}``. Every episode is asked at most once; an episode
-        the databases don't know, or can't be asked, is simply missing."""
+        """Where the online databases and the files' own chapter marks put the intro and credits of this episode and
+        of each reference, each read on its own file's clock: ``{media version id: (OnlineWindow, ...)}``. Every
+        episode is asked at most once; an episode with no answer is simply missing. The chapter marks need no online
+        lookup, so they are read whether or not it is on."""
+        from .media import paired_ffprobe
+
+        found = self._database_windows(lookups, version, bindings, references, job)
+        try:
+            files = [version, *references]
+            ffprobe = paired_ffprobe(ffmpeg_binary())
+            marks = {f.id: chapters.read(ffprobe, f.canonical_path) for f in files}
+            kinds = ("credits",) if bindings[0][2].get("kind") == "movie" else ("intro", "credits")
+            found = chapters.merge(
+                found, chapters.windows(marks, {f.id: f.duration_ms for f in files}, version.id, kinds=kinds)
+            )
+        except Exception as exc:
+            logger.warning("Chapter marks could not be read: {}", type(exc).__name__)
+        return found
+
+    def _database_windows(self, lookups, version, bindings, references, job):
         from . import online
 
         if lookups is None:
