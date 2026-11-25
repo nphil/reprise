@@ -1959,7 +1959,7 @@ class RepriseService:
                 localvision.FfmpegSource(ffmpeg_path),
                 _vision_media(version),
                 anchors,
-                references=[_vision_media(ref) for ref in list(references)[: localvision.NEIGHBOURS]],
+                references=[_vision_media(ref) for ref in list(references)[: localvision.FAR_NEIGHBOURS]],
                 chapters={kind: (found[0], found[1]) for kind, found in marks.items()},
                 hints=_vision_hints(draft.ranges),
                 cancel=cancel,

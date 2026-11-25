@@ -36,7 +36,7 @@ class Scripted:
     story of its own; ``"black"`` as the id is a black card."""
 
     def __init__(self, shows):
-        self.shows, self.scene_of, self.dense_reads = shows, {}, 0
+        self.shows, self.scene_of, self.dense_reads, self.keyframe_reads = shows, {}, 0, []
 
     def _at(self, path, ms):
         for start, end, shared, scene in self.shows[path]:
@@ -57,6 +57,7 @@ class Scripted:
         return out.getvalue()
 
     def keyframes(self, path, start_ms, end_ms):
+        self.keyframe_reads.append(path)
         first = -(-max(0, start_ms) // 2000) * 2000
         return [(t, self._jpeg(path, t)) for t in range(first, end_ms + 1, 2000)]
 
@@ -165,6 +166,68 @@ def test_a_longer_run_that_only_one_neighbour_shows_is_not_taken_because_it_may_
     assert verdict.confidence == localvision.MEDIUM and "narrower" in " ".join(verdict.reasons)
 
 
+def spliced(displaced_ms=0):
+    """Near the end of the intro the episode shows two and a half seconds of its own (a card with other names), then a
+    second of footage the neighbours show too. A neighbour's own stretch is ``displaced_ms`` longer, so the footage after
+    it plays that much further from where the rest of the intro plays."""
+    shows = {
+        "/e.mkv": [(20000, 60000, 1000, "credits"), (60000, 62500, None, "credits"), (62500, 63500, 1042, "credits")]
+    }
+    for path, at in (("/r1.mkv", 30000), ("/r2.mkv", 10000)):
+        end = at + 40000
+        shows[path] = [
+            (at, end, 1000, "credits"),
+            (end, end + 2500 + displaced_ms, None, "credits"),
+            (end + 2500 + displaced_ms, end + 3500 + displaced_ms, 1042, "credits"),
+        ]
+    return Scripted(shows)
+
+
+def test_an_intro_runs_across_a_card_with_other_names_when_the_footage_resumes_at_the_same_place(model):
+    verdict = check(model, spliced(), ["intro"])["intro"]
+    assert abs(verdict.start_ms - 20000) <= 500 and abs(verdict.end_ms - 63500) <= 500
+    assert verdict.confidence == localvision.HIGH
+
+
+def test_an_intro_stops_at_a_stretch_of_its_own_when_the_footage_after_it_plays_somewhere_else(model):
+    verdict = check(model, spliced(displaced_ms=2000), ["intro"])["intro"]
+    assert abs(verdict.end_ms - 60000) <= 500  # a second of the same footage further on is not part of the run
+
+
+def crowd(shared_from, size):
+    """The episode and ``size`` neighbours, nearest first: from number ``shared_from`` on they show the intro, the
+    nearer ones show a version of their own."""
+    shows = {"/e.mkv": [(*INTRO, 1000, "credits")]}
+    for n in range(1, size + 1):
+        shows[f"/n{n}.mkv"] = [(30000, 90000, 1000 if n >= shared_from else None, "credits")]
+    return Scripted(shows), tuple(localvision.Media(f"/n{n}.mkv", 1430000) for n in range(1, size + 1))
+
+
+def test_neighbours_further_off_are_read_when_none_of_the_nearest_show_this_episodes_version(model):
+    source, refs = crowd(shared_from=7, size=8)
+    verdict = check(model, source, ["intro"], refs=refs)["intro"]
+    assert abs(verdict.start_ms - INTRO[0]) <= 500 and abs(verdict.end_ms - INTRO[1]) <= 500
+    assert verdict.confidence == localvision.HIGH and "/n8.mkv" in source.keyframe_reads
+
+
+def test_the_further_neighbours_are_left_alone_once_one_of_the_nearest_shows_something(model):
+    source, refs = crowd(shared_from=6, size=10)
+    verdict = check(model, source, ["intro"], refs=refs)["intro"]
+    assert verdict.confidence == localvision.MEDIUM and "/n7.mkv" not in source.keyframe_reads
+
+
+def test_a_start_only_one_neighbour_reaches_back_to_is_confirmed_or_ruled_out_by_reading_on(model):
+    extra = (12000, 20000, 988, "credits")  # eight seconds before the intro, which two of the four neighbours show too
+    shows = {"/e.mkv": [extra, (*INTRO, 1000, "credits")]}
+    for n in (1, 2, 3, 4):
+        before = [(22000, 30000, 988, "credits")] if n in (1, 4) else []
+        shows[f"/n{n}.mkv"] = [*before, (30000, 90000, 1000, "credits")]
+    refs = tuple(localvision.Media(f"/n{n}.mkv", 1430000) for n in (1, 2, 3, 4))
+    verdict = check(model, Scripted(shows), ["intro"], refs=refs)["intro"]
+    assert abs(verdict.start_ms - 12000) <= 500 and abs(verdict.end_ms - INTRO[1]) <= 500
+    assert verdict.confidence == localvision.HIGH
+
+
 def test_chapter_marks_that_agree_are_said_so_and_ones_far_off_stop_it_being_high(model):
     agree = check(model, season(), ["intro"], chapters={"intro": (20500, 79500)})["intro"]
     assert agree.confidence == localvision.HIGH and any("chapter" in reason.lower() for reason in agree.reasons)
@@ -209,6 +272,20 @@ def test_the_same_picture_matches_through_a_different_encode_and_other_pictures_
     assert vm.hard_cut(a, 1) and not vm.hard_cut(
         vm.frames([0, 125], np.stack([pattern(1), pattern(1)]).astype(np.float32)), 1
     )
+
+
+def test_a_walk_crosses_a_short_unmatched_stretch_only_where_the_other_episodes_footage_resumes_in_place():
+    def alike(same, lag):
+        return vm.Alike(np.array(same, bool), np.zeros(len(same), bool), np.zeros(len(same), int), np.array(lag, float))
+
+    resumes = alike([True] * 4 + [False] * 12 + [True] * 4, [10000.0] * 20)
+    assert vm.walk(resumes, 0, 1) == 3  # by default the run ends where the pictures stop matching
+    assert vm.walk(resumes, 0, 1, splice=True) == 19
+    assert vm.walk(resumes, 19, -1, splice=True) == 0
+    elsewhere = alike([True] * 4 + [False] * 12 + [True] * 4, [10000.0] * 16 + [13000.0] * 4)
+    assert vm.walk(elsewhere, 0, 1, splice=True) == 3  # the footage after it plays at another place
+    too_long = alike([True] * 4 + [False] * 40 + [True] * 4, [10000.0] * 48)
+    assert vm.walk(too_long, 0, 1, splice=True) == 3
 
 
 # --- the model's answers and settings --------------------------------------------------------------------------------

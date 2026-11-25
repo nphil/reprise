@@ -49,7 +49,9 @@ HIGH, MEDIUM, LOW = "high", "medium", "low"
 FRAME_WIDTH = 320
 HEAD_MS = 300000  # where an intro can be: the first five minutes
 TAIL_MS = 420000  # where credits can be: the last seven minutes
-NEIGHBOURS = 3  # other episodes compared at most: two first, a third only when those two disagree
+NEIGHBOURS = 6  # other episodes compared for an intro: two first, more only while no two of them settle its edges
+FAR_NEIGHBOURS = 12  # when none of the nearest ones shares anything, up to this many (they show another version)
+CREDITS_NEIGHBOURS = 3  # other episodes compared for credits: two first, a third only when those two disagree
 AGREE_MS = 1000  # references agree on an edge within this, and two of them make it "supported"
 HINT_MS = 1500  # another source's time confirms an edge within this
 CHAPTER_CONFLICT_MS = 5000  # chapter marks that put an edge this far off make the suggestion doubtful
@@ -458,11 +460,13 @@ class _Ctx:
         return answer
 
 
-def _extend(ctx: _Ctx, ref: Media, t_e: float, t_r: float, step: int) -> tuple[float, bool]:
+def _extend(ctx: _Ctx, ref: Media, t_e: float, t_r: float, step: int, splice: bool = False) -> tuple[float, bool]:
     """The edge of the run of shared pictures beyond a shared one (the episode's time ``t_e`` is the neighbour's
-    ``t_r``), going later (``step`` 1) or earlier (-1), and whether a hard cut or the file's edge is there."""
+    ``t_r``), going later (``step`` 1) or earlier (-1), and whether a hard cut or the file's edge is there. ``splice``
+    lets the run cross a short stretch that matches nothing (see ``visionmatch.walk``)."""
     e, edge, hard = ctx.episode, t_e, False
     cur_e, cur_r = t_e, t_r
+    slack = vm.SPLICE_FRAMES if splice else 0
     while True:
         ctx.live()
         if step < 0:
@@ -479,17 +483,18 @@ def _extend(ctx: _Ctx, ref: Media, t_e: float, t_r: float, step: int) -> tuple[f
         if not len(shared):
             break
         start = int(shared[int(np.argmin(np.abs(mine.t[shared] - cur_e)))])
-        last = vm.walk(found, start, step)
+        last = vm.walk(found, start, step, splice)
         edge = float(mine.t[last]) + (-500.0 if step < 0 else 500.0) / vm.FPS
         outside = last + step
         if 0 <= outside < len(mine):
             hard = vm.hard_cut(mine, last if step < 0 else outside)
-        at_window_end = last == 0 if step < 0 else last == len(mine) - 1
+        at_window_end = last <= slack if step < 0 else last >= len(mine) - 1 - slack
         if not at_window_end or abs(edge - t_e) >= MAX_EXTEND_MS or (a <= 0 if step < 0 else b >= e.duration_ms):
             break
-        cur_e = float(mine.t[last])
-        if found.same[last]:
-            cur_r = float(theirs.t[found.best[last]])
+        anchor = last  # the next read continues from the outermost shared picture, not a plain one beside it
+        while not found.same[anchor]:
+            anchor -= step
+        cur_e, cur_r = float(mine.t[anchor]), float(theirs.t[found.best[anchor]])
     if step < 0 and edge < 1000 / vm.FPS:
         edge, hard = 0.0, True
     if step > 0 and edge > e.duration_ms - 1000 / vm.FPS:
@@ -541,8 +546,8 @@ def _intro_pair(ctx: _Ctx, ref: Media) -> _Pair | None:
     groups = vm.clusters([own.frames.t[i] for i in seeds], SEED_GAP_MS)
     best = max(groups, key=lambda g: (own.frames.t[seeds[g[-1]]] - own.frames.t[seeds[g[0]]], len(g)))
     first, last = int(seeds[best[0]]), int(seeds[best[-1]])
-    start, start_hard = _extend(ctx, ref, own.frames.t[first], other.frames.t[found.best[first]], -1)
-    end, end_hard = _extend(ctx, ref, own.frames.t[last], other.frames.t[found.best[last]], 1)
+    start, start_hard = _extend(ctx, ref, own.frames.t[first], other.frames.t[found.best[first]], -1, splice=True)
+    end, end_hard = _extend(ctx, ref, own.frames.t[last], other.frames.t[found.best[last]], 1, splice=True)
     return _Pair(start, end, start_hard, end_hard, len(best)) if end - start >= MIN_SPAN_MS else None
 
 
@@ -574,13 +579,29 @@ def _agreed(pairs: list[_Pair | None]) -> bool:
     )
 
 
+def _settled(pairs: list[_Pair | None]) -> bool:
+    """Reading more neighbours would change nothing: two of them put the outermost start in the same place, and two
+    the outermost end (a neighbour that reaches further out on its own is still to be confirmed or ruled out)."""
+    shared = [p for p in pairs if p]
+    starts, ends = [p.start for p in shared], [p.end for p in shared]
+    return len(shared) >= 2 and all(
+        sum(abs(v - edge) <= AGREE_MS for v in values) >= 2
+        for values, edge in ((starts, min(starts)), (ends, max(ends)))
+    )
+
+
 def _compare(ctx: _Ctx, kind: str) -> _Found | None | str:
     """What the episode shares with its neighbours: a ``_Found``; None when they were compared and share nothing; the
     string ``"unread"`` when no neighbour could be compared at all."""
     pair = _intro_pair if kind == "intro" else _credits_pair
     pairs: list[_Pair | None] = []
-    for index, ref in enumerate(ctx.refs[:NEIGHBOURS]):
-        if index == 2 and (all(p is None for p in pairs) or _agreed(pairs)):
+    for index, ref in enumerate(ctx.refs[: FAR_NEIGHBOURS if kind == "intro" else CREDITS_NEIGHBOURS]):
+        if kind == "intro":
+            # An intro comes in versions: read on while the neighbours so far do not settle it, and past the nearest
+            # ones only when none of them showed this episode's version at all (then on, until two of the far ones do).
+            if (index >= 2 and _settled(pairs)) or (index >= NEIGHBOURS and any(pairs[:NEIGHBOURS])):
+                break
+        elif index == 2 and (all(p is None for p in pairs) or _agreed(pairs)):
             break  # a third neighbour only settles a disagreement
         try:
             pairs.append(pair(ctx, ref))

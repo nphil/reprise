@@ -562,9 +562,10 @@ class AutoSender:
 
 # ── the local vision model's high-confidence skips ───────────────────────────────────────────────────────────────
 
-# Whether the intro switch ("Send high-confidence intros to Plex automatically") is offered at all. It stays False until
-# the local model's intros have been graded and none was unsafe; while False no intro is ever sent from the model.
-INTRO_AUTOSEND_SAFE = False
+# Whether the intro switch ("Send high-confidence intros to Plex automatically") is offered at all. It was held back until
+# the local model's intros had been graded and none was unsafe (DESIGN.md, "Intro accuracy of the local check"). The
+# switch itself stays off until the owner turns it on; with this False no intro is ever sent from the model.
+INTRO_AUTOSEND_SAFE = True
 
 LOCAL_FAILED_KEY = "local_send_failed"  # followed by the episode
 

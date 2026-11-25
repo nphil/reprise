@@ -23,6 +23,8 @@ FLAT_STD = 6.0  # a thumbnail this plain (a black card, a fade) carries no pictu
 FLAT_MEAN_GAP = 12.0  # two plain pictures are alike when about as bright as each other
 BRIDGE_FRAMES = FPS * 3 // 2  # plain pictures (1.5 s) that may join a run of shared pictures
 GAP_FRAMES = 2  # pictures that match nothing, tolerated inside a run
+SPLICE_FRAMES = FPS * 3  # a stretch (3 s) that matches nothing (a dissolve, a card of other names) may be crossed
+SPLICE_LAG_MS = 500  # but only if the pictures beyond it play the other episode's footage this close to where they did
 CUT_SIMILARITY = 0.6  # two consecutive pictures less alike than this are separated by a hard cut
 CUT_BRIGHTNESS = 30.0  # a plain picture beside one this much brighter or darker is a hard cut too
 
@@ -44,6 +46,7 @@ class Alike(NamedTuple):
     same: np.ndarray  # per picture: a picture of the other set shows the same thing
     blank: np.ndarray  # per plain picture: the other set has a plain picture about as bright
     best: np.ndarray  # per picture: index of the most similar picture of the other set (-1 when it has none)
+    lag: np.ndarray  # per picture: how much later (ms) that picture plays in the other set (NaN when it has none)
 
 
 def frames(times: Sequence[float], gray: np.ndarray) -> Frames:
@@ -84,7 +87,7 @@ def alike(a: Frames, b: Frames) -> Alike:
     sequence is the same footage whatever time it starts at, and a different scene never correlates this closely)."""
     count = len(a)
     if count == 0 or len(b) == 0:
-        return Alike(np.zeros(count, bool), np.zeros(count, bool), np.full(count, -1))
+        return Alike(np.zeros(count, bool), np.zeros(count, bool), np.full(count, -1), np.full(count, np.nan))
     similarity = np.where(b.flat[None, :], -1.0, a.unit @ b.unit.T)
     best = similarity.argmax(axis=1)
     same = ~a.flat & (similarity.max(axis=1) >= SAME)
@@ -92,19 +95,36 @@ def alike(a: Frames, b: Frames) -> Alike:
         blank = a.flat & (np.abs(a.mean[:, None] - b.mean[None, b.flat]) < FLAT_MEAN_GAP).any(axis=1)
     else:
         blank = np.zeros(count, bool)
-    return Alike(same, blank, np.where(similarity.max(axis=1) > -1.0, best, -1))
+    matched = similarity.max(axis=1) > -1.0
+    return Alike(same, blank, np.where(matched, best, -1), np.where(matched, b.t[best] - a.t, np.nan))
 
 
-def walk(found: Alike, start: int, step: int) -> int:
+def _across(found: Alike, shared: int, step: int, drift: float) -> int | None:
+    """The first shared picture within ``SPLICE_FRAMES`` beyond ``shared`` (going ``step`` at a time) that plays about
+    ``drift`` ms later in the other episode, as ``shared`` does."""
+    for k in range(1, SPLICE_FRAMES + 2):
+        j = shared + step * k
+        if not 0 <= j < len(found.same):
+            return None
+        if found.same[j] and abs(found.lag[j] - drift) <= SPLICE_LAG_MS:
+            return j
+    return None
+
+
+def walk(found: Alike, start: int, step: int, splice: bool = False) -> int:
     """The outermost picture reached from ``start`` (a shared one) going ``step`` pictures at a time (+1 later, -1
     earlier): shared pictures continue the run, so do a couple of unmatched ones between them and plain pictures
-    beside the run (a black frame it fades through)."""
+    beside the run (a black frame it fades through). With ``splice`` a longer stretch of unmatched pictures is crossed
+    too (a dissolve, a flash, a card with another name on it) when the pictures beyond it show the other episode's
+    footage at the same place as the ones before it: story never sits in such a gap."""
     count = len(found.same)
     last, misses, plain = start, 0, 0
+    shared = start
     i = start + step
     while 0 <= i < count:
         if found.same[i]:
-            last, misses, plain = i, 0, 0
+            last = shared = i
+            misses = plain = 0
         elif found.blank[i] and plain < BRIDGE_FRAMES:
             plain += 1
             if misses == 0:
@@ -112,7 +132,12 @@ def walk(found: Alike, start: int, step: int) -> int:
         else:
             misses += 1
             if misses > GAP_FRAMES:
-                break
+                across = _across(found, shared, step, float(found.lag[shared])) if splice else None
+                if across is None:
+                    break
+                last = shared = across
+                misses = plain = 0
+                i = across
         i += step
     return last
 

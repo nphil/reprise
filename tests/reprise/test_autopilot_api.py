@@ -98,13 +98,17 @@ def test_each_switch_reaches_the_autopilot_alone(env, key):
     assert answer.json["autopilot"][key] is True
 
 
-def test_the_intro_switch_is_an_unknown_key_until_intros_are_safe(env, monkeypatch):
+def test_the_intro_switch_is_an_unknown_key_while_the_safety_flag_holds_intros_back(env, monkeypatch):
     client, service, _online = env
+    monkeypatch.setattr("media_preview_generator.reprise.autosend.INTRO_AUTOSEND_SAFE", False)
     answer = client.patch("/api/reprise/settings", json={"auto_send_intros": True})
     assert answer.status_code == 400
     assert service.autopilot.updates == []
     assert "auto_send_intros" not in client.get("/api/reprise/settings").json["autopilot"]
-    monkeypatch.setattr("media_preview_generator.reprise.autosend.INTRO_AUTOSEND_SAFE", True)
+
+
+def test_the_intro_switch_reaches_the_autopilot_when_it_is_offered(env):
+    client, service, _online = env
     service.autopilot.values["auto_send_intros"] = False
     assert client.patch("/api/reprise/settings", json={"auto_send_intros": True}).status_code == 200
     assert service.autopilot.updates == [{"auto_send_intros": True}]

@@ -246,21 +246,33 @@ def test_an_ending_the_sure_sender_already_sent_is_not_sent_a_second_time(lab):
 # ── intros ────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 
-def test_an_intro_is_never_sent_while_intros_are_not_safe(lab):
-    lab.kinds[:] = ["credits", "intro"]
+def test_an_intro_is_not_sent_while_its_switch_is_off(lab):
+    lab.kinds[:] = ["credits"]
     ep = lab.episode(1)
     analyse(lab, ep, SURE_INTRO)
     before = lab.rows()
 
-    assert autosend.INTRO_AUTOSEND_SAFE is False
     assert lab.local.sweep(T0) == 0
 
     assert lab.rows() == before and lab.publisher.list_changes(ep.vid) == []
     assert owner_spans(lab, ep) == []
 
 
-def test_an_intro_is_sent_once_intros_are_safe_and_the_switch_is_on(lab, monkeypatch):
-    monkeypatch.setattr(autosend, "INTRO_AUTOSEND_SAFE", True)
+def test_an_intro_is_never_sent_while_the_safety_flag_holds_intros_back(lab, monkeypatch):
+    monkeypatch.setattr(autosend, "INTRO_AUTOSEND_SAFE", False)
+    lab.kinds[:] = ["credits", "intro"]
+    ep = lab.episode(1)
+    analyse(lab, ep, SURE_INTRO)
+    before = lab.rows()
+
+    assert lab.local.sweep(T0) == 0
+
+    assert lab.rows() == before and lab.publisher.list_changes(ep.vid) == []
+    assert owner_spans(lab, ep) == []
+
+
+def test_an_intro_is_sent_when_its_switch_is_on(lab):
+    assert autosend.INTRO_AUTOSEND_SAFE is True
     lab.kinds[:] = ["intro"]
     ep = lab.episode(1)
     analyse(lab, ep, SURE_INTRO)
