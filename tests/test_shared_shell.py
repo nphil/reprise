@@ -267,6 +267,15 @@ class TestReprisePages:
             r'<input class="form-check-input" id="rpWritesEnabled" type="checkbox" role="switch" disabled>', html
         )
 
+    def test_sharing_page_holds_the_phone_alerts_panel_after_the_automatic_one(self, client):
+        html = _page(client, "/reprise/sharing")
+        for landmark in ("rpNotifyOn", "rpQuietFrom", "rpQuietUntil", "rpNotifyStatus"):
+            assert f'id="{landmark}"' in html, landmark
+        # Hidden until the notifications call answers; it follows "Automatic work" and comes before the API clients.
+        assert html.index('id="rpWritesEnabled"') < html.index('id="rpNotifyPanel"') < html.index('id="rpClientForm"')
+        assert '<section class="rp-panel rp-notify" id="rpNotifyPanel" aria-labelledby="rpNotifyTitle" hidden>' in html
+        assert "js/reprise-notify.js" in html
+
 
 class TestSetupGuidePage:
     def test_the_page_is_the_frame_the_script_fills_in(self, client):

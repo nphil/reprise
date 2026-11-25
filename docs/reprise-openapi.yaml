@@ -195,6 +195,39 @@ paths:
           content: {application/json: {schema: {type: object, required: [sent, message], properties: {sent: {type: boolean}, message: {type: string, description: One plain sentence for the owner}}}}}
         '400': {description: "Automatic mode could not start; the body is {error: <plain sentence>}"}
         '403': {$ref: '#/components/responses/Forbidden'}
+  /api/reprise/notifications:
+    get:
+      summary: Read the phone-alert settings and what was last sent
+      security: [{owner: []}]
+      responses:
+        '200': {description: Current phone-alert settings, content: {application/json: {schema: {$ref: '#/components/schemas/Notifications'}}}}
+        '400': {description: "Automatic mode could not start; the body is {error: <plain sentence>}"}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    patch:
+      summary: Change the phone-alert switch or quiet hours
+      security: [{owner: []}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, additionalProperties: false, minProperties: 1, properties: {enabled: {type: boolean}, quiet_from: {type: string, pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'}, quiet_until: {type: string, pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'}}}}}
+      responses:
+        '200': {description: The settings after the change, content: {application/json: {schema: {$ref: '#/components/schemas/Notifications'}}}}
+        '400': {description: "Not a boolean or HH:MM, an unknown key, an empty body, or automatic mode could not start; nothing is saved. The body is {error: <plain sentence>}"}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /api/reprise/notify/act/{token}:
+    post:
+      summary: The phone-alert buttons (Approve & send, Undo). No sign-in and no CSRF token; the address is the credential
+      description: "The token is v1.<payload>.<signature>, an HMAC-SHA256 signature made with the webhook secret, bound to one action and (for approve) to the exact episodes in the message. It works once and expires after 6 hours; rotating the webhook secret ends every outstanding token."
+      security: []
+      parameters:
+        - {name: token, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: "Done. Body {ok: true, message: <plain sentence>, ...counts}", content: {application/json: {schema: {$ref: '#/components/schemas/NotifyAct'}}}}
+        '400': {description: "Not a token; body {ok: false, message}"}
+        '403': {description: "The signature is not valid; body {ok: false, message}"}
+        '409': {description: "Nothing was done, for example nothing sure is left to approve; body {ok: false, message}"}
+        '410': {description: "Expired or already used; body {ok: false, message}"}
+        '429': {description: Too many requests (30 per minute)}
+        '503': {description: Automatic mode is not running}
   /api/reprise/setup-guide:
     get:
       summary: Read the setup guide's seven steps and what is done (no Plex call, nothing written)
@@ -363,6 +396,30 @@ components:
                 title: {type: string}
                 at: {type: string, format: date-time}
             auto_send_blocked: {type: string, nullable: true, description: One plain sentence saying why nothing is sent automatically right now; null while it can send, and null when auto_send is off}
+            notifications: {$ref: '#/components/schemas/Notifications'}
+    Notifications:
+      type: object
+      description: Phone alerts about waiting suggestions and about what Reprise sent by itself, with buttons that approve or undo from the phone. At most 3 messages per rolling hour, none in quiet hours; what is held back is sent later.
+      required: [enabled, quiet_from, quiet_until, last, waiting, waiting_reason]
+      properties:
+        enabled: {type: boolean, description: "Default true."}
+        quiet_from: {type: string, pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$', description: "24-hour local time, default 22:00. The quiet period may cross midnight; the same time as quiet_until means no quiet hours."}
+        quiet_until: {type: string, pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$', description: "Default 08:00."}
+        last:
+          type: object
+          nullable: true
+          required: [title, at]
+          properties:
+            title: {type: string}
+            at: {type: string, format: date-time}
+        waiting: {type: integer, minimum: 0, description: Messages held back for now}
+        waiting_reason: {type: string, nullable: true, enum: [quiet_hours, limit, null]}
+    NotifyAct:
+      type: object
+      required: [ok, message]
+      properties:
+        ok: {type: boolean}
+        message: {type: string, description: One plain sentence for the owner}
     Acceleration:
       type: object
       description: What decodes the video that analysis compares. A GPU is used only after it matched the CPU frame for frame on packaged reference clips, only for H.264 and HEVC 4:2:0 streams, and any failed GPU decode is repeated on the CPU.
