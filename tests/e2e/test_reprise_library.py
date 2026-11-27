@@ -373,13 +373,14 @@ class TestEpisodeList:
         assert api.frames == []
         status = authed_page.locator(".rp-episode-open .rp-chip").nth(1)
         expect(status).to_have_text("2 suggestions")
-        assert status.evaluate(
+        line_count = status.evaluate(
             """chip => {
                 const text = document.createRange();
                 text.selectNodeContents(chip);
                 return text.getClientRects().length;
             }"""
-        ) == 1
+        )
+        assert line_count == 1
         pilot.click()
         artwork = authed_page.locator("#rpEpisodeStill")
         expect(artwork).to_be_visible()
