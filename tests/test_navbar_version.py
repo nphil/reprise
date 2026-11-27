@@ -113,8 +113,8 @@ def client(tmp_path, monkeypatch):
 
 
 def _version_link(html: str) -> str:
-    match = re.search(r'<a class="rp-rail-version"[^>]*>.*?</a>', html, re.S)
-    assert match, "sidebar version link missing"
+    match = re.search(r'<a [^>]*\bid="navVersion"[^>]*>.*?</a>', html, re.S)
+    assert match, "Help version link missing"
     return match.group(0)
 
 
@@ -132,22 +132,24 @@ class TestNavbarVersionRendering:
         assert 'target="_blank" rel="noopener noreferrer"' in link
         assert '<span id="navVersionText">Reprise dev@a9c8177</span>' in link
         assert 'aria-label="Reprise dev@a9c8177. Release notes, opens in a new tab"' in link
-        assert "rp-rail-update" not in link
+        assert "rp-version-update" not in link
 
-    def test_an_available_update_adds_the_pill_and_says_which_version(self, client):
+    def test_an_available_update_is_shown_in_help_with_its_version(self, client):
         _cache(
             {"current_version": "3.4.0", "latest_version": "3.4.1", "update_available": True, "install_type": "docker"}
         )
 
-        link = _version_link(client.get("/reprise").get_data(as_text=True))
+        html = client.get("/reprise").get_data(as_text=True)
+        link = _version_link(html)
+        assert 'class="rp-update-dot"' in html
 
         assert '<span id="navVersionText">Reprise v3.4.0</span>' in link
-        assert 'class="rp-rail-update"' in link and "Update available" in link
+        assert 'class="rp-version-update"' in link and "Update available" in link
         assert 'title="Version 3.4.1 is available"' in link
         assert 'aria-label="Reprise v3.4.0. Version 3.4.1 is available, opens in a new tab"' in link
 
     @pytest.mark.parametrize("install_type,label", [("local_docker", "local build"), ("pr_build", "PR-12")])
-    def test_builds_that_never_flag_updates_show_no_pill(self, client, install_type, label):
+    def test_builds_that_never_flag_updates_show_no_update_label(self, client, install_type, label):
         _cache(
             {
                 "current_version": label,
@@ -160,4 +162,4 @@ class TestNavbarVersionRendering:
         link = _version_link(client.get("/reprise").get_data(as_text=True))
 
         assert f'<span id="navVersionText">Reprise {label}</span>' in link
-        assert "rp-rail-update" not in link
+        assert "rp-version-update" not in link

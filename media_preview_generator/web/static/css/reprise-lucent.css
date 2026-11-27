@@ -1,92 +1,6 @@
-/* Reprise · Lucent v2 design layer (the Stashy-Decensor look).
- *
- * One token set and one component kit for every redesigned screen. Everything lives under a `.lu-root` wrapper, so the
- * pages that still use the older look are untouched. A page opts in with `<div class="lu-root">` and `lu-` classes.
- * Colours come only from the theme palette (`--pal-*` in reprise-themes.css, chosen by reprise-theme.js through
- * <html data-theme>), so every component follows every theme, dark or light. Nothing below hard-codes a colour.
- *
- * Contents: 1 tokens · 2 base · 3 type and layout · 4 buttons and chips · 5 surfaces · 6 feedback · 7 tray and toasts
- *           8 picture clip and strip · 9 theme picker · 10 phone and motion. */
+/* Shared Lucent components. Colors and structure come from reprise-tokens.css; `.lu-root` opts a page in to
+ * the element resets without changing the inherited screens' control semantics. */
 
-/* ── 1. Tokens ──────────────────────────────────────────────────────────────────────────────────────────────── */
-.lu-root {
-  --lu-canvas: var(--pal-canvas); --lu-sheet: var(--pal-sheet); --lu-scrim: var(--pal-scrim);
-  --lu-glass: var(--pal-glass); --lu-glass-raised: var(--pal-glass-raised);
-  --lu-edge: var(--pal-edge); --lu-edge-raised: var(--pal-edge-raised);
-  --lu-ink: var(--pal-ink); --lu-ink-2: var(--pal-ink-2); --lu-ink-3: var(--pal-ink-3);
-  --lu-track-off: var(--pal-track-off);
-  --lu-track-readable: color-mix(in srgb, var(--lu-ink) 60%, transparent);
-  --lu-accent: var(--pal-accent); --lu-accent-ink: var(--pal-accent-ink);
-  --lu-accent-fill: var(--pal-accent-fill); --lu-accent-fill-ink: var(--pal-accent-fill-ink);
-  --lu-accent-text: var(--pal-accent-text);
-  --lu-positive: var(--pal-positive); --lu-warning: var(--pal-warning); --lu-danger: var(--pal-danger);
-  --lu-info: var(--pal-info); --lu-live: var(--pal-live);
-  --lu-positive-text: var(--pal-positive-text); --lu-warning-text: var(--pal-warning-text);
-  --lu-danger-text: var(--pal-danger-text); --lu-info-text: var(--pal-info-text);
-
-  --lu-radius-sheet: 28px; --lu-radius-card: 24px; --lu-radius-tile: 20px; --lu-radius-row: 18px;
-  --lu-radius-control: 14px; --lu-radius-pill: 999px;
-  --lu-space-1: 4px; --lu-space-2: 8px; --lu-space-3: 12px; --lu-space-4: 16px; --lu-space-5: 20px;
-  --lu-space-6: 24px; --lu-space-7: 32px; --lu-space-8: 40px;
-  --lu-target: 48px; --h-btn: var(--lu-target); --h-chip: calc(var(--lu-target) - var(--lu-space-2));
-  --lu-edge-x: 32px;
-
-  --lu-font: Manrope, system-ui, sans-serif;
-  --lu-type-page: 28px; --lu-type-title: 20px; --lu-type-body: 16px; --lu-type-label: 14px; --lu-type-caption: 12px;
-  --lu-type-body-line: 1.45; --lu-type-title-line: 1.25;
-
-  --lu-z-raised: 1; --lu-z-sticky: 2; --lu-z-chrome: 3; --lu-z-popup: 4;
-
-  --lu-shadow-rest: 0 24px 60px rgba(0, 0, 0, .28);
-  --lu-shadow-raised: 0 34px 80px rgba(0, 0, 0, .55), 0 10px 24px rgba(0, 0, 0, .30);
-  --lu-shadow-pressed: 0 6px 14px rgba(0, 0, 0, .30);
-  --lu-highlight-rest: inset 0 1px 0 rgba(255, 255, 255, .07);
-  --lu-neumorphic-light: rgba(255, 255, 255, .10);
-  --lu-neumorphic-shade: rgba(0, 0, 0, .32);
-  --lu-focus-wash: color-mix(in srgb, var(--lu-ink) 7%, transparent);
-  --lu-material-edge: var(--lu-edge);
-  --lu-neumorphic-raised: -2px -2px 4px var(--lu-neumorphic-light), 2px 2px 4px var(--lu-neumorphic-shade);
-  --lu-neumorphic-inset: inset 2px 2px 4px var(--lu-neumorphic-shade), inset -2px -2px 4px var(--lu-neumorphic-light);
-  --lu-material-well: color-mix(in srgb, var(--lu-canvas) 30%, transparent);
-  --lu-material-overlay: color-mix(in srgb, var(--lu-sheet) 40%, var(--lu-canvas));
-  --lu-hover-wash: color-mix(in srgb, var(--lu-ink) 4%, transparent);
-  --lu-press-wash: color-mix(in srgb, var(--lu-ink) 8%, transparent);
-  --lu-selected-wash: var(--lu-hover-wash);
-  --lu-reading: color-mix(in srgb, var(--lu-ink) 4%, var(--lu-canvas));
-  --lu-sheen: linear-gradient(135deg, rgba(255, 255, 255, .16) 0%, rgba(255, 255, 255, .05) 38%, transparent 60%);
-
-  --lu-ease: cubic-bezier(.33, 1, .68, 1);
-  --lu-motion-label: 120ms; --lu-motion-focus: 150ms; --lu-motion-card: 180ms; --lu-motion-layer: 220ms;
-  --lu-lift-raised: 4px; --lu-focus-scale: 1.02; --lu-travel-layer: 16px;
-}
-/* Light themes: Lucent's lighter shadows and washes (the same values Stashy-Decensor uses). */
-:root[data-scheme="light"] .lu-root {
-  --lu-shadow-rest: 0 24px 60px rgba(0, 0, 0, .18);
-  --lu-shadow-raised: 0 34px 80px rgba(0, 0, 0, .28), 0 10px 24px rgba(0, 0, 0, .14);
-  --lu-shadow-pressed: 0 6px 14px rgba(0, 0, 0, .16);
-  --lu-highlight-rest: inset 0 1px 0 rgba(255, 255, 255, .60);
-  --lu-neumorphic-light: rgba(255, 255, 255, .86);
-  --lu-neumorphic-shade: rgba(0, 0, 0, .10);
-  --lu-focus-wash: color-mix(in srgb, var(--lu-ink) 6%, transparent);
-  --lu-material-edge: color-mix(in srgb, var(--lu-ink) 16%, transparent);
-}
-@media (max-width: 600px) {
-  .lu-root { --lu-edge-x: 16px; --lu-type-page: 24px; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .lu-root { --lu-motion-label: 0ms; --lu-motion-focus: 0ms; --lu-motion-card: 0ms; --lu-motion-layer: 120ms; --lu-lift-raised: 0px; --lu-focus-scale: 1; --lu-travel-layer: 0px; }
-}
-
-/* ── 2. Base ────────────────────────────────────────────────────────────────────────────────────────────────── */
-/* Stashy's wallpaper: a deep canvas with three faint colour glows, fixed behind the page so it never repaints on scroll. */
-.lu-root::before {
-  content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
-  background:
-    radial-gradient(1100px 640px at 6% -10%, color-mix(in srgb, var(--pal-accent) 15%, transparent), transparent 70%),
-    radial-gradient(900px 560px at 104% 0%, color-mix(in srgb, var(--pal-live) 8%, transparent), transparent 70%),
-    radial-gradient(1000px 720px at 50% 125%, color-mix(in srgb, var(--pal-info) 8%, transparent), transparent 70%),
-    var(--pal-canvas);
-}
 .lu-root {
   position: relative; color: var(--lu-ink); font: 400 var(--lu-type-body)/var(--lu-type-body-line) var(--lu-font);
   font-variant-numeric: tabular-nums; caret-color: var(--lu-accent); accent-color: var(--lu-accent);
@@ -130,16 +44,16 @@
 }
 .lu-btn {
   position: relative; display: inline-flex; align-items: center; justify-content: center; gap: var(--lu-space-2);
-  height: var(--h-btn); padding: 0 var(--lu-space-5); border-radius: var(--lu-radius-pill);
+  min-height: var(--h-btn); padding: var(--lu-space-2) var(--lu-space-5); border-radius: var(--lu-radius-pill);
   border: 1px solid var(--lu-material-edge); background: transparent; color: var(--lu-ink);
-  font: 600 var(--lu-type-label)/1 var(--lu-font); white-space: nowrap; text-decoration: none;
+  font: 600 var(--lu-type-label)/1.3 var(--lu-font); text-decoration: none; text-align: center;
 }
 .lu-btn .bi, .lu-iconbtn .bi, .lu-chip .bi, .lu-linkbtn .bi { font-size: 18px; line-height: 1; }
 .lu-btn.lu-quiet { border-color: transparent; }
 .lu-btn.lu-primary { background: var(--lu-accent-fill); color: var(--lu-accent-fill-ink); border-color: transparent; }
 .lu-btn.lu-danger { color: var(--lu-danger-text); }
 .lu-btn.lu-wide { width: 100%; }
-.lu-btn.lu-big { height: 56px; padding: 0 var(--lu-space-6); font-size: var(--lu-type-body); }
+.lu-btn.lu-big { min-height: 56px; padding-inline: var(--lu-space-6); font-size: var(--lu-type-body); }
 .lu-btn.lu-big .bi { font-size: 22px; }
 .lu-btn:hover:not([aria-disabled="true"]), .lu-btn.lu-primary:hover:not([aria-disabled="true"]) {
   background-image: linear-gradient(var(--lu-hover-wash), var(--lu-hover-wash));
@@ -166,20 +80,20 @@
 }
 .lu-linkbtn:hover { background-image: linear-gradient(var(--lu-hover-wash), var(--lu-hover-wash)); }
 .lu-linkbtn:disabled { color: var(--lu-ink-2); cursor: not-allowed; }
-/* Focus = raised glass: a brighter fill, a sheen and one soft shadow. The thin ring keeps it visible on every theme. */
+/* The keyboard lands on a raised piece of the same material; it never draws a second rim. */
 :is(.lu-btn, .lu-chip, .lu-iconbtn, .lu-linkbtn, .lu-seg button, .lu-tile):focus-visible {
   outline: none; background-color: var(--lu-glass-raised); background-image: var(--lu-sheen); border-color: var(--lu-edge-raised);
-  box-shadow: var(--lu-shadow-pressed), 0 0 0 2px var(--lu-accent-text); color: var(--lu-ink);
+  box-shadow: var(--lu-shadow-pressed); color: var(--lu-ink);
   transform: translateY(calc(var(--lu-lift-raised) / -2)) scale(var(--lu-focus-scale)); z-index: var(--lu-z-raised);
 }
 .lu-btn.lu-primary:focus-visible { background-color: var(--lu-accent-fill); background-image: var(--lu-sheen); color: var(--lu-accent-fill-ink); }
 /* The shell draws a 3px outline on every :focus-visible (body.rp-app :focus-visible); inside Lucent the raised glass above is the only focus look. */
 .lu-root :is(.lu-btn, .lu-chip, .lu-iconbtn, .lu-linkbtn, .lu-seg button, .lu-tile, .lu-switch, .lu-clip-play, .lu-strip-seek, .lu-thm-tile, .lu-field input):focus-visible { outline: none; }
-.lu-root .lu-thm-tile:focus-visible { background-color: var(--lu-glass-raised); border-color: var(--lu-edge-raised); box-shadow: var(--lu-shadow-pressed), 0 0 0 2px var(--lu-accent-text); }
+.lu-thm-tile:focus-visible { background: var(--lu-quiet-fill); border-color: var(--lu-edge-raised); box-shadow: var(--lu-shadow-pressed); }
 .lu-chip {
-  position: relative; display: inline-flex; align-items: center; gap: var(--lu-space-2); height: var(--h-chip);
-  padding: 0 var(--lu-space-4); border-radius: var(--lu-radius-pill); border: 1px solid var(--lu-material-edge);
-  background: var(--lu-glass); color: var(--lu-ink); font: 500 var(--lu-type-label)/1 var(--lu-font); white-space: nowrap;
+  position: relative; display: inline-flex; align-items: center; gap: var(--lu-space-2); min-height: var(--h-chip);
+  padding: var(--lu-space-1) var(--lu-space-4); border-radius: var(--lu-radius-pill); border: 1px solid var(--lu-material-edge);
+  background: var(--lu-glass); color: var(--lu-ink); font: 500 var(--lu-type-label)/1.3 var(--lu-font);
 }
 .lu-chip::after { content: ""; position: absolute; inset: calc((var(--h-chip) - var(--h-btn)) / 2) 0; }
 .lu-chip:hover { background-image: linear-gradient(var(--lu-hover-wash), var(--lu-hover-wash)); }
@@ -211,8 +125,8 @@
   background: var(--lu-material-well); box-shadow: var(--lu-neumorphic-inset);
 }
 .lu-seg button {
-  position: relative; height: calc(var(--h-chip) - var(--lu-space-1)); padding: 0 var(--lu-space-4); border: 1px solid transparent;
-  border-radius: var(--lu-radius-pill); background: transparent; color: var(--lu-ink-2); font: 600 var(--lu-type-label)/1 var(--lu-font); white-space: nowrap;
+  position: relative; min-height: calc(var(--h-chip) - var(--lu-space-1)); padding: var(--lu-space-1) var(--lu-space-4); border: 1px solid transparent;
+  border-radius: var(--lu-radius-pill); background: transparent; color: var(--lu-ink-2); font: 600 var(--lu-type-label)/1.3 var(--lu-font);
 }
 .lu-seg button:hover { color: var(--lu-ink); background-image: linear-gradient(var(--lu-hover-wash), var(--lu-hover-wash)); }
 .lu-seg button[aria-pressed="true"], .lu-seg button[aria-checked="true"] { background: var(--lu-glass-raised); color: var(--lu-ink); box-shadow: var(--lu-neumorphic-raised); }
@@ -227,9 +141,9 @@
 .lu-switch::after { content: ""; position: absolute; inset: -8px -2px; }
 .lu-switch[aria-checked="true"] { background: var(--lu-accent-fill); border-color: transparent; }
 .lu-switch[aria-checked="true"]::before { transform: translateX(20px); background: var(--lu-accent-fill-ink); }
-.lu-switch:focus-visible { outline: none; box-shadow: var(--lu-shadow-pressed), 0 0 0 2px var(--lu-accent-text); }
+.lu-switch:focus-visible { outline: none; box-shadow: var(--lu-shadow-pressed); transform: translateY(calc(var(--lu-lift-raised) / -2)) scale(var(--lu-focus-scale)); }
 .lu-field {
-  display: flex; align-items: center; gap: var(--lu-space-3); height: var(--h-btn); padding: 0 var(--lu-space-4);
+  display: flex; align-items: center; gap: var(--lu-space-3); min-height: var(--h-btn); padding: var(--lu-space-2) var(--lu-space-4);
   border-radius: var(--lu-radius-pill); background: var(--lu-material-well); box-shadow: var(--lu-neumorphic-inset);
   border: 1px solid var(--lu-material-edge); color: var(--lu-ink-2);
 }
@@ -344,13 +258,6 @@
 .lu-strip[data-state="loading"] .lu-strip-img { animation: lu-pulse 1.4s ease-in-out infinite; background-color: var(--lu-track-off); }
 
 /* ── 9. Theme picker ────────────────────────────────────────────────────────────────────────────────────────── */
-.lu-thm { position: relative; }
-.lu-thm-scrim { display: none; }
-.lu-thm-pop {
-  position: absolute; top: calc(100% + var(--lu-space-2)); right: 0; width: min(404px, calc(100vw - 2 * var(--lu-edge-x)));
-  max-height: min(76dvh, 700px); display: flex; flex-direction: column; gap: var(--lu-space-3); padding: var(--lu-space-3);
-  border-radius: var(--lu-radius-sheet);
-}
 .lu-thm-auto {
   display: flex; align-items: center; justify-content: space-between; gap: var(--lu-space-3); padding: var(--lu-space-2) var(--lu-space-3);
   border-radius: var(--lu-radius-row); background: var(--lu-material-well);
@@ -366,7 +273,7 @@
 .lu-thm-tile:hover { background-image: linear-gradient(var(--lu-hover-wash), var(--lu-hover-wash)); }
 .lu-thm-tile[aria-checked="true"] { background: var(--lu-selected-wash); border-color: var(--lu-edge-raised); }
 .lu-thm-name {
-  padding: 0 18px 0 2px; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2;
+  padding-inline-end: var(--lu-space-4);
   overflow-wrap: anywhere; font: 600 var(--lu-type-caption)/1.25 var(--lu-font);
 }
 .lu-thm-chk { position: absolute; right: var(--lu-space-3); bottom: var(--lu-space-2); display: grid; place-items: center; color: var(--lu-accent-text); }
@@ -385,13 +292,7 @@
   .lu-head { margin-bottom: var(--lu-space-5); }
   .lu-tray { padding: var(--lu-space-3); margin-top: var(--lu-space-4); }
   .lu-btn.lu-big { padding: 0 var(--lu-space-4); }
-  .lu-toasts { bottom: calc(104px + env(safe-area-inset-bottom, 0px)); }
-  .lu-thm-scrim { display: block; position: fixed; inset: 0; z-index: calc(var(--lu-z-popup) - 1); border: 0; background: var(--lu-scrim); }
-  .lu-thm-pop {
-    position: fixed; top: auto; left: 0; right: 0; bottom: 0; width: auto; max-height: 84dvh; border-radius: var(--lu-radius-sheet) var(--lu-radius-sheet) 0 0;
-    padding-bottom: calc(var(--lu-space-3) + env(safe-area-inset-bottom, 0px)); animation: lu-rise var(--lu-motion-layer) var(--lu-ease) both;
-  }
-  .lu-thm-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .lu-thm-grid { grid-template-columns: repeat(auto-fit, minmax(min(6.5rem, 100%), 1fr)); }
 }
 @media (prefers-reduced-motion: reduce) {
   .lu-skel, .lu-btn[aria-busy="true"]::before, .lu-clip[data-state="loading"] .lu-clip-play .bi, .lu-strip[data-state="loading"] .lu-strip-img { animation: none; }

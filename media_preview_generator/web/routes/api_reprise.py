@@ -12,6 +12,7 @@ from ...reprise import acceleration, approvals
 from ...reprise import autopilot as automatic_work
 from ...reprise import setup_guide as guide
 from ...reprise.api_auth import DEFAULT_SCOPES, SCOPES, bearer_secret, require_client
+from ...reprise.jump_preview import JumpPreviewBusy
 from ...reprise.models import AnalysisRefused, PlaybackIdentity, PublicationRefused, ReportRefused, ReviewRefused
 from ...reprise.report import render_text
 from ...reprise.store import NEEDS_OWNER_SPAN_ACKNOWLEDGMENT
@@ -454,11 +455,46 @@ def create_reprise_blueprint(service):
             raise KeyError(media_id)
         return jsonify(_json(value))
 
+    @bp.get("/api/reprise/media/<media_id>/poster")
+    @owner
+    def media_poster(media_id):
+        if request.method == "HEAD":
+            return Response(status=405, headers={"Allow": "GET"})
+        if request.args:
+            raise ValueError("Posters do not take parameters")
+        image = service.season_poster(media_id)
+        if not image:
+            return Response(status=404)
+        data, content_type = image
+        response = Response(data, mimetype=content_type)
+        response.headers["Cache-Control"] = "private, max-age=300"
+        response.vary.update(("Cookie", "Authorization", "X-Auth-Token"))
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
     @bp.route("/api/reprise/media/<media_id>/stream", methods=["GET", "HEAD"])
     @owner
     def media_stream(media_id):
         file, version = service.open_stream(media_id)
         return _stream(file, version)
+
+    @bp.get("/api/reprise/media/<media_id>/jump-preview")
+    @owner
+    def media_jump_preview(media_id):
+        """Play the footage immediately before and after a skip, without playing the skipped part."""
+        if request.method == "HEAD":
+            return Response(status=405, headers={"Allow": "GET"})
+        if set(request.args) != {"start_ms", "end_ms"} or any(len(values) != 1 for _, values in request.args.lists()):
+            raise ValueError("Invalid skip range")
+        start_ms = _query_int("start_ms", 0, 999_999_999)
+        end_ms = _query_int("end_ms", 1, 999_999_999)
+        try:
+            data = service.jump_preview(media_id, start_ms, end_ms)
+        except JumpPreviewBusy:
+            return jsonify(error="Reprise is making other previews. Try again shortly."), 503
+        except OSError:
+            return jsonify(error="The jump preview isn't available for this skip."), 404
+        return Response(data, mimetype="video/mp4")
 
     @bp.get("/api/reprise/media/<media_id>/frame")
     @owner

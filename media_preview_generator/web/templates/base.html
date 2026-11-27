@@ -1,45 +1,12 @@
-{#- One navbar list entry: icon tile, title and a one-line purpose (the purpose also stays in aria-label). -#}
-{% macro menu_item(href, icon, title, purpose, anchor=None, label=None, active=False) -%}
-<a class="dropdown-item{% if active %} active{% endif %}" href="{{ href }}"{% if anchor %} data-anchor="{{ anchor }}"{% endif %}{% if label %} aria-label="{{ label }}"{% endif %}{% if active %} aria-current="page"{% endif %}>
-    <span class="nav-item-ic" aria-hidden="true"><i class="bi bi-{{ icon }}"></i></span><span class="nav-item-tx"><b>{{ title }}</b><small>{{ purpose }}</small></span>
-</a>
-{%- endmacro -%}
 <!DOCTYPE html>
-<html lang="en" data-bs-theme="dark">
+<html lang="en" data-theme="lucent-dark" data-bs-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Reprise{% endblock %}</title>
 
-    <!-- Apply the saved colour theme before CSS loads, so a page change never flashes the wrong one. reprise-theme.js
-         owns the saved choice ("reprise.theme": one pinned theme, or follow the device); an install that only has
-         localStorage.theme ("dark" | "light") keeps that choice. Dark Lucent is the default. -->
-    <script>
-        (function () {
-            try {
-                var d = document.documentElement, scheme = 'dark', id = 'lucent-dark';
-                var saved = JSON.parse(localStorage.getItem('reprise.theme') || 'null');
-                var legacy = localStorage.getItem('theme');
-                if (saved && saved.mode === 'auto') {
-                    scheme = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-                    id = (scheme === 'light' ? saved.light : saved.dark) || 'lucent-' + scheme;
-                } else if (saved && saved.id) {
-                    id = saved.id;
-                    scheme = saved.scheme === 'light' ? 'light' : 'dark';
-                } else if (legacy === 'light') {
-                    scheme = 'light';
-                    id = 'lucent-light';
-                }
-                d.setAttribute('data-theme', id);
-                d.setAttribute('data-scheme', scheme);
-                d.setAttribute('data-bs-theme', scheme);
-                // The sidebar's collapsed state is applied before paint too, so the page does not jump on load.
-                if (localStorage.getItem('rpRailCollapsed') === '1') {
-                    document.documentElement.classList.add('rp-rail-collapsed');
-                }
-            } catch (e) { /* localStorage blocked — stay on the defaults */ }
-        })();
-    </script>
+    <!-- Apply the same stored theme before CSS loads, including on page changes. -->
+    <script src="{{ url_for('static', filename='js/reprise-theme.js') }}"></script>
 
     <!-- Favicon -->
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/reprise.svg') }}">
@@ -54,6 +21,7 @@
     <link href="{{ url_for('static', filename='css/overlays.css') }}" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/reprise-tokens.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/reprise-themes.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/reprise-lucent.css') }}">
 
     <!-- CSRF token: csrf_fetch.js adds it to every state-changing fetch to this app -->
     <meta name="csrf-token" content="{{ csrf_token() }}">
@@ -64,101 +32,139 @@
     {# Last on purpose: it maps the inherited page styles onto the Reprise palette and draws the shared shell. #}
     <link rel="stylesheet" href="{{ url_for('static', filename='css/reprise-shell.css') }}">
 </head>
-{#- One shell for every signed-in page: the sidebar, the Settings section tabs and the content column. Pages that must
-    stand alone (setup, sign-out confirmation) get no sidebar: they can also set `{% set rp_bare = true %}` themselves. -#}
 {%- set rp_is_bare = rp_bare|default(false) or request.endpoint in ('main.setup_wizard', 'main.logout') -%}
-{#- The administrative pages live behind one "Settings" entry and are reached through these tabs. Nodes is reached from
-    Advanced and Webhook activity from Automation (both pages link to them), so those two highlight their parent tab. -#}
 {%- set rp_tabs = [
-    ('main.servers_page', 'Connections', 'hdd-network', 'Plex and other media servers'),
-    ('main.reprise_sharing_page', 'Sharing', 'share', 'What Reprise shares with Plex and other apps'),
-    ('main.automation_page', 'Automation', 'magic', 'Webhooks and schedules that start work for you'),
-    ('main.settings', 'Advanced', 'sliders', 'Workers, nodes, processing, logging, sign-in and backups'),
-    ('main.dashboard_page', 'Jobs', 'speedometer2', 'Everything queued or running, with workers'),
-    ('main.logs_page', 'Logs', 'terminal', 'Live application log'),
-    ('main.inspector', 'Inspector', 'film', "One file's preview frames and markers"),
-    ('main.library_health', 'Library health', 'clipboard2-pulse', "What is done and what is left in each library"),
+    ('main.servers_page', 'Connections'),
+    ('main.reprise_sharing_page', 'Sharing'),
+    ('main.automation_page', 'Automation'),
+    ('main.settings', 'Advanced'),
+] -%}
+{%- set rp_tools = [
+    ('main.dashboard_page', 'Jobs', 'speedometer2'),
+    ('main.logs_page', 'Logs', 'terminal'),
+    ('main.inspector', 'Inspector', 'film'),
+    ('main.library_health', 'Library health', 'clipboard2-pulse'),
 ] -%}
 {%- set rp_parent_tab = {'main.nodes_page': 'main.settings', 'main.webhook_activity_page': 'main.automation_page'} -%}
 {%- set rp_current_tab = rp_parent_tab.get(request.endpoint, request.endpoint) -%}
-{%- set rp_nav = namespace(in_settings=false) -%}
-{%- for tab in rp_tabs %}{% if tab[0] == rp_current_tab %}{% set rp_nav.in_settings = true %}{% endif %}{% endfor -%}
+{%- set rp_in_tools = request.endpoint in rp_tools|map(attribute=0)|list -%}
+{%- set rp_in_settings = rp_in_tools or rp_current_tab in rp_tabs|map(attribute=0)|list -%}
 <body class="rp-app{% if rp_is_bare %} rp-bare{% endif %}" data-rp-page="{{ request.endpoint }}">
     <a class="skip-link" href="#main-content">Skip to main content</a>
     {% if not rp_is_bare %}
-    <aside class="rp-rail" id="rpRail" aria-label="Reprise">
-        <div class="rp-rail-head">
-            <a href="{{ url_for('main.reprise_page') }}" class="rp-rail-brand">
-                <img src="{{ url_for('static', filename='images/reprise.svg') }}" width="36" height="36" alt="">
-                <span>Reprise<small>Skip the repeat. Keep the story.</small></span>
+    <header class="rp-appbar">
+        <div class="rp-appbar-inner page-shell">
+            <a class="rp-brand" href="{{ url_for('main.reprise_page') }}">
+                <svg class="rp-brand-mark" width="26" height="26" viewBox="70 90 330 330" fill="none" stroke="currentColor" stroke-width="22" aria-hidden="true" focusable="false">
+                    <rect x="102" y="122" width="202" height="268" rx="38"/>
+                    <path stroke-linecap="round" d="M246 122h72c24 0 44 20 44 44v31m0 54v95c0 24-20 44-44 44h-72"/>
+                    <rect x="348" y="212" width="28" height="25" rx="7" fill="currentColor" stroke="none"/>
+                </svg>
+                <span>Reprise</span>
             </a>
-            <button class="rp-rail-toggle" type="button" id="rpRailToggle" aria-expanded="false" aria-controls="rpRailPanel" aria-label="Open menu"><i class="bi bi-list" aria-hidden="true"></i></button>
-        </div>
-        <div class="rp-rail-panel" id="rpRailPanel">
-            <nav class="rp-rail-nav" aria-label="Main">
-                <a href="{{ url_for('main.reprise_page') }}" data-tour="nav-library"{% if request.endpoint in ('main.reprise_page', 'main.reprise_report_page') %} aria-current="page"{% endif %}><i class="bi bi-collection-play" aria-hidden="true"></i><span>Library</span></a>
-                <a href="{{ url_for('main.reprise_approve_page') }}" data-tour="nav-approve"{% if request.endpoint == 'main.reprise_approve_page' %} aria-current="page"{% endif %}><i class="bi bi-inbox" aria-hidden="true"></i><span>To approve</span></a>
-                <a href="{{ url_for('main.servers_page') }}" data-tour="nav-settings"{% if rp_nav.in_settings %} aria-current="true"{% endif %}><i class="bi bi-gear" aria-hidden="true"></i><span>Settings</span></a>
+            <nav class="rp-main-nav" aria-label="Main">
+                <a class="rp-chrome-control" href="{{ url_for('main.reprise_page') }}" data-tour="nav-library"{% if request.endpoint in ('main.reprise_page', 'main.reprise_report_page') %} aria-current="{{ 'page' if request.endpoint == 'main.reprise_page' else 'true' }}"{% endif %}><i class="bi bi-collection-play" aria-hidden="true"></i><span>Library</span></a>
+                <a class="rp-chrome-control" href="{{ url_for('main.reprise_approve_page') }}" data-tour="nav-approve"{% if request.endpoint == 'main.reprise_approve_page' %} aria-current="page"{% endif %}><i class="bi bi-inbox" aria-hidden="true"></i><span>Review</span></a>
+                <a class="rp-chrome-control" href="{{ url_for('main.servers_page') }}" data-tour="nav-settings"{% if rp_in_settings %} aria-current="true"{% endif %}><i class="bi bi-gear" aria-hidden="true"></i><span>Settings</span></a>
             </nav>
-            <div class="rp-rail-foot">
-                {# Always says whether Reprise can change Plex; filled in from /api/reprise/settings by reprise-shell.js. #}
-                <a class="rp-safety" id="rpSafety" href="{{ url_for('main.reprise_sharing_page') }}" data-state="checking" data-tour="safety">
-                    <i class="bi bi-shield-check" aria-hidden="true"></i>
-                    <span><b id="rpSafetyTitle">Checking Plex status…</b><small id="rpSafetyNote">Your media files are never changed.</small></span>
+            <div class="rp-app-actions">
+                <a class="rp-chrome-control rp-safety" id="rpSafety" href="{{ url_for('main.reprise_sharing_page') }}"
+                   aria-labelledby="rpSafetyTitle" aria-describedby="rpSafetyNote" title="Checking Plex status" data-state="checking" data-tour="safety">
+                    <i class="bi bi-shield" aria-hidden="true"></i>
+                    <span class="rp-safety-title" id="rpSafetyTitle">Checking Plex status</span>
+                    <span class="visually-hidden" id="rpSafetyNote">Your media files are never changed.</span>
                 </a>
-                <div class="dropdown notification-bell-wrapper">
-                    <button type="button" class="rp-rail-btn" id="notificationBellBtn"
-                            data-bs-toggle="dropdown" data-bs-auto-close="outside" data-bs-display="static"
-                            aria-expanded="false" aria-label="System notifications">
-                        <i class="bi bi-bell" id="notificationBellIcon" aria-hidden="true"></i>
-                        <span id="notificationBellLabel">Notifications</span>
-                        <span class="badge rounded-pill d-none" id="notificationBellBadge">0<span class="visually-hidden">unread notifications</span></span>
+                <div class="rp-popover-host notification-bell-wrapper">
+                    <button type="button" class="rp-chrome-control rp-icon-control" id="notificationBellBtn" aria-controls="rpActivity" aria-expanded="false"
+                            data-rp-popup aria-label="Recent activity" title="Recent activity">
+                        <i class="bi bi-bell" aria-hidden="true"></i>
+                        <span class="badge d-none" id="notificationBellBadge" aria-hidden="true"></span>
                     </button>
-                    <div class="dropdown-menu notification-dropdown p-0" aria-labelledby="notificationBellBtn">
-                        <div class="d-flex align-items-center gap-2 px-3 py-2 border-bottom notification-head">
-                            <strong>Notifications</strong>
-                            <span class="notification-count d-none" id="notificationCount">0</span>
-                            <button type="button" class="btn btn-sm btn-link p-0 text-decoration-none ms-auto" id="notificationResetBtn" title="Restore dismissed notifications">Restore dismissed</button>
+                    <div class="rp-popover" id="rpActivity" role="region" aria-labelledby="rpActivityTitle" hidden>
+                        <header class="rp-popover-head">
+                            <h2 id="rpActivityTitle" tabindex="-1" data-rp-initial-focus>Recent activity</h2>
+                            <span class="notification-count d-none" id="notificationCount" aria-hidden="true"></span>
+                            <button type="button" class="rp-chrome-control rp-icon-control ms-auto" data-rp-close-popup aria-label="Close recent activity"><i class="bi bi-x-lg" aria-hidden="true"></i></button>
+                        </header>
+                        <div id="notificationList" class="notification-list" aria-busy="true">
+                            <p id="notificationLoading" class="rp-notification-state" role="status">Loading notices…</p>
+                            <p id="notificationEmpty" class="rp-notification-state d-none">No system notices.</p>
                         </div>
-                        <div id="notificationList" class="notification-list">
-                            <div class="text-center" id="notificationEmpty">
-                                <i class="bi bi-bell-slash d-block mb-2" style="font-size: 1.6rem; opacity: 0.55;"></i>
-                                <div class="small">You're all caught up.</div>
-                            </div>
+                        <div id="notificationFetchError" class="rp-notification-state" hidden>
+                            <span role="alert">Couldn't load system notices.</span>
+                            <button type="button" class="rp-chrome-control" id="notificationRetryBtn">Try again</button>
                         </div>
+                        <p class="rp-notification-state mb-0" id="notificationActionStatus" role="status" hidden></p>
+                        <footer class="rp-activity-actions">
+                            <button type="button" class="rp-chrome-control" id="notificationDismissAllBtn" title="Hide dismissible notices until restart" hidden>Dismiss all</button>
+                            <button type="button" class="rp-chrome-control" id="notificationResetBtn" title="Restore dismissed notifications">Restore dismissed</button>
+                            <a class="rp-chrome-control" href="{{ url_for('main.dashboard_page') }}"><i class="bi bi-speedometer2" aria-hidden="true"></i>All jobs</a>
+                            <a class="rp-chrome-control" href="{{ url_for('main.reprise_approve_page', _anchor='automatic-sends') }}"><i class="bi bi-clock-history" aria-hidden="true"></i>Automatic sends</a>
+                        </footer>
                     </div>
                 </div>
-                <button type="button" class="rp-rail-btn" id="themeToggleBtn" aria-label="Toggle dark/light theme" title="Toggle dark/light theme" data-tour="theme">
-                    <i class="bi bi-moon-stars" id="themeToggleIcon" aria-hidden="true"></i><span id="themeToggleLabel">Switch to light theme</span>
-                </button>
-                <a class="rp-rail-btn" id="rpHelpLink" href="https://github.com/nphil/reprise/issues" target="_blank" rel="noopener noreferrer">
-                    <i class="bi bi-question-circle" aria-hidden="true"></i><span>Help &amp; feedback</span>
-                </a>
-                {# Where a new install finishes setting up; marked current on its own page (the guide is not one of the three destinations above). #}
-                <a class="rp-rail-btn" id="rpSetupGuideLink" href="{{ url_for('main.setup_guide_page') }}"{% if request.endpoint == 'main.setup_guide_page' %} aria-current="page"{% endif %}>
-                    <i class="bi bi-list-check" aria-hidden="true"></i><span>Setup guide</span>
-                </a>
-                {# The tour dialog itself lives in _onboarding.html (AuthOnboarding), which binds every [data-tour-open]. #}
-                <button type="button" class="rp-rail-btn" data-tour-open><i class="bi bi-compass" aria-hidden="true"></i><span>Take the tour</span></button>
-                {# A POST with the page's token: a plain link would let any page sign the user out. #}
-                <form method="post" action="{{ url_for('main.logout') }}" class="m-0">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                    <button type="submit" class="rp-rail-btn" id="navLogoutBtn"><i class="bi bi-box-arrow-right" aria-hidden="true"></i><span>Sign out</span></button>
-                </form>
-                {% set version_note = 'Version ' ~ navbar_version.latest_version ~ ' is available' if navbar_version.update_available else 'Release notes' %}
-                <a class="rp-rail-version" id="navVersion" href="https://github.com/nphil/reprise/releases/latest" target="_blank" rel="noopener noreferrer"
-                   aria-label="Reprise {{ navbar_version.label }}. {{ version_note }}, opens in a new tab"><span id="navVersionText">Reprise {{ navbar_version.label }}</span>{% if navbar_version.update_available %}<span class="rp-rail-update" title="{{ version_note }}">Update available</span>{% endif %}</a>
+                <div class="rp-popover-host lu-thm">
+                    <button type="button" class="rp-chrome-control rp-icon-control" id="rpThemeBtn" aria-label="Theme" title="Theme"
+                            aria-controls="rpTheme" aria-expanded="false" data-rp-popup data-tour="theme"><i class="bi bi-palette" aria-hidden="true"></i></button>
+                    <div class="rp-popover lu-thm-pop" id="rpTheme" role="region" aria-label="Theme" hidden>
+                        <header class="rp-popover-head">
+                            <h2 tabindex="-1" data-rp-initial-focus>Theme</h2>
+                            <button type="button" class="rp-chrome-control rp-icon-control ms-auto" data-rp-close-popup aria-label="Close theme picker"><i class="bi bi-x-lg" aria-hidden="true"></i></button>
+                        </header>
+                        <label class="lu-field">
+                            <i class="bi bi-search" aria-hidden="true"></i>
+                            <input type="search" placeholder="Search themes" aria-label="Search themes" autocomplete="off">
+                        </label>
+                        <div class="lu-thm-auto">
+                            <div class="lu-col">
+                                <b class="lu-lbl">Follow my device</b>
+                                <span class="lu-cap lu-muted" id="rpThemePair"></span>
+                            </div>
+                            <button type="button" class="lu-switch" role="switch" aria-label="Follow my device" aria-checked="false"></button>
+                        </div>
+                        <div class="lu-thm-scroll"></div>
+                    </div>
+                </div>
+                <div class="rp-popover-host">
+                    <button type="button" class="rp-chrome-control rp-icon-control" id="rpHelpBtn" aria-label="{{ 'Help, update available' if navbar_version.update_available else 'Help' }}" title="{{ 'Help, update available' if navbar_version.update_available else 'Help' }}"
+                            aria-controls="rpHelp" aria-expanded="false" data-rp-popup{% if request.endpoint == 'main.setup_guide_page' %} data-current{% endif %}>
+                        <i class="bi bi-question-circle" aria-hidden="true"></i>
+                        {% if navbar_version.update_available %}<span class="rp-update-dot" aria-hidden="true"></span>{% endif %}
+                    </button>
+                    <div class="rp-popover rp-help" id="rpHelp" role="region" aria-labelledby="rpHelpTitle" hidden>
+                        <h2 class="rp-popover-title" id="rpHelpTitle">Help</h2>
+                        <a class="rp-popover-link rp-chrome-control" id="rpSetupGuideLink" href="{{ url_for('main.setup_guide_page') }}"{% if request.endpoint == 'main.setup_guide_page' %} aria-current="page"{% endif %}><i class="bi bi-list-check" aria-hidden="true"></i>Setup guide</a>
+                        <button type="button" class="rp-popover-link rp-chrome-control" data-tour-open data-rp-close-popup><i class="bi bi-compass" aria-hidden="true"></i>Take the tour</button>
+                        <a class="rp-popover-link rp-chrome-control" id="rpHelpLink" href="https://github.com/nphil/reprise/issues" target="_blank" rel="noopener noreferrer"><i class="bi bi-chat-left-text" aria-hidden="true"></i>Get help or give feedback<i class="bi bi-box-arrow-up-right ms-auto" aria-hidden="true"></i></a>
+                        <form method="post" action="{{ url_for('main.logout') }}" class="rp-help-account">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="rp-popover-link rp-chrome-control" id="navLogoutBtn"><i class="bi bi-box-arrow-right" aria-hidden="true"></i>Sign out</button>
+                        </form>
+                        {% set version_note = 'Version ' ~ navbar_version.latest_version ~ ' is available' if navbar_version.update_available else 'Release notes' %}
+                        <a class="rp-popover-link rp-chrome-control rp-version" id="navVersion" href="https://github.com/nphil/reprise/releases/latest" target="_blank" rel="noopener noreferrer"
+                           aria-label="Reprise {{ navbar_version.label }}. {{ version_note }}, opens in a new tab"><span id="navVersionText">Reprise {{ navbar_version.label }}</span>{% if navbar_version.update_available %}<span class="rp-version-update" title="{{ version_note }}">Update available</span>{% endif %}</a>
+                    </div>
+                </div>
             </div>
         </div>
-    </aside>
+    </header>
     {% endif %}
+    {% if not rp_is_bare %}<div class="rp-popup-shade" aria-hidden="true" hidden></div>{% endif %}
     <div class="rp-stage">
-        {% if rp_nav.in_settings and not rp_is_bare %}
-        <nav class="rp-subnav" aria-label="Settings sections">
-            <div class="rp-subnav-scroll">
-                {% for endpoint, label, icon, hint in rp_tabs %}
-                <a href="{{ url_for(endpoint) }}" title="{{ hint }}"{% if endpoint == rp_current_tab %} class="active" aria-current="{{ 'page' if endpoint == request.endpoint else 'true' }}"{% endif %}><i class="bi bi-{{ icon }}" aria-hidden="true"></i><span>{{ label }}</span></a>
+        {% if rp_in_settings and not rp_is_bare %}
+        <nav class="rp-subnav" aria-label="Settings">
+            <div class="rp-subnav-inner page-shell">
+                {% for endpoint, label in rp_tabs %}
+                <a class="rp-chrome-control" href="{{ url_for(endpoint) }}"{% if endpoint == rp_current_tab %} aria-current="{{ 'page' if endpoint == request.endpoint else 'true' }}"{% endif %}>{{ label }}</a>
                 {% endfor %}
+                <div class="rp-popover-host rp-tools">
+                    <button type="button" class="rp-chrome-control" aria-expanded="false" aria-controls="rpTools" data-rp-popup{% if rp_in_tools %} data-current{% endif %}>Tools<i class="bi bi-chevron-down" aria-hidden="true"></i></button>
+                    <div class="rp-popover" id="rpTools" role="region" aria-label="Tools" hidden>
+                        {% for endpoint, label, icon in rp_tools %}
+                        <a class="rp-popover-link rp-chrome-control" href="{{ url_for(endpoint) }}"{% if endpoint == request.endpoint %} aria-current="page" data-rp-initial-focus{% endif %}><i class="bi bi-{{ icon }}" aria-hidden="true"></i>{{ label }}</a>
+                        {% endfor %}
+                    </div>
+                </div>
             </div>
         </nav>
         {% endif %}
@@ -299,51 +305,7 @@
     <script src="{{ url_for('static', filename='js/folder_picker.js') }}"></script>
     <script src="{{ url_for('static', filename='js/stepper.js') }}"></script>
 
-    <!-- Sidebar (open/collapse), the Plex-safety chip and the other shared shell behaviour. -->
     <script src="{{ url_for('static', filename='js/reprise-shell.js') }}"></script>
-    <!-- Colour themes: the list, the saved choice and the picker. -->
-    <script src="{{ url_for('static', filename='js/reprise-theme.js') }}"></script>
-
-    <!-- Theme toggle — flips between the paired dark and light theme (reprise-theme.js saves the choice; the pre-paint
-         script in <head> applies it on the next load). Falls back to flipping data-bs-theme if that script is missing. -->
-    <script>
-        (function () {
-            var btn = document.getElementById('themeToggleBtn');
-            var icon = document.getElementById('themeToggleIcon');
-            if (!btn || !icon) return;
-
-            var label = document.getElementById('themeToggleLabel');
-            function scheme() {
-                return window.RepriseTheme ? window.RepriseTheme.active().scheme : (document.documentElement.getAttribute('data-bs-theme') || 'dark');
-            }
-            function syncIcon() {
-                var current = scheme();
-                icon.className = current === 'dark' ? 'bi bi-moon-stars' : 'bi bi-sun';
-                // Tooltip stays verbose ("Switch to …") because tooltips
-                // appear on hover and need to be self-explanatory. The
-                // mobile-collapsed label just names the destination
-                // theme — the icon implies the verb ("switch to").
-                btn.setAttribute('title',
-                    current === 'dark' ? 'Switch to light theme' : 'Switch to dark theme');
-                if (label) label.textContent = current === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
-                btn.setAttribute('aria-pressed', current === 'dark' ? 'true' : 'false');
-            }
-
-            syncIcon();
-
-            btn.addEventListener('click', function () {
-                if (window.RepriseTheme) {
-                    window.RepriseTheme.toggleScheme();
-                } else {
-                    var next = scheme() === 'dark' ? 'light' : 'dark';
-                    document.documentElement.setAttribute('data-bs-theme', next);
-                    try { localStorage.setItem('theme', next); } catch (e) { /* best-effort */ }
-                }
-                syncIcon();
-            });
-            document.addEventListener('reprise:theme', syncIcon);
-        })();
-    </script>
 
     {% block scripts %}{% endblock %}
     {# Hook for the first-run tour (AuthOnboarding): runs after every shared script. #}

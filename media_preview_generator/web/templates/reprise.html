@@ -1,25 +1,35 @@
 {% extends "base.html" %}
 {% block title %}Library · Reprise{% endblock %}
-{% block head %}<link rel="stylesheet" href="{{ url_for('static', filename='css/reprise.css') }}">{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/reprise.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/pages/reprise-library.css') }}">
+{% endblock %}
 {% block content %}
-<div class="reprise" id="repriseApp">
-  <header class="rp-header">
-    <div>
-      <h1>Library</h1>
-      <p>Pick episodes, analyze them, then review the intros and credits Reprise finds.</p>
-      <p class="rp-hardware" id="rpHardware" hidden><span class="rp-hw"><i class="bi bi-cpu" aria-hidden="true"></i><span id="rpHardwareLabel"></span></span><button type="button" class="rp-btn quiet" id="rpHardwareToggle"></button></p>
-      <p class="rp-hardware rp-vram" id="rpVramWrap" hidden><label>GPU memory limit<select id="rpVram" aria-describedby="rpVramHelp"></select></label><span id="rpVramHelp">The most graphics card memory Reprise can use at once. It always leaves 1 GB free for your other programs, and gives it all back when an analysis ends.</span></p>
-      <div class="rp-online" id="rpOnline" hidden>
-        <div class="form-check form-switch rp-switch"><input class="form-check-input" id="rpOnlineToggle" type="checkbox" role="switch" aria-describedby="rpOnlineHelp"><label class="form-check-label" for="rpOnlineToggle">Look up intro times online (IntroDB, SkipDB)</label></div>
-        <p class="rp-note" id="rpOnlineHelp">Reprise asks these public databases where an episode's intro and credits are. It sends only the show's ID, the season, the episode number and how long the file is. Reprise uses their answers as hints for where to look. Anything it suggests still needs your approval.</p>
+<div class="reprise lu-root rp-library-page" id="repriseApp">
+  <header class="rp-catalog-head">
+    <h1>Library</h1>
+    <details class="rp-tools" id="rpLibraryTools">
+      <summary class="rp-btn quiet"><i class="bi bi-sliders" aria-hidden="true"></i>Library tools</summary>
+      <div class="rp-tools-body">
+        <div class="rp-actions"><button type="button" class="rp-btn" id="rpRefresh"><i class="bi bi-arrow-repeat" aria-hidden="true"></i>Refresh library</button><a class="rp-btn" id="rpReportLink" href="{{ url_for('main.reprise_report_page') }}"><i class="bi bi-clipboard-data" aria-hidden="true"></i>Plex report</a></div>
+        <details class="rp-disclosure" id="rpAnalysisSettings">
+          <summary>Analysis settings</summary>
+          <div class="rp-disclosure-body">
+            <p class="rp-hardware" id="rpHardware" hidden><span class="rp-hw"><i class="bi bi-cpu" aria-hidden="true"></i><span id="rpHardwareLabel"></span></span><button type="button" class="rp-btn quiet" id="rpHardwareToggle"></button></p>
+            <div class="rp-hardware rp-vram" id="rpVramWrap" hidden><label>GPU memory limit<select id="rpVram" aria-describedby="rpVramHelp"></select></label><span id="rpVramHelp">Reprise leaves at least 1 GB of graphics memory free and releases what it used when analysis ends.</span></div>
+            <div class="rp-online" id="rpOnline" hidden>
+              <div class="form-check form-switch rp-switch"><input class="form-check-input" id="rpOnlineToggle" type="checkbox" role="switch" aria-describedby="rpOnlineHelp"><label class="form-check-label" for="rpOnlineToggle">Look up intro times online (IntroDB, SkipDB)</label></div>
+              <p class="rp-note" id="rpOnlineHelp">Only the show ID, season, episode number and file length are sent. You still decide whether to use the suggested times.</p>
+            </div>
+            <div class="rp-online" id="rpVision" hidden>
+              <div class="form-check form-switch rp-switch"><input class="form-check-input" id="rpVisionToggle" type="checkbox" role="switch" aria-describedby="rpVisionHelp"><label class="form-check-label" for="rpVisionToggle">Let a local AI model check uncertain intros and credits</label></div>
+              <p class="rp-note" id="rpVisionHelp">If the model is already running on your network, it can look at a few frames and suggest times. This setting does not turn on sending to Plex.</p>
+              <div class="rp-hardware" id="rpVisionFields" hidden><label>Model server address<input id="rpVisionUrl" type="url" autocomplete="off" spellcheck="false"></label><label>Model name<input id="rpVisionModel" type="text" autocomplete="off" spellcheck="false"></label><button type="button" class="rp-btn" id="rpVisionSave">Save</button></div>
+            </div>
+          </div>
+        </details>
       </div>
-      <div class="rp-online" id="rpVision" hidden>
-        <div class="form-check form-switch rp-switch"><input class="form-check-input" id="rpVisionToggle" type="checkbox" role="switch" aria-describedby="rpVisionHelp"><label class="form-check-label" for="rpVisionToggle">Let an AI model check intros and credits Reprise isn't sure about</label></div>
-        <p class="rp-note" id="rpVisionHelp">Sometimes Reprise can't confirm an intro or credits by comparing episodes. Then an AI model on your own network looks at a few small pictures from the episode and may suggest where it is. It only uses a model that is already loaded. It never changes what Reprise found, and nothing goes to Plex until you approve it. Off by default.</p>
-        <p class="rp-hardware" id="rpVisionFields" hidden><label>Model server address<input id="rpVisionUrl" type="url" autocomplete="off" spellcheck="false"></label> <label>Model name<input id="rpVisionModel" type="text" autocomplete="off" spellcheck="false"></label> <button type="button" class="rp-btn quiet" id="rpVisionSave">Save</button></p>
-      </div>
-    </div>
-    <div class="rp-actions"><a class="rp-btn" id="rpReportLink" href="{{ url_for('main.reprise_report_page') }}"><i class="bi bi-clipboard-data" aria-hidden="true"></i>Plex report</a><button type="button" class="rp-btn" id="rpRefresh"><i class="bi bi-arrow-repeat" aria-hidden="true"></i>Refresh library</button></div>
+    </details>
   </header>
   <div id="rpMessage" class="rp-message rp-toast" role="status" aria-live="polite" hidden><span id="rpMessageText"></span><button type="button" class="rp-btn quiet" id="rpMessageClose" aria-label="Dismiss this message"><i class="bi bi-x-lg" aria-hidden="true"></i></button></div>
   <form id="rpRefreshForm" class="rp-message" hidden>
@@ -28,85 +38,102 @@
     <p class="rp-note" id="rpRefreshState"></p>
   </form>
 
-
+  <div class="rp-catalog-filters">
+    <label class="rp-search" data-tour="library-search"><span class="rp-sr">Search shows and episodes</span><i class="bi bi-search" aria-hidden="true"></i><input id="rpSearch" type="search" autocomplete="off" placeholder="Search shows and episodes"></label>
+    <div class="rp-filter-row"><label><span class="rp-sr">Show</span><select id="rpShow"><option value="">All shows</option></select></label><label><span class="rp-sr">Season</span><select id="rpSeason"><option value="">All seasons</option></select></label></div>
+  </div>
+  <section class="rp-activity" id="rpLibraryActivity" aria-labelledby="rpLibraryActivityTitle" data-tour="activity" hidden>
+    <details id="rpActivityDetails">
+      <summary class="rp-activity-summary"><i class="bi bi-activity" aria-hidden="true"></i><span id="rpLibraryActivityTitle">Activity</span><span id="rpActivityStatus"></span><i class="bi bi-chevron-down" aria-hidden="true"></i></summary>
+      <p class="rp-note" id="rpActivityError" hidden></p>
+      <div id="rpQueue" class="rp-jobs"></div>
+    </details>
+  </section>
   <div class="rp-layout">
     <section class="rp-library" aria-labelledby="rpLibraryTitle" data-tour="library-list">
-      <div class="rp-section-head"><h2 id="rpLibraryTitle">Episodes</h2></div>
-      <label class="rp-search" data-tour="library-search"><span class="rp-sr">Search shows and episodes</span><i class="bi bi-search" aria-hidden="true"></i><input id="rpSearch" type="search" autocomplete="off" placeholder="Search shows and episodes"></label>
-      <div class="rp-filter-row"><label><span class="rp-sr">Show</span><select id="rpShow"><option value="">All shows</option></select></label><label><span class="rp-sr">Season</span><select id="rpSeason"><option value="">All seasons</option></select></label></div>
-      <div class="rp-listbar"><p class="rp-hint" id="rpLibraryHint">Tick episodes to analyze them, or open one to see its results.</p><button type="button" class="rp-btn quiet" id="rpSelectAll" hidden>Select all</button><button type="button" class="rp-btn" id="rpApproveConfident" hidden title="Approve every suggestion the AI model is sure about in this season. They become your own skips. Nothing is sent to Plex.">Approve the sure suggestions</button></div>
+      <div class="rp-listbar">
+        <h2 id="rpLibraryTitle" tabindex="-1">Episodes</h2>
+        <button type="button" class="rp-btn quiet" id="rpSelectAll" hidden>Select all</button>
+      </div>
       <div id="rpLibraryState" class="rp-state" role="status" aria-live="polite">Loading library…</div>
       <div class="rp-scroll" id="rpScroll" hidden>
         <div id="rpLibraryList" class="rp-episodes"></div>
         <button type="button" class="rp-btn" id="rpMore" hidden>Show more episodes</button>
       </div>
-      <section class="rp-activity" id="rpActivity" aria-labelledby="rpActivityTitle" data-tour="activity" hidden>
-        <div class="rp-section-head"><h2 id="rpActivityTitle">Activity</h2><button type="button" class="rp-btn quiet" id="rpActivityToggle" aria-expanded="true" aria-controls="rpQueue">Hide</button></div>
-        <div id="rpQueue" class="rp-jobs"></div>
-      </section>
+      <details class="rp-disclosure rp-season-tools" id="rpSeasonTools" hidden>
+        <summary>Season tools</summary>
+        <div class="rp-disclosure-body">
+          <p class="rp-note">Approve the model’s sure suggestions as your own skips without sending them to Plex.</p>
+          <div class="rp-actions"><button type="button" class="rp-btn" id="rpApproveConfident"></button></div>
+        </div>
+      </details>
       <div class="rp-selectbar" id="rpSelectBar" hidden>
-        <span id="rpSelectCount" class="rp-sr" aria-live="polite"></span>
+        <span id="rpSelectCount" aria-live="polite"></span>
         <button type="button" class="rp-btn primary" id="rpAnalyze" data-tour="analyze">Analyze</button>
         <button type="button" class="rp-btn quiet" id="rpSelectClear">Clear</button>
       </div>
     </section>
 
-    <section class="rp-workspace" aria-labelledby="rpReviewTitle" data-tour="review">
-      <div id="rpReviewEmpty" class="rp-intro">
-        <h2 id="rpReviewTitle">Review</h2>
-        <p>Reprise finds intros and credits by comparing an episode with other episodes of the same season.</p>
-        <ol class="rp-steps">
-          <li><b>Pick an episode</b> from your library.</li>
-          <li><b>Analyze it.</b> This can take a few minutes, and you can leave the page.</li>
-          <li><b>Review what Reprise found.</b> Nothing is skipped until you approve it, and nothing is changed in Plex.</li>
-        </ol>
-        <div id="rpNext" hidden><button type="button" class="rp-btn primary" id="rpNextBtn"></button></div>
-      </div>
-
-      <div id="rpReview" hidden>
-        <a class="rp-back" href="#rpLibraryTitle"><i class="bi bi-arrow-left" aria-hidden="true"></i>All episodes</a>
+    <section class="rp-workspace" id="rpReview" aria-labelledby="rpReviewHeading" data-tour="review" hidden>
+        <button type="button" class="rp-btn quiet rp-back" id="rpEpisodeBack"><i class="bi bi-arrow-left" aria-hidden="true"></i>Back to episodes</button>
         <div class="rp-offlist" id="rpOffList" role="status" hidden>
           <p id="rpOffListText"></p>
           <div class="rp-actions"><button type="button" class="rp-btn" id="rpOffListClear">Clear filters</button><button type="button" class="rp-btn quiet" id="rpOffListClose">Close episode</button></div>
         </div>
         <header class="rp-ep-head">
           <div class="rp-ep-title">
-            <h2 id="rpReviewHeading"></h2>
+            <h2 id="rpReviewHeading" tabindex="-1"></h2>
             <p class="rp-note" id="rpReviewContext"></p>
           </div>
-          <div class="rp-actions"><span class="rp-chip" id="rpStatusChip"></span><button type="button" class="rp-btn primary" id="rpAnalyzeOne">Analyze</button></div>
+          <div class="rp-actions"><button type="button" class="rp-btn primary" id="rpAnalyzeOne">Analyze</button></div>
         </header>
         <div class="rp-outcome" id="rpOutcome" data-state="idle" role="status" aria-live="polite"></div>
 
+        <div class="rp-episode-media">
         <div class="rp-player">
-          <video id="rpVideo" controls preload="metadata"></video>
+          <div class="rp-video-screen">
+            <video id="rpVideo" controls preload="metadata" playsinline aria-label="Episode video"></video>
+            <img id="rpEpisodeStill" alt="" hidden>
+          </div>
           <p id="rpVideoError" class="rp-error" hidden>Your browser can't play this file directly.</p>
           <div class="rp-actions"><button type="button" class="rp-btn" id="rpVideoPreview" hidden>Create a playable preview</button></div>
           <p id="rpVideoOrigin" class="rp-note"></p>
           <label class="rp-inline-field" id="rpVideoAudioWrap" hidden>Audio track for preview<select id="rpVideoAudio"><option value="">Select audio</option></select></label>
         </div>
 
-        <div class="rp-timeline-block">
-          <div class="rp-section-head"><h3>Timeline</h3><span id="rpDuration" class="rp-note"></span></div>
-          <div id="rpTimeline" class="rp-timeline" role="img" aria-label="Timeline of skips and protected scenes. The exact times are listed under What Reprise found."></div>
-          <ul class="rp-legend" aria-label="Timeline key"><li><i class="skip"></i>Skip: will be skipped once you approve it</li><li><i class="suggested"></i>Plex suggestion: Reprise didn't confirm it</li><li><i class="keep"></i>Protected: never skipped</li><li><i class="evidence"></i>Where Reprise found a match</li></ul>
-        </div>
+        <section class="rp-timeline-block" id="rpTimelineBlock" aria-labelledby="rpTimelineHeading" hidden>
+          <div class="rp-section-head"><h3 id="rpTimelineHeading">Timeline</h3><span id="rpDuration" class="rp-note"></span></div>
+          <div id="rpTimeline" class="rp-timeline" role="img" aria-label="Timeline of skips and protected scenes. Exact times are listed under Skips and protected scenes."></div>
+          <ul class="rp-legend" id="rpTimelineLegend" aria-label="Timeline key"><li data-track="skip"><i class="skip"></i>Approved skip</li><li data-track="suggested"><i class="suggested"></i>Needs review</li><li data-track="keep"><i class="keep"></i>Protected</li><li data-track="evidence"><i class="evidence"></i>Comparison</li></ul>
+        </section>
 
-        <section class="rp-ranges-block" aria-labelledby="rpRangesTitle">
-          <div class="rp-section-head"><h3 id="rpRangesTitle">What Reprise found</h3><div class="rp-actions"><button type="button" class="rp-btn" id="rpSetSkip" aria-expanded="false" aria-controls="rpSpanForm"><i class="bi bi-bullseye" aria-hidden="true"></i>Set a skip exactly</button><button type="button" class="rp-btn" id="rpAddKeep"><i class="bi bi-shield-plus" aria-hidden="true"></i>Protect a scene</button></div></div>
-          <p class="rp-note">Open one to watch it before you approve or reject it. Reprise can miss very short or quiet changes. Anything you protect is never skipped. Saving your review doesn't change Plex.</p>
-          <form class="rp-plex-confirm rp-span-form" id="rpSpanForm" aria-labelledby="rpSpanTitle" hidden novalidate>
-            <p id="rpSpanTitle"><strong>Set a skip exactly</strong></p>
-            <p class="rp-note">Reprise will skip exactly these times, even if it couldn't confirm them. This skip replaces any other skip of the same type. Running another analysis won't change it, and it can't cover a scene you protected.</p>
-            <div class="rp-fine-grid">
-              <label class="rp-span-kind">Type<select id="rpSpanKind"><option value="intro">Intro</option><option value="credits">Credits</option></select></label>
-              <div class="rp-set"><label>Start (milliseconds)<input type="number" id="rpSpanStart" min="0" step="1"></label><button type="button" class="rp-btn" id="rpSpanStartNow">Use current time</button></div>
-              <div class="rp-set"><label>End (milliseconds)<input type="number" id="rpSpanEnd" min="0" step="1"></label><button type="button" class="rp-btn" id="rpSpanEndNow">Use current time</button></div>
-            </div>
-            <div class="rp-actions"><button type="submit" class="rp-btn primary">Add this skip</button><button type="button" class="rp-btn quiet" id="rpSpanCancel">Cancel</button></div>
-          </form>
+        <section class="rp-ranges-block" id="rpRangesBlock" aria-labelledby="rpRangesTitle" hidden>
+          <h3 id="rpRangesTitle">Skips and protected scenes</h3>
           <div id="rpRanges"></div>
         </section>
+        </div>
+
+        <details class="rp-disclosure" id="rpEditRanges" hidden>
+          <summary>Edit skips or protect a scene</summary>
+          <div class="rp-disclosure-body">
+            <div class="rp-actions"><button type="button" class="rp-btn" id="rpSetSkip" aria-expanded="false" aria-controls="rpSpanForm"><i class="bi bi-bullseye" aria-hidden="true"></i>Set a skip exactly</button><button type="button" class="rp-btn" id="rpAddKeep"><i class="bi bi-shield-plus" aria-hidden="true"></i>Protect a scene</button></div>
+            <form class="rp-plex-confirm rp-span-form" id="rpSpanForm" aria-labelledby="rpSpanTitle" hidden novalidate>
+              <p id="rpSpanTitle"><strong>Set a skip exactly</strong></p>
+              <p class="rp-note">This replaces other skips of the same type. It survives a new analysis and can’t overlap a scene you protected.</p>
+              <div class="rp-fine-grid">
+                <label class="rp-span-kind">Type<select id="rpSpanKind"><option value="intro">Intro</option><option value="credits">Credits</option></select></label>
+                <div class="rp-set"><label>Start (milliseconds)<input type="number" id="rpSpanStart" min="0" step="1"></label><button type="button" class="rp-btn" id="rpSpanStartNow">Use current time</button></div>
+                <div class="rp-set"><label>End (milliseconds)<input type="number" id="rpSpanEnd" min="0" step="1"></label><button type="button" class="rp-btn" id="rpSpanEndNow">Use current time</button></div>
+              </div>
+              <div class="rp-actions"><button type="button" class="rp-btn" id="rpSpanJump" aria-expanded="false" aria-controls="rpJump">Play the jump</button><button type="submit" class="rp-btn primary">Add this skip</button><button type="button" class="rp-btn quiet" id="rpSpanCancel">Cancel</button></div>
+            </form>
+          </div>
+        </details>
+
+        <div class="rp-jump" id="rpJump" hidden>
+          <p class="rp-note" id="rpJumpStatus" role="status"></p>
+          <video id="rpJumpVideo" controls playsinline preload="none" aria-label="Skip jump preview" hidden></video>
+        </div>
 
         <div class="rp-savebar" id="rpSaveBar">
           <p id="rpSaveState" class="rp-note" aria-live="polite"></p>
@@ -143,9 +170,11 @@
           <summary>File details</summary>
           <div class="rp-disclosure-body"><dl class="rp-facts" id="rpFacts"></dl></div>
         </details>
-      </div>
     </section>
   </div>
 </div>
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', filename='js/reprise.js') }}" defer></script>{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/reprise-artwork.js') }}" defer></script>
+<script src="{{ url_for('static', filename='js/reprise.js') }}" defer></script>
+{% endblock %}

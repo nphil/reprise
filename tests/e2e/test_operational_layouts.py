@@ -31,6 +31,7 @@ def test_operational_pages_fit_viewport(authed_page, app_url, complete_setup, wi
     page.on("pageerror", lambda error: errors.append(str(error)))
     for route in ["logs", "webhook-activity", "automation"]:
         page.goto(app_url + "/" + route)
+        expect(page.locator("html")).to_have_attribute("data-bs-theme", theme)
         expect(page.locator("h1")).to_be_visible()
         if route == "logs":
             expect(page.locator(".log-line")).to_have_count(2)
@@ -51,6 +52,7 @@ def test_setup_and_login_fit_viewport(wizard_page, app_url_wizard, width, theme)
     page.add_init_script(f"localStorage.setItem('theme', '{theme}')")
     _resume(page, "jellyfin")
     page.goto(app_url_wizard + "/setup")
+    expect(page.locator("html")).to_have_attribute("data-bs-theme", theme)
     expect(page.locator("#step3Next")).to_be_enabled()
     expect(page.locator("#setupProgressCurrent")).to_have_text("Step 2 of 3 · Paths")
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1")
@@ -59,8 +61,22 @@ def test_setup_and_login_fit_viewport(wizard_page, app_url_wizard, width, theme)
         _capture(page, "setup-390-dark")
     page.context.clear_cookies()
     page.goto(app_url_wizard + "/login")
+    expect(page.locator("html")).to_have_attribute("data-bs-theme", theme)
     expect(page.locator("#username")).to_be_visible()
     expect(page.locator("#password")).to_be_visible()
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1")
     if width == 1440 and theme == "dark":
         _capture(page, "login-1440-dark")
+
+
+def test_a_theme_change_in_setup_also_applies_to_login(wizard_page, app_url_wizard):
+    page = wizard_page
+    _resume(page, "jellyfin")
+    page.goto(app_url_wizard + "/setup")
+    root = page.locator("html")
+    next_theme = "dark" if root.get_attribute("data-bs-theme") == "light" else "light"
+    page.locator("#setupThemeBtn").click()
+    expect(root).to_have_attribute("data-bs-theme", next_theme)
+    page.context.clear_cookies()
+    page.goto(app_url_wizard + "/login")
+    expect(root).to_have_attribute("data-bs-theme", next_theme)

@@ -5,11 +5,11 @@
     const $ = id => document.getElementById(id);
     const state = {
         items: [], selected: new Set(), item: null, result: null, edits: [], cursor: null, request: 0, dirty: false,
-        changes: [], libraries: null, settings: null, jobs: [], jobMedia: new Map(), seenJobs: new Map(), activityHidden: false, showOlder: false,
+        changes: [], libraries: null, settings: null, jobs: [], jobMedia: new Map(), seenJobs: new Map(), showOlder: false,
     };
-    const activeRefreshes = new Set(), rangeViews = new WeakMap();
+    const activeRefreshes = new Set(), rangeViews = new WeakMap(), activityRows = new Map(), seasonLinks = new Map();
     let reviewRequest = 0, referenceRequest = 0, queueTimer = null, messageTimer = null, uid = 0;
-    const narrow = window.matchMedia('(max-width: 1099.98px)'); /* the list stacks above the review (reprise.css) */
+    let jumpAttempt = 0, jumpTrigger = null;
 
     /* ── small helpers ─────────────────────────────────────────────────────────────────────────────────── */
     const terminalJob = status => ['completed', 'failed', 'cancelled'].includes(status);
@@ -166,9 +166,14 @@
         if ($('rpShow').value && $('rpSeason').value) q.set('season', $('rpSeason').value);
         a.href = a.pathname + (q.size ? '?' + q : '');
     }
+    const reviewSeasonUrl = (show, season) => '/reprise/approve?' + new URLSearchParams({ show, season });
     async function loadLibrary(append = false) {
         const seq = ++state.request;
-        if (!append) { showSkeleton(); $('rpLibraryState').hidden = true; }
+        if (!append) {
+            showSkeleton(); seasonLinks.clear();
+            const status = $('rpLibraryState'); status.textContent = 'Loading library…'; status.hidden = false;
+            $('rpMore').hidden = true; $('rpSeasonTools').hidden = true; $('rpSelectAll').hidden = true;
+        }
         try {
             const q = libraryQuery(); if (append && state.cursor) q.set('cursor', state.cursor);
             const result = await api('/api/reprise/media?' + q); if (seq !== state.request) return;
@@ -194,7 +199,7 @@
     }
     function renderLibraryError(error) {
         const box = $('rpLibraryState'); clear($('rpLibraryList')); syncScroll(); box.hidden = false; box.replaceChildren(el('span', error.message || 'The library could not be loaded.'), document.createElement('br'), button('Try again', () => loadLibrary()));
-        $('rpMore').hidden = true; $('rpLibraryHint').hidden = true; $('rpSelectAll').hidden = true;
+        $('rpMore').hidden = true; $('rpSelectAll').hidden = true; $('rpSeasonTools').hidden = true;
     }
     function renderEmpty(filtered) {
         const box = $('rpLibraryState'); clear(box); box.hidden = false;
@@ -212,23 +217,61 @@
         box.append(slot);
         loadLibraries().then(offer, () => offer([{}]));
     }
+    function refreshSeasonLinks() {
+        for (const { items, link } of seasonLinks.values()) {
+            // This is a signpost, not the queue count: Review checks what Plex already has.
+            link.hidden = !items.some(item => item.freshness === 'current' && (item.ranges?.to_review || item.ranges?.suggested || item.ranges?.approved || item.confident));
+        }
+    }
     function renderLibrary() {
-        const target = $('rpLibraryList'); clear(target);
+        const target = $('rpLibraryList'), fragment = document.createDocumentFragment();
         const filtered = !!($('rpSearch').value.trim() || $('rpShow').value || $('rpSeason').value);
-        $('rpLibraryState').hidden = state.items.length > 0; $('rpLibraryHint').hidden = !state.items.length;
+        const groups = new Map(); seasonLinks.clear();
+        $('rpLibraryState').hidden = state.items.length > 0;
         if (!state.items.length) renderEmpty(filtered);
         for (const item of state.items) {
+            const key = JSON.stringify([item.show_title || '', item.season ?? null]);
+            let group = groups.get(key);
+            if (!group) {
+                const section = el('section', null, 'rp-season'), head = el('div', null, 'rp-season-head');
+                const heading = item.show_title ? [item.show_title, item.season != null && `Season ${item.season}`].filter(Boolean).join(' · ') : 'Movies and specials';
+                const title = el('div', null, 'rp-season-heading');
+                title.append(el('h3', heading)); head.append(title);
+                group = { title, rows: el('div', null, 'rp-season-episodes'), items: [] }; groups.set(key, group);
+                if (item.show_title && item.season != null) {
+                    const link = el('a', 'Review season', 'rp-btn rp-season-review');
+                    link.href = reviewSeasonUrl(item.show_title, item.season);
+                    const icon = el('i', null, 'bi bi-chevron-right'); icon.setAttribute('aria-hidden', 'true'); link.append(icon);
+                    link.setAttribute('aria-label', `Review season ${item.season} of ${item.show_title}`);
+                    head.append(link); seasonLinks.set(key, { items: group.items, link });
+                }
+                section.append(head, group.rows); fragment.append(section);
+            }
+            if (!group.poster && item.poster_url) {
+                const poster = window.RepriseArtwork?.seasonPoster(item.poster_url);
+                if (poster) {
+                    group.poster = el('span', null, 'rp-season-artwork');
+                    group.poster.append(poster); group.title.prepend(group.poster);
+                }
+            }
+            group.items.push(item);
             const row = el('div', null, 'rp-episode'), label = el('label');
-            const check = el('input'); check.type = 'checkbox'; check.checked = state.selected.has(item.id); check.dataset.mediaId = item.id; check.setAttribute('aria-label', `Select ${longName(item)} for analysis`);
+            const check = el('input'); check.type = 'checkbox'; check.checked = state.selected.has(item.id); check.disabled = !canSelect(item);
+            check.dataset.mediaId = item.id; check.setAttribute('aria-label', `Select ${longName(item)} for analysis`);
             check.addEventListener('change', () => { check.checked ? state.selected.add(item.id) : state.selected.delete(item.id); renderSelection(); });
             const open = button('', () => openItem(item), 'rp-episode-open'); open.dataset.mediaId = item.id;
             if (state.item?.id === item.id) open.setAttribute('aria-current', 'true');
-            const copy = el('span', null, 'rp-episode-copy'); copy.append(el('span', episodeName(item), 'rp-episode-name'), el('span', context(item), 'rp-episode-context'));
+            const metadata = el('span', null, 'rp-episode-meta');
+            const shortContext = [item.episode != null && `E${item.episode}`, minutes(item.duration_ms)].filter(Boolean).join(' · ');
+            if (shortContext) metadata.append(el('span', shortContext, 'rp-episode-context'));
             const chip = el('span', null, 'rp-chip'); paintChip(chip, episodeStatus(item));
-            open.setAttribute('aria-label', `${longName(item)}, ${chip.textContent}`); open.append(copy, chip);
-            label.append(check); row.append(label, open); target.append(row);
+            open.setAttribute('aria-label', `${longName(item)}, ${chip.textContent}`);
+            metadata.append(chip); open.append(el('span', episodeName(item), 'rp-episode-name'), metadata);
+            label.append(check); row.append(label, open); group.rows.append(row);
         }
-        syncScroll(); $('rpMore').hidden = !state.cursor; renderSelection(); renderConfident(); renderNext();
+        target.replaceChildren(fragment);
+        window.RepriseArtwork?.watchSeasonPosters(target);
+        syncScroll(); $('rpMore').hidden = !state.cursor; renderSelection(); renderConfident(); refreshSeasonLinks();
     }
     function paintStatuses() {
         const byId = new Map(state.items.map(i => [i.id, i]));
@@ -236,21 +279,16 @@
             const item = byId.get(open.dataset.mediaId); if (!item) return;
             const chip = open.querySelector('.rp-chip'); paintChip(chip, episodeStatus(item));
             open.setAttribute('aria-label', `${longName(item)}, ${chip.textContent}`);
+            open.parentElement.querySelector('input').disabled = !canSelect(item);
         });
-        renderNext();
-    }
-    /* Where no episode is open, offer the first listed one that is waiting for a decision, so the next review is one tap away. */
-    function renderNext() {
-        const waiting = state.items.find(i => !needsRefresh(i) && !activeJobFor(i.id) && i.ranges && (i.ranges.to_review || 0) + (i.ranges.suggested || 0) > 0);
-        $('rpNext').hidden = !waiting; if (!waiting) return;
-        const next = $('rpNextBtn'); next.textContent = `Review next: ${episodeName(waiting)} (${episodeStatus(waiting).label})`; next.onclick = () => openItem(waiting);
+        refreshSeasonLinks();
     }
     /* An episode can be ticked for analysis unless its file must be refreshed first (analysis refuses it) or it is already being analyzed. */
     const canSelect = item => !needsRefresh(item) && !activeJobFor(item.id);
     function renderSelection() {
         const n = state.selected.size, listed = new Set(state.items.map(i => i.id)), away = [...state.selected].filter(id => !listed.has(id)).length;
         $('rpSelectBar').hidden = !n;
-        const count = $('rpSelectCount'); count.textContent = `${plural(n, 'episode')} selected` + (away ? `, ${away} not in this list` : ''); count.classList.toggle('rp-sr', !away);
+        $('rpSelectCount').textContent = `${plural(n, 'episode')} selected` + (away ? `, ${away} not in this list` : '');
         $('rpAnalyze').textContent = n === 1 ? 'Analyze episode' : `Analyze ${n} episodes`;
         const pickable = state.items.filter(canSelect), all = pickable.length > 0 && pickable.every(i => state.selected.has(i.id)), toggle = $('rpSelectAll');
         toggle.hidden = pickable.length < 2; toggle.textContent = all ? 'Deselect all' : state.cursor ? `Select ${pickable.length} shown` : 'Select all'; /* with more pages to load, "all" would overstate it */
@@ -258,12 +296,15 @@
     /* One click for a season: approve what the local vision model is sure of (its "high" confidence ones). They become the owner's own
        exact skips, like setting each by hand; nothing is sent to Plex. Shown only with a show and season picked. */
     function renderConfident() {
-        const n = $('rpShow').value && $('rpSeason').value ? state.items.reduce((sum, i) => sum + (i.confident || 0), 0) : 0, more = n > 0 && state.cursor ? ' or more' : '';
-        const approve = $('rpApproveConfident'); approve.hidden = !n; approve.textContent = `Approve ${n}${more} sure ${n === 1 && !more ? 'suggestion' : 'suggestions'}`;
+        const show = $('rpShow').value, season = $('rpSeason').value;
+        const n = show && season ? state.items.reduce((sum, item) => sum + (item.show_title === show && Number(season) === item.season ? item.confident || 0 : 0), 0) : 0;
+        const more = n && (state.cursor || $('rpSearch').value.trim()) ? ' or more' : '';
+        const tools = $('rpSeasonTools'); tools.hidden = !n; if (!n) tools.open = false;
+        $('rpApproveConfident').textContent = `Approve ${n}${more} sure ${n === 1 && !more ? 'suggestion' : 'suggestions'}`;
     }
     async function approveConfident() {
-        const show = $('rpShow').value, season = Number($('rpSeason').value);
-        if (!show || !season || !confirm(`Approve the suggestions the AI model is sure about for ${show}, season ${season}? They become your own skips. Nothing goes to Plex until you send it.`)) return;
+        const show = $('rpShow').value, seasonValue = $('rpSeason').value, season = Number(seasonValue);
+        if (!show || !seasonValue || !confirm(`Approve the suggestions the AI model is sure about for ${show}, season ${season}? They become your own skips. Nothing goes to Plex until you send it.`)) return;
         const approve = $('rpApproveConfident'); approve.disabled = true;
         try {
             const result = await api('/api/reprise/approve-local-model', { method: 'POST', body: { show, season } });
@@ -299,10 +340,12 @@
     /* A filter or search that leaves the open episode out closes it, so the review never shows an episode the list does not. With unsaved
        changes it stays open and says why, because closing would lose them. */
     function closeEpisode() {
+        resetJump(); $('rpEditRanges').after($('rpJump'));
         ++reviewRequest; ++referenceRequest;
+        $('rpVideo').removeAttribute('poster'); $('rpEpisodeStill').removeAttribute('src'); $('rpEpisodeStill').hidden = true;
         for (const id of ['rpVideo', 'rpReferenceVideo']) { const video = $(id); video.pause(); video.removeAttribute('src'); video.dataset.mediaId = ''; video.load(); }
         state.item = null; state.result = null; state.edits = []; state.changes = []; state.dirty = false;
-        $('rpReview').hidden = true; $('rpReviewEmpty').hidden = false; $('rpOffList').hidden = true; renderNext();
+        $('rpReview').hidden = true; $('rpOffList').hidden = true; delete $('repriseApp').dataset.episodeOpen;
         document.querySelectorAll('.rp-episode-open[aria-current]').forEach(row => row.removeAttribute('aria-current'));
     }
     function syncOffList() {
@@ -318,31 +361,53 @@
     /* ── opening an episode ─────────────────────────────────────────────────────────────────────────────── */
     async function openItem(item, force = false) {
         if (!force && state.dirty && !confirm('Discard unsaved review changes?')) return;
+        resetJump(); $('rpEditRanges').after($('rpJump'));
+        const keepStill = force && state.item?.id === item.id;
         const request = ++reviewRequest; ++referenceRequest;
         state.item = item; state.result = null; state.edits = []; state.dirty = false; state.changes = [];
         document.querySelectorAll('.rp-episode-open').forEach(row => { if (row.dataset.mediaId === item.id) row.setAttribute('aria-current', 'true'); else row.removeAttribute('aria-current'); });
         const ref = $('rpReferenceVideo'); ref.pause(); ref.removeAttribute('src'); ref.dataset.mediaId = ''; ref.hidden = true; $('rpReferencePreview').hidden = true; $('rpReference').value = '';
         $('rpReferenceAudio').replaceChildren(option('', 'Select audio')); $('rpReferenceState').textContent = 'Choose an episode to compare.'; $('rpCompare').open = false;
-        $('rpReviewEmpty').hidden = true; $('rpReview').hidden = false;
+        $('repriseApp').dataset.episodeOpen = ''; $('rpReview').hidden = false;
+        $('rpTimelineBlock').hidden = true; $('rpRangesBlock').hidden = true; $('rpSaveBar').hidden = true;
+        $('rpEditRanges').hidden = true; if (!force) $('rpEditRanges').open = false;
         $('rpReviewHeading').textContent = episodeName(item); $('rpReviewContext').textContent = context(item);
-        const status = episodeStatus(item); paintChip($('rpStatusChip'), status);
+        $('rpAnalyzeOne').hidden = true;
         setOutcome('running', 'Loading this episode…', 'Reading the saved results.');
         const video = $('rpVideo'); video.pause(); $('rpVideoAudio').replaceChildren(option('', 'Select audio')); $('rpVideoAudioWrap').hidden = true; clear($('rpPublication'));
         Object.assign(video.dataset, { mediaId: item.id, duration: item.duration_ms || '0', origin: '0', preview: 'false', desired: '0' });
         $('rpVideoOrigin').textContent = ''; $('rpVideoPreview').hidden = true; $('rpVideoError').hidden = true;
+        if (!keepStill) { video.removeAttribute('poster'); $('rpEpisodeStill').hidden = true; $('rpEpisodeStill').removeAttribute('src'); }
         video.src = '/api/reprise/media/' + encodeURIComponent(item.id) + '/stream'; video.load();
         renderReferences(); syncOffList(); clear($('rpRanges')); clear($('rpTimeline')); clear($('rpEvidence')); $('rpSave').disabled = true; $('rpAddKeep').disabled = true; $('rpSetSkip').disabled = true; toggleSpanForm(false); $('rpAnalyzeOne').disabled = true;
-        if (narrow.matches) document.querySelector('.rp-workspace').scrollIntoView({ block: 'start' });
+        if (!force) {
+            $('rpReview').scrollIntoView({ block: 'start' });
+            $('rpReviewHeading').focus({ preventScroll: true });
+        }
         try {
             const result = await api(`/api/reprise/media/${encodeURIComponent(item.id)}/result`); if (request !== reviewRequest) return;
             state.result = result; setAudio($('rpVideoAudio'), result.identities);
             state.edits = (result.ranges || [...(result.proposed_ranges || []), ...(result.protected_keep_ranges || []), ...(result.eligible_skip_ranges || [])])
                 .filter((r, i, a) => a.findIndex(x => x.id === r.id) === i).sort((a, b) => a.start_ms - b.start_ms || a.end_ms - b.end_ms).map(r => ({ ...r, originalAction: r.action }));
-            renderReview(); await loadHistory(item.id, request);
+            renderReview(); loadEpisodeStill(item, result); await loadHistory(item.id, request);
+            return request === reviewRequest;
         } catch (error) {
             if (request !== reviewRequest) return;
             setOutcome('error', "This episode's results couldn't be loaded.", error.message); fail(error);
         }
+    }
+    function loadEpisodeStill(item, result) {
+        const duration = Number(result.duration_ms || item.duration_ms);
+        if (!(duration > 0) || needsRefresh(result)) {
+            $('rpVideo').removeAttribute('poster'); $('rpEpisodeStill').removeAttribute('src'); $('rpEpisodeStill').hidden = true;
+            return;
+        }
+        const skip = state.edits.find(r => r.action === 'skip' && r.review_status === 'approved' && !isReplaced(r))
+            || state.edits.find(r => r.action === 'skip' && r.review_status === 'proposed' && !isReplaced(r));
+        const at = skip ? Math.min(skip.end_ms - 1, skip.start_ms + 1000) : Math.min(30_000, duration / 5);
+        const still = $('rpEpisodeStill');
+        const path = `/api/reprise/media/${encodeURIComponent(item.id)}/frame?t_ms=${Math.max(0, Math.min(duration - 1, Math.floor(at)))}&w=640`;
+        if (still.getAttribute('src') !== path || still.hidden) still.src = path;
     }
     async function loadHistory(id, request) {
         if (!state.settings?.publication_available) return;
@@ -352,7 +417,7 @@
 
     /* What the open episode's analysis amounts to, in one place a person looks first. */
     function setOutcome(stateName, title, body, extra) {
-        const box = $('rpOutcome'); clear(box); box.dataset.state = stateName; box.append(el('strong', title));
+        const box = $('rpOutcome'); delete box.dataset.job; clear(box); box.dataset.state = stateName; box.append(el('strong', title));
         if (body) box.append(el('p', body)); if (extra) extra(box);
     }
     function renderOutcome() {
@@ -364,19 +429,32 @@
             const count = test => state.edits.filter(test).length;
             if (r.analysis_status === 'complete' && !state.dirty) { const owned = ownedKinds(), undecided = state.edits.filter(x => x.action === 'skip' && x.review_status === 'proposed' && !owned.has(x.kind)), open = undecided.filter(isSuggestion); item.ranges = { skip: count(x => x.action === 'skip'), keep: count(x => x.action === 'keep'), proposed: count(x => x.review_status === 'proposed'), approved: count(x => x.review_status === 'approved'), to_review: undecided.length - open.length, suggested: open.length, suggested_by: suggesterNames(open) }; }
         }
-        paintChip($('rpStatusChip'), episodeStatus(item)); paintStatuses();
+        paintStatuses();
         const stale = staleOf(r), again = !!r && ['failed', 'cancelled', 'unsupported'].includes(r.analysis_status);
-        analyzeBtn.hidden = needsRefresh(r); analyzeBtn.disabled = !r || !!job;
-        analyzeBtn.textContent = job ? 'Analyzing…' : r && r.analysis_status === 'complete' ? 'Analyze again' : again ? 'Try again' : 'Analyze';
-        analyzeBtn.classList.toggle('primary', !r || r.analysis_status !== 'complete' || !!stale);
+        analyzeBtn.hidden = !r || needsRefresh(r) || !!job; analyzeBtn.disabled = analyzeBtn.hidden;
+        analyzeBtn.textContent = r?.analysis_status === 'complete' ? 'Analyze again' : again ? 'Try again' : 'Analyze';
+        analyzeBtn.classList.toggle('primary', r?.analysis_status !== 'complete' || !!stale);
         if (job) {
-            const pct = typeof job.progress?.percent === 'number' ? Math.max(0, Math.min(100, job.progress.percent)) : null;
+            const pct = typeof job.progress?.percent === 'number' && (jobMediaIds(job) || []).length === 1 ? Math.max(0, Math.min(100, job.progress.percent)) : null;
             const held = job.recovery && job.recovery.state !== 'resumed' ? job.recovery.message : '';
-            return setOutcome(job.status === 'running' ? 'running' : 'queued', job.status === 'running' ? 'Analyzing this episode…' : held || 'Waiting for its turn to be analyzed…',
-                'A season with many episodes can take several minutes. You can leave this page; the results will be here when it finishes.', box => {
-                    if (pct != null && job.status === 'running') { const bar = el('div', null, 'rp-bar'); bar.append(el('span')); bar.firstChild.style.width = pct + '%'; bar.setAttribute('role', 'progressbar'); bar.setAttribute('aria-valuenow', String(Math.round(pct))); box.append(bar); }
-                    if (job.progress?.current_item) box.append(el('p', job.progress.current_item));
+            const running = job.status === 'running';
+            const box = $('rpOutcome');
+            if (box.dataset.job !== job.id) {
+                setOutcome('running', '', '', node => {
+                    node.append(el('p'), el('div', null, 'rp-bar'));
+                    node.lastChild.append(el('span')); node.lastChild.setAttribute('role', 'progressbar');
+                    node.lastChild.setAttribute('aria-label', 'Episode analysis');
                 });
+                box.dataset.job = job.id;
+            }
+            const [title, body, bar] = box.children;
+            title.textContent = running ? 'Analyzing this episode…' : held || 'Waiting for its turn to be analyzed…';
+            const detail = pct != null ? job.progress?.current_item : '';
+            const bodyText = running ? detail || 'Results will appear here when it finishes.' : 'You can leave this page while it waits.';
+            if (body.textContent !== bodyText) body.textContent = bodyText;
+            bar.hidden = !running || pct == null;
+            if (!bar.hidden) { bar.firstChild.style.width = pct + '%'; bar.setAttribute('aria-valuenow', String(Math.round(pct))); }
+            return;
         }
         if (!r) return;
         const reasons = rawReasons(r), plain = [...new Set((r.reasons || []).filter(x => x !== 'unapproved_or_unverified').map(plainReason).filter(Boolean))];
@@ -501,26 +579,44 @@
     /* ── the review ─────────────────────────────────────────────────────────────────────────────────────── */
     /* The "Set a skip exactly" form (see isOwnerSpan). */
     function toggleSpanForm(open) {
+        if (!open && jumpTrigger === $('rpSpanJump')) resetJump();
         $('rpSpanForm').hidden = !open; $('rpSetSkip').setAttribute('aria-expanded', String(open));
         if (open) $('rpSpanStart').focus(); else $('rpSpanForm').reset();
     }
     function renderReview(rebuild = true) {
         const r = state.result; if (!r) return;
         state.edits.forEach(range => rangeViews.get(range)?.update()); /* a skip you set changes what the others of its type say */
-        const duration = Number(r.duration_ms || state.item?.duration_ms || 0); $('rpDuration').textContent = duration ? 'Length ' + ms(duration) : '';
-        const timeline = $('rpTimeline'); clear(timeline);
-        const bar = (cls, a, b, title) => { const s = el('span', null, `rp-timeline-segment ${cls}`); s.style.left = `${Math.max(0, a / duration * 100)}%`; s.style.width = `${Math.max(0, Math.min(duration, b) - a) / duration * 100}%`; s.title = title; timeline.append(s); };
-        if (duration) {
-            for (const range of state.edits) if (range.end_ms > range.start_ms) bar(range.action === 'keep' ? 'keep' : isReplaced(range) || isSuggestion(range) && range.review_status !== 'approved' ? 'skip suggested' : 'skip', range.start_ms, range.end_ms, `${isOwnerSpan(range) ? 'set by you' : isReplaced(range) ? 'replaced by your skip' : isSuggestion(range) ? suggestionBadge(range) : range.action} ${ms(range.start_ms)}–${ms(range.end_ms)}`);
-            for (const e of r.evidence || []) if (e.end_ms > e.start_ms) bar('evidence', e.start_ms, e.end_ms, `${verdictLabel(e.verdict)} ${ms(e.start_ms)}–${ms(e.end_ms)}`);
+        const duration = Number(r.duration_ms || state.item?.duration_ms || 0); $('rpDuration').textContent = duration ? ms(duration) : '';
+        const timeline = $('rpTimeline'), tracks = new Map(); clear(timeline);
+        const bar = (track, a, b, title) => {
+            if (!(0 <= a && a < b && a < duration)) return;
+            if (!tracks.has(track)) tracks.set(track, el('div', null, 'rp-timeline-lane'));
+            const segment = el('span', null, `rp-timeline-segment ${track}`);
+            segment.style.left = `${a / duration * 100}%`; segment.style.width = `${(Math.min(duration, b) - a) / duration * 100}%`;
+            segment.title = title; tracks.get(track).append(segment);
+        };
+        if (duration && r.freshness === 'current') {
+            for (const range of state.edits) {
+                if (range.review_status === 'rejected' || isReplaced(range)) continue;
+                const track = range.action === 'keep' ? 'keep' : range.review_status === 'approved' ? 'skip' : 'suggested';
+                bar(track, range.start_ms, range.end_ms, `${kindLabel(range.kind)}: ${ms(range.start_ms)}–${ms(range.end_ms)}`);
+            }
+            for (const e of r.evidence || []) bar('evidence', e.start_ms, e.end_ms, `${verdictLabel(e.verdict)} ${ms(e.start_ms)}–${ms(e.end_ms)}`);
         }
+        for (const label of $('rpTimelineLegend').children) {
+            const lane = tracks.get(label.dataset.track);
+            label.hidden = !lane; if (lane) timeline.append(lane);
+        }
+        $('rpTimelineBlock').hidden = !tracks.size; $('rpRangesBlock').hidden = !state.edits.length;
         if (rebuild) {
+            if (jumpTrigger && jumpTrigger !== $('rpSpanJump')) resetJump();
+            if (!jumpTrigger) $('rpEditRanges').after($('rpJump'));
             const list = $('rpRanges'); clear(list);
-            if (!state.edits.length) list.append(el('p', r.analysis_status === 'complete' ? 'Nothing to review. No section is approved for skipping.' : 'Sections appear here after an analysis.', 'rp-state'));
             state.edits.forEach(range => renderRange(list, range));
             renderEvidence(); renderFacts(); renderPublication();
         }
         const current = r.freshness === 'current' && r.result_revision != null;
+        $('rpEditRanges').hidden = !current;
         $('rpSave').disabled = !state.dirty || !current; $('rpDiscard').disabled = !state.dirty; $('rpAddKeep').disabled = !current; $('rpSetSkip').disabled = !current;
         $('rpSaveBar').hidden = !state.dirty;
         $('rpSaveState').textContent = r.freshness !== 'current' ? (staleOf(r)?.action === 'analyze' ? 'This result is out of date, so its review can’t be saved until you analyze it again.' : 'This file has changed, so its review can’t be saved until the library is refreshed.') : state.dirty ? 'You have unsaved changes.' : 'Saving a review never changes Plex.';
@@ -558,9 +654,14 @@
             chip.textContent = decisionLabel(range.review_status) + (range.locked ? ' · Locked' : ''); chip.dataset.tone = range.review_status === 'approved' ? 'positive' : range.review_status === 'rejected' ? 'danger' : 'accent';
             if (isSuggestion(range)) { badge.textContent = suggestionBadge(range) + (range.review_status === 'approved' ? ' · approved by you' : ''); badge.dataset.tone = 'info'; chip.hidden = range.review_status === 'approved' && !range.locked; }
             if (isOwnerSpan(range)) { badge.textContent = 'Set by you'; badge.dataset.tone = 'info'; }
+            jump.hidden = range.action !== 'skip' || range.review_status === 'rejected' || isReplaced(range) || state.result?.freshness !== 'current';
             if (isReplaced(range)) { chip.textContent = 'Replaced by your skip'; chip.dataset.tone = 'info'; chip.hidden = false; }
         };
-        const changed = () => { if (isSuggestion(range) && range.review_status === 'approved') range.acknowledged = true; const was = state.dirty; state.dirty = true; updateSummary(); renderReview(false); if (!was) renderPublication(); };
+        const changed = () => {
+            if (jumpTrigger === jump) resetJump();
+            if (isSuggestion(range) && range.review_status === 'approved') range.acknowledged = true;
+            const was = state.dirty; state.dirty = true; updateSummary(); renderReview(false); if (!was) renderPublication();
+        };
         summary.append(name, bounds, ...(isSuggestion(range) || isOwnerSpan(range) ? [badge] : []), chip); box.append(summary);
         const body = el('div', null, 'rp-range-body'); body.append(el('p', isOwnerSpan(range) ? 'You set this skip yourself. It is skipped exactly as set, even where Reprise could not confirm it, and it replaces every other skip of this type.' : plainReason(range.reason || range.reason_code || '') || 'Added by you.', 'rp-note'));
         const seg = el('div', null, 'rp-seg'); seg.setAttribute('role', 'radiogroup'); seg.setAttribute('aria-label', 'Your decision');
@@ -577,8 +678,12 @@
             }); radios.push(input); label.dataset.value = value; label.append(input, el('span', text)); seg.append(label);
         });
         const unsaved = isOwnerSpan(range) && !range.id; /* a skip just set has nothing to decide: it is approved, and Remove takes it back */
-        const actions = el('div', null, 'rp-actions'); actions.append(...(unsaved ? [] : [seg]), button('Play this section', () => playBounded($('rpVideo'), range.start_ms, range.end_ms)));
-        if ((range.origin === 'manual' || range.origin === 'owner') && !range.id) actions.append(button('Remove', () => { state.edits = state.edits.filter(edit => edit !== range); state.dirty = true; renderReview(); $(unsaved ? 'rpSetSkip' : 'rpAddKeep').focus(); }, 'rp-btn quiet'));
+        const actions = el('div', null, 'rp-actions');
+        const jump = button('Play the jump', () => playJump(jump, range.start_ms, range.end_ms));
+        jump.setAttribute('aria-expanded', 'false'); jump.setAttribute('aria-controls', 'rpJump');
+        actions.append(...(unsaved ? [] : [seg]), button('Play this section', () => { resetJump(); playBounded($('rpVideo'), range.start_ms, range.end_ms); }), jump);
+        box.addEventListener('toggle', () => { if (!box.open && jumpTrigger === jump) resetJump(); });
+        if ((range.origin === 'manual' || range.origin === 'owner') && !range.id) actions.append(button('Remove', () => { if (jumpTrigger === jump) resetJump(); state.edits = state.edits.filter(edit => edit !== range); state.dirty = true; renderReview(); $(unsaved ? 'rpSetSkip' : 'rpAddKeep').focus(); }, 'rp-btn quiet'));
         body.append(actions, confirmBox);
         const fine = el('details', null, 'rp-fine'), grid = el('div', null, 'rp-fine-grid'); fine.append(el('summary', 'Fine-tune this section'), grid);
         const numberField = (text, key) => {
@@ -674,35 +779,62 @@
     }
     function renderJobRow(job) {
         const terminal = terminalJob(job.status), { title, detail, notes = [] } = describeJob(job);
-        /* After a restart a job waits, carries on or pauses by itself, and its own sentence says which: a restart never reads as a failure. */
         const recovery = job.recovery && typeof job.recovery === 'object' ? job.recovery : null, held = recovery && recovery.state !== 'resumed';
-        if (terminal && recovery && recovery.state === 'resumed') notes.unshift(recovery.message + '.');
-        const row = el('div', null, 'rp-job'), main = el('div', null, 'rp-job-main'); row.dataset.status = job.status;
-        main.append(el('strong', title));
+        if (terminal && recovery?.state === 'resumed') notes.unshift(recovery.message + '.');
+        let row = activityRows.get(job.id);
+        if (!row) {
+            row = el('div', null, 'rp-job');
+            const main = el('div', null, 'rp-job-main'), bar = el('div', null, 'rp-bar'), diagnostics = el('details');
+            bar.setAttribute('role', 'progressbar'); bar.append(el('span'));
+            diagnostics.append(el('summary', 'Details'), el('ul', null, 'rp-job-warn rp-note'));
+            main.append(el('strong'), el('span', null, 'rp-note'), bar, diagnostics);
+            row.append(main, el('div', null, 'rp-job-actions')); activityRows.set(job.id, row);
+        }
+        const [main, group] = row.children, [label, note, bar, diagnostics] = main.children;
+        row.dataset.status = job.status;
         const pct = typeof job.progress?.percent === 'number' ? Math.max(0, Math.min(100, job.progress.percent)) : null;
         const when = job.created_at ? new Date(job.created_at) : null, ago = when && !Number.isNaN(+when) ? when.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : '';
         const status = terminal ? (detail || (job.status === 'completed' ? 'Finished.' : job.status)) :
             [held ? recovery.message : job.status === 'running' ? 'Running' : 'Waiting', !held && job.pause_requested ? 'pause requested' : '', recovery && !held ? recovery.message : '', pct != null && job.status === 'running' ? Math.round(pct) + '%' : '', job.progress?.current_item || ''].filter(Boolean).join(' · ');
-        main.append(el('span', status + (terminal && ago ? ` (${ago})` : ''), 'rp-note'));
-        if (terminal && notes.length) { const list = el('ul', null, 'rp-job-warn rp-note'); notes.forEach(note => list.append(el('li', note))); main.append(list); }
-        if (!terminal && pct != null && job.status === 'running') { const bar = el('div', null, 'rp-bar'); const fill = el('span'); fill.style.width = pct + '%'; bar.append(fill); bar.setAttribute('role', 'progressbar'); bar.setAttribute('aria-valuenow', String(Math.round(pct))); bar.setAttribute('aria-label', title); main.append(bar); }
-        row.append(main);
+        label.textContent = title; note.textContent = status + (terminal && ago ? ` (${ago})` : '');
+        bar.hidden = terminal || pct == null || job.status !== 'running';
+        if (!bar.hidden) {
+            bar.firstChild.style.width = pct + '%'; bar.setAttribute('aria-valuenow', String(Math.round(pct))); bar.setAttribute('aria-label', title);
+        }
+        diagnostics.hidden = !terminal || !notes.length;
+        const source = JSON.stringify(notes);
+        if (!diagnostics.hidden && diagnostics.dataset.source !== source) {
+            diagnostics.dataset.source = source; diagnostics.lastChild.replaceChildren(...notes.map(text => el('li', text)));
+        }
         const actions = terminal ? [] : job.pause_requested ? ['resume', 'cancel'] : job.status === 'running' ? ['pause', 'cancel'] : ['pending', 'queued'].includes(job.status) ? ['cancel'] : [];
-        if (actions.length) {
-            const group = el('div', null, 'rp-job-actions');
-            for (const action of actions) group.append(button(action[0].toUpperCase() + action.slice(1), async () => { try { await api('/api/reprise/jobs/' + encodeURIComponent(job.id) + '/' + action, { method: 'POST', body: {} }); await loadQueue(); } catch (error) { fail(error); } }));
-            row.append(group);
+        if (group.dataset.actions !== actions.join()) {
+            group.dataset.actions = actions.join(); group.hidden = !actions.length;
+            group.replaceChildren(...actions.map(action => button(action[0].toUpperCase() + action.slice(1), async () => {
+                try { await api('/api/reprise/jobs/' + encodeURIComponent(job.id) + '/' + action, { method: 'POST', body: {} }); await loadQueue(); } catch (error) { fail(error); }
+            })));
         }
         return row;
     }
+    const olderJobs = button('', () => { state.showOlder = !state.showOlder; renderActivity(); }, 'rp-btn quiet rp-activity-more');
     function renderActivity() {
         const jobs = state.jobs.slice().sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
         const active = jobs.filter(j => !terminalJob(j.status)), finished = jobs.filter(j => terminalJob(j.status));
-        const root = $('rpQueue'), section = $('rpActivity'); section.hidden = !jobs.length; if (!jobs.length) return;
-        clear(root); const shown = active.concat(state.showOlder ? finished : finished.slice(0, 2));
-        shown.forEach(job => root.append(renderJobRow(job)));
-        if (finished.length > 2) root.append(button(state.showOlder ? 'Show less' : `Show ${finished.length - 2} earlier`, () => { state.showOlder = !state.showOlder; renderActivity(); }, 'rp-btn quiet rp-activity-more'));
-        const toggle = $('rpActivityToggle'); root.hidden = state.activityHidden && !active.length; toggle.textContent = root.hidden ? 'Show' : 'Hide'; toggle.setAttribute('aria-expanded', String(!root.hidden));
+        const root = $('rpQueue'), section = $('rpLibraryActivity'); section.hidden = !jobs.length;
+        section.classList.toggle('is-active', !!active.length);
+        const job = active.length === 1 ? active[0] : null;
+        const percent = job?.status === 'running' && typeof job.progress?.percent === 'number' ? ` · ${Math.round(Math.max(0, Math.min(100, job.progress.percent)))}%` : '';
+        $('rpActivityStatus').textContent = active.length ? `${active.length} active${percent}` : '';
+        const shown = active.concat(state.showOlder ? finished : finished.slice(0, 2));
+        const ids = new Set(shown.map(job => job.id));
+        for (const [id, row] of activityRows) if (!ids.has(id)) { row.remove(); activityRows.delete(id); }
+        shown.forEach((job, i) => {
+            const row = renderJobRow(job);
+            if (root.children[i] !== row) root.insertBefore(row, root.children[i] || null);
+        });
+        if (finished.length > 2) {
+            olderJobs.textContent = state.showOlder ? 'Show less' : `Show ${finished.length - 2} earlier`;
+            if (!olderJobs.isConnected) root.append(olderJobs);
+        } else olderJobs.remove();
     }
     async function loadQueue() {
         clearTimeout(queueTimer);
@@ -710,6 +842,8 @@
         try {
             const data = await api('/api/reprise/jobs'), jobs = data.items;
             if (!Array.isArray(jobs)) throw new Error('The activity response was incomplete.');
+            const checkedEpisode = state.item?.id, openJob = checkedEpisode && activeJobFor(checkedEpisode);
+            $('rpActivityError').hidden = true;
             const wasActive = new Set(state.jobs.filter(j => !terminalJob(j.status)).map(j => j.id));
             state.jobs = jobs; let finishedRefresh = false, finishedAnalysis = false, finishedSkipped = 0;
             for (const job of jobs) {
@@ -718,15 +852,19 @@
                 if (job.operation === 'analysis' && terminal && (wasActive.has(job.id) || (before && !terminalJob(before)))) finishedAnalysis = true;
                 state.seenJobs.set(job.id, job.status);
             }
-            const active = jobs.some(j => !terminalJob(j.status)); if (active) { delay = 2500; if (!wasActive.size) state.activityHidden = false; }
-            renderActivity(); paintStatuses(); if (state.item) renderOutcome();
+            if (jobs.some(j => !terminalJob(j.status))) delay = 2500;
+            renderActivity(); paintStatuses(); renderSelection();
+            if (state.item && (openJob || activeJobFor(state.item.id))) renderOutcome();
             if (finishedRefresh) { await loadLibrary(); message(finishedSkipped ? `Library refresh finished. ${plural(finishedSkipped, 'episode')} could not be read; see Activity for which.` : 'Library refresh finished.'); }
             else if (finishedAnalysis) {
                 await reloadLoaded();
-                if (state.item && !activeJobFor(state.item.id)) { if (state.dirty) message('A new analysis finished for the open episode. Save or discard your changes to see it.'); else await openItem(state.item, true); }
+                if (openJob && state.item?.id === checkedEpisode && !activeJobFor(checkedEpisode)) {
+                    if (state.dirty) message('A new analysis finished for the open episode. Save or discard your changes to see it.');
+                    else await openItem(state.item, true);
+                }
                 message('Analysis finished. See each episode for what was found.');
             }
-        } catch (error) { if (!state.jobs.length) { $('rpActivity').hidden = false; $('rpQueue').textContent = error.message; } }
+        } catch (error) { if (!state.jobs.length) { $('rpLibraryActivity').hidden = false; $('rpActivityStatus').textContent = 'Unavailable'; $('rpActivityError').textContent = error.message; $('rpActivityError').hidden = false; } }
         queueTimer = setTimeout(loadQueue, document.hidden ? 10000 : delay);
     }
 
@@ -760,12 +898,17 @@
     }
     let searchTimer; $('rpSearch').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => loadLibrary(), 250); });
     $('rpShow').addEventListener('change', () => { $('rpSeason').value = ''; loadLibrary(); }); $('rpSeason').addEventListener('change', () => loadLibrary()); $('rpMore').addEventListener('click', () => loadLibrary(true));
-    $('rpRefresh').addEventListener('click', startRefresh); $('rpRefreshCancel').addEventListener('click', () => { $('rpRefreshForm').hidden = true; });
+    $('rpRefresh').addEventListener('click', () => { $('rpLibraryTools').open = false; startRefresh(); });
+    $('rpRefreshCancel').addEventListener('click', () => { $('rpRefreshForm').hidden = true; $('rpLibraryTools').querySelector('summary').focus(); });
     $('rpRefreshForm').addEventListener('submit', async event => { event.preventDefault(); const lib = (state.libraries || [])[Number($('rpLibraryChoice').value)]; if (lib) await queueRefresh(lib); });
-    $('rpAnalyze').addEventListener('click', () => analyze([...state.selected])); $('rpSelectClear').addEventListener('click', () => { state.selected.clear(); renderLibrary(); });
+    $('rpAnalyze').addEventListener('click', () => analyze([...state.selected]));
+    $('rpSelectClear').addEventListener('click', () => {
+        state.selected.clear();
+        document.querySelectorAll('.rp-episode input[type=checkbox]').forEach(box => { box.checked = false; });
+        renderSelection(); ($('rpSelectAll').hidden ? $('rpLibraryTitle') : $('rpSelectAll')).focus();
+    });
     $('rpAnalyzeOne').addEventListener('click', () => { if (state.item && (!state.dirty || confirm('Discard unsaved review changes and analyze again?'))) analyze([state.item.id]); });
     $('rpApproveConfident').addEventListener('click', approveConfident);
-    $('rpActivityToggle').addEventListener('click', () => { const root = $('rpQueue'); state.activityHidden = !root.hidden; root.hidden = state.activityHidden; $('rpActivityToggle').textContent = root.hidden ? 'Show' : 'Hide'; $('rpActivityToggle').setAttribute('aria-expanded', String(!root.hidden)); });
     $('rpSelectAll').addEventListener('click', () => {
         const pickable = state.items.filter(canSelect), all = pickable.every(i => state.selected.has(i.id));
         pickable.forEach(i => all ? state.selected.delete(i.id) : state.selected.add(i.id));
@@ -774,8 +917,23 @@
     });
     $('rpMessageClose').addEventListener('click', () => message(''));
     $('rpOffListClear').addEventListener('click', clearFilters);
-    $('rpOffListClose').addEventListener('click', () => { if (!state.dirty || confirm('Discard unsaved review changes?')) closeEpisode(); });
-    $('rpVideo').addEventListener('error', () => { $('rpVideoError').hidden = false; $('rpVideoPreview').hidden = !$('rpVideoAudio').value && $('rpVideoAudioWrap').hidden ? true : false; if ($('rpVideoAudio').options.length === 2) $('rpVideoPreview').hidden = false; });
+    function returnToLibrary() {
+        if (state.dirty && !confirm('Discard unsaved review changes?')) return;
+        const open = document.querySelector('.rp-episode-open[aria-current=true]');
+        closeEpisode(); (open || $('rpLibraryTitle')).focus();
+    }
+    $('rpOffListClose').addEventListener('click', returnToLibrary); $('rpEpisodeBack').addEventListener('click', returnToLibrary);
+    $('rpEpisodeStill').addEventListener('load', event => {
+        const still = event.target;
+        if (!still.hasAttribute('src') || !state.item) return;
+        still.hidden = false; $('rpVideo').poster = still.currentSrc;
+    });
+    $('rpEpisodeStill').addEventListener('error', event => { event.target.hidden = true; });
+    $('rpVideo').addEventListener('error', () => {
+        if (!state.item) return;
+        $('rpVideoError').hidden = false;
+        $('rpVideoPreview').hidden = !$('rpVideoAudio').value && $('rpVideoAudioWrap').hidden;
+    });
     $('rpReference').addEventListener('change', event => {
         const video = $('rpReferenceVideo');
         if (!event.target.value) { ++referenceRequest; $('rpReferenceAudio').replaceChildren(option('', 'Select audio')); $('rpReferenceAudio').disabled = true; $('rpReferencePreview').hidden = true; video.pause(); video.hidden = true; video.dataset.mediaId = ''; video.removeAttribute('src'); video.load(); $('rpReferenceState').textContent = 'Choose an episode to compare.'; return; }
@@ -786,15 +944,70 @@
     $('rpReferencePreview').addEventListener('click', () => makePreview($('rpReferenceVideo'), $('rpReferenceAudio'), $('rpReferencePreview'), $('rpReferenceOrigin')));
     $('rpSave').addEventListener('click', saveReview);
     $('rpDiscard').addEventListener('click', () => { if (state.item && (!state.dirty || confirm('Discard unsaved review changes?'))) openItem(state.item, true); });
+    function resetJump(message = '') {
+        ++jumpAttempt;
+        const video = $('rpJumpVideo');
+        if (video.hasAttribute('src')) { video.pause(); video.removeAttribute('src'); video.load(); }
+        video.hidden = true;
+        if (jumpTrigger) { jumpTrigger.textContent = 'Play the jump'; jumpTrigger.setAttribute('aria-expanded', String(!!message)); }
+        if (!message) jumpTrigger = null;
+        $('rpJump').hidden = !message; $('rpJumpStatus').textContent = message;
+    }
+    function playJump(trigger, start, end) {
+        const video = $('rpJumpVideo'), closing = jumpTrigger === trigger && video.hasAttribute('src');
+        resetJump();
+        if (closing || !state.item) return;
+        const panel = $('rpJump'), status = $('rpJumpStatus'), duration = Number(state.result?.duration_ms || state.item.duration_ms);
+        jumpTrigger = trigger; trigger.setAttribute('aria-expanded', 'true'); trigger.parentElement.after(panel); panel.hidden = false;
+        if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || start >= end || end > duration) {
+            return resetJump('Enter a start and end inside the episode to preview the jump.');
+        }
+        if (start === 0 && end >= duration) return resetJump('There’s no footage outside this skip to preview.');
+        $('rpVideo').pause(); $('rpReferenceVideo').pause();
+        status.textContent = 'Preparing preview…'; trigger.textContent = 'Close preview';
+        const attempt = jumpAttempt;
+        video.src = '/api/reprise/media/' + encodeURIComponent(state.item.id) + '/jump-preview?' + new URLSearchParams({ start_ms: start, end_ms: end });
+        video.play().catch(error => {
+            if (attempt !== jumpAttempt) return;
+            if (error.name === 'NotAllowedError') { video.hidden = false; status.textContent = 'Use the video’s Play button.'; }
+            else resetJump('Jump preview unavailable. You can still check or edit the times.');
+        });
+    }
+    $('rpJumpVideo').addEventListener('playing', event => {
+        if (!event.target.hasAttribute('src')) return;
+        event.target.hidden = false; $('rpJumpStatus').textContent = '';
+    });
+    $('rpJumpVideo').addEventListener('error', event => {
+        if (event.target.hasAttribute('src')) resetJump('Jump preview unavailable. You can still check or edit the times.');
+    });
+    for (const id of ['rpVideo', 'rpReferenceVideo']) $(id).addEventListener('play', () => { if (jumpTrigger) resetJump(); });
     $('rpAddKeep').addEventListener('click', () => {
         const duration = Number(state.result?.duration_ms || state.item?.duration_ms || 0), start = fileTime($('rpVideo'));
         state.edits.push({ kind: 'credits', action: 'keep', start_ms: start, end_ms: Math.min(duration || start + 1000, start + 1000), review_status: 'proposed', locked: true, origin: 'manual', reason: 'Protected by you' });
         state.dirty = true; renderReview();
     });
     /* Set a skip exactly: the owner's own span for the intro or credits. It joins the list as an unsaved section; Save review sends it. */
-    $('rpSetSkip').addEventListener('click', () => toggleSpanForm($('rpSpanForm').hidden));
+    function setExactBounds(kind) {
+        const candidates = state.edits.filter(range => range.kind === kind && range.action === 'skip' && range.review_status !== 'rejected' && !isReplaced(range));
+        const approved = candidates.filter(range => range.review_status === 'approved');
+        const range = candidates.find(isOwnerSpan) || (approved.length === 1 ? approved[0] : candidates.length === 1 ? candidates[0] : null);
+        $('rpSpanKind').value = kind; $('rpSpanStart').value = range?.start_ms ?? ''; $('rpSpanEnd').value = range?.end_ms ?? '';
+    }
+    function openExactEditor(kind = 'intro') {
+        $('rpEditRanges').open = true; setExactBounds(kind); toggleSpanForm(true);
+    }
+    $('rpSetSkip').addEventListener('click', () => {
+        if ($('rpSpanForm').hidden) openExactEditor();
+        else { toggleSpanForm(false); $('rpSetSkip').focus(); }
+    });
+    $('rpSpanJump').addEventListener('click', event => playJump(event.currentTarget, $('rpSpanStart').valueAsNumber, $('rpSpanEnd').valueAsNumber));
+    $('rpSpanKind').addEventListener('change', event => { if (jumpTrigger === $('rpSpanJump')) resetJump(); setExactBounds(event.target.value); });
+    for (const id of ['rpSpanStart', 'rpSpanEnd']) $(id).addEventListener('input', () => { if (jumpTrigger === $('rpSpanJump')) resetJump(); });
+    $('rpEditRanges').addEventListener('toggle', event => { if (!event.target.open && jumpTrigger === $('rpSpanJump')) resetJump(); });
     $('rpSpanCancel').addEventListener('click', () => { toggleSpanForm(false); $('rpSetSkip').focus(); });
-    for (const [buttonId, fieldId] of [['rpSpanStartNow', 'rpSpanStart'], ['rpSpanEndNow', 'rpSpanEnd']]) $(buttonId).addEventListener('click', () => { $(fieldId).value = String(fileTime($('rpVideo'))); });
+    for (const [buttonId, fieldId] of [['rpSpanStartNow', 'rpSpanStart'], ['rpSpanEndNow', 'rpSpanEnd']]) $(buttonId).addEventListener('click', () => {
+        $(fieldId).value = String(fileTime($('rpVideo'))); if (jumpTrigger === $('rpSpanJump')) resetJump();
+    });
     $('rpSpanForm').addEventListener('submit', event => {
         event.preventDefault();
         const kind = $('rpSpanKind').value, start = Number($('rpSpanStart').value), end = Number($('rpSpanEnd').value), duration = Number(state.result?.duration_ms || state.item?.duration_ms || 0);
@@ -867,10 +1080,23 @@
     function seedFilter(select, value, label) { if (value) { select.append(option(value, label)); select.value = value; } }
     seedFilter($('rpShow'), (link.get('show') || '').slice(0, 200), (link.get('show') || '').slice(0, 200));
     seedFilter($('rpSeason'), /^\d{1,4}$/.test(link.get('season') || '') ? link.get('season') : '', `Season ${link.get('season')}`);
-    loadLibrary().then(() => {
+    loadLibrary().then(async () => {
         if (!linkedOpen) return;
-        const item = state.items.find(i => i.id === linkedOpen);
-        if (item) openItem(item); else message('That episode is not in the library list any more.', true);
+        let item = state.items.find(i => i.id === linkedOpen);
+        while (!item && state.cursor) {
+            const cursor = state.cursor;
+            await loadLibrary(true);
+            item = state.items.find(i => i.id === linkedOpen);
+            if (cursor === state.cursor) break;
+        }
+        if (!item) { message('That episode is not in the library list any more.', true); return; }
+        if (await openItem(item) && location.hash === '#fix') {
+            if ($('rpEditRanges').hidden) {
+                if (!needsRefresh(state.result)) message('Analyze this episode before setting or changing a skip.');
+                return;
+            }
+            openExactEditor(link.get('kind') === 'credits' ? 'credits' : 'intro');
+        }
     });
     loadQueue();
     /* The Setup guide's "Refresh the library" button links to /reprise?refresh=1: behave as if Refresh library was pressed, once, then drop the parameter. */

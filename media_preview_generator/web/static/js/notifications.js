@@ -1,89 +1,77 @@
-// =========================================================================
-// Notification center (bell-icon dropdown)
-//
-// Fetches active system notifications from /api/system/notifications,
-// renders them into the bell dropdown, and wires dismiss / dismiss-permanent
-// buttons.  Notifications a user dismissed permanently are stored in
-// settings.json and stay dismissed across container restarts.
-//
-// Split out of app.js (which previously held this section at lines 904-1117)
-// so the notification flow can be edited without scrolling past 4K LOC of
-// unrelated dashboard glue. Loaded AFTER app.js in base.html so this file
-// can call escapeHtml / sanitizeNotificationHtml / copyVulkanDiagnosticBundle
-// / showToast as window-level globals defined there.
-// =========================================================================
+/* Recent activity shows server-backed notices. Job history and saved Plex sends have their own pages. */
+var notificationLoad = null;
+var notificationMutation = false;
+var notificationSnapshot = null;
 
 function loadNotifications() {
     var list = document.getElementById('notificationList');
-    var empty = document.getElementById('notificationEmpty');
-    var badge = document.getElementById('notificationBellBadge');
-    if (!list || !badge) return;
+    if (!list || notificationLoad) return notificationLoad;
 
-    fetch('/api/system/notifications')
-        .then(function (r) {
-            if (!r.ok) throw new Error('HTTP ' + r.status);
-            // Before setup is finished the API answers with the setup page (a redirect to HTML): nothing to show.
-            var type = r.headers.get('content-type') || '';
-            if (r.redirected || type.indexOf('application/json') === -1) return null;
-            return r.json();
+    var loading = document.getElementById('notificationLoading');
+    var failure = document.getElementById('notificationFetchError');
+    var trigger = document.getElementById('notificationBellBtn');
+    list.setAttribute('aria-busy', 'true');
+    notificationLoad = fetch('/api/system/notifications', { headers: { Accept: 'application/json' } })
+        .then(function (response) {
+            if (!response.ok || response.redirected) throw new Error('HTTP ' + response.status);
+            return response.json();
         })
         .then(function (data) {
-            if (data === null) return;
-            var notifications = (data && data.notifications) || [];
-            renderNotifications(notifications);
+            if (!Array.isArray(data?.notifications)) throw new Error('Invalid notification response');
+            renderNotifications(data.notifications);
+            failure.hidden = true;
+            delete trigger.dataset.noticeState;
+            return true;
         })
         .catch(function (err) {
             console.error('loadNotifications failed:', err);
-            // Leave the list in its previous state; failure should not
-            // clobber any currently-visible notifications.
+            // Keep any last-known notices, but never claim the list is current or empty after a failure.
+            document.getElementById('notificationEmpty').classList.add('d-none');
+            failure.hidden = false;
+            trigger.dataset.noticeState = 'error';
+            trigger.setAttribute('aria-label', 'Recent activity, notices unavailable');
+            trigger.title = 'Recent activity, notices unavailable';
+            return false;
+        })
+        .finally(function () {
+            loading.hidden = true;
+            list.setAttribute('aria-busy', 'false');
+            notificationLoad = null;
         });
+    return notificationLoad;
 }
 
 function renderNotifications(notifications) {
     var list = document.getElementById('notificationList');
     var empty = document.getElementById('notificationEmpty');
     var badge = document.getElementById('notificationBellBadge');
-    var mobileLabel = document.getElementById('notificationBellLabel');
+    var trigger = document.getElementById('notificationBellBtn');
     var countPill = document.getElementById('notificationCount');
     if (!list) return;
 
-    // Wipe previous entries but keep the 'empty' placeholder at the top.
-    list.querySelectorAll('.notification-entry').forEach(function (el) { el.remove(); });
+    var bulk = document.getElementById('notificationDismissAllBtn');
+    if (bulk) bulk.hidden = !notifications.some(function (notice) { return notice.dismissable !== false; });
 
-    if (!notifications || notifications.length === 0) {
-        if (empty) empty.classList.remove('d-none');
-        if (badge) {
-            badge.textContent = '0';
-            badge.classList.add('d-none');
-        }
-        // Mobile-collapsed bell row: when there's nothing to show,
-        // rename the inline label to "No new notifications" so the
-        // user doesn't waste a tap discovering an empty card. Desktop
-        // keeps the icon-only treatment with tooltip — the dropdown's
-        // own "you're all caught up" state is enough there.
-        if (mobileLabel) mobileLabel.textContent = 'No new notifications';
-        if (countPill) countPill.classList.add('d-none');
-        return;
-    }
-
-    if (empty) empty.classList.add('d-none');
+    var count = notifications.length;
+    if (empty) empty.classList.toggle('d-none', count !== 0);
     if (countPill) {
-        countPill.textContent = String(notifications.length);
-        countPill.classList.remove('d-none');
+        countPill.textContent = String(count);
+        countPill.classList.toggle('d-none', count === 0);
     }
     if (badge) {
-        // The pill is 16px wide: past 9 it reads "9+" and the full count stays in the tooltip.
-        badge.textContent = notifications.length > 9 ? '9+' : String(notifications.length);
-        badge.title = notifications.length + ' unread notifications';
-        badge.classList.remove('d-none');
+        badge.textContent = count > 9 ? '9+' : String(count);
+        badge.classList.toggle('d-none', count === 0);
     }
-    // Mobile-collapsed label includes the count so users see "Notifications (3)"
-    // at a glance without expanding the dropdown.
-    if (mobileLabel) {
-        mobileLabel.textContent = notifications.length === 1
-            ? '1 notification'
-            : notifications.length + ' notifications';
+    if (trigger) {
+        var label = count ? 'Recent activity, ' + count + (count === 1 ? ' notice' : ' notices') : 'Recent activity';
+        trigger.setAttribute('aria-label', label);
+        trigger.title = label;
     }
+    var snapshot = JSON.stringify(notifications);
+    if (snapshot === notificationSnapshot) return;
+    notificationSnapshot = snapshot;
+    if (list.contains(document.activeElement)) document.getElementById('rpActivityTitle')?.focus({ preventScroll: true });
+    list.querySelectorAll('.notification-entry').forEach(function (el) { el.remove(); });
 
     notifications.forEach(function (notif) {
         var entry = document.createElement('div');
@@ -123,12 +111,12 @@ function renderNotifications(notifications) {
         }
 
         var actions = document.createElement('div');
-        actions.className = 'd-flex gap-2 mt-2';
+        actions.className = 'd-flex flex-wrap gap-2 mt-2';
         // An optional in-app link shown as a button, so the fix isn't hidden behind "Show details".
         var action = notif.action;
         if (action && typeof action.href === 'string' && action.href.charAt(0) === '/' && action.href.charAt(1) !== '/') {
             var go = document.createElement('a');
-            go.className = 'btn btn-sm btn-outline-warning text-nowrap';
+            go.className = 'btn btn-sm btn-outline-warning';
             go.href = action.href;
             go.textContent = action.label || 'Open';
             actions.appendChild(go);
@@ -139,7 +127,7 @@ function renderNotifications(notifications) {
             dismiss.className = 'btn btn-sm btn-outline-secondary ov-nt-dismiss';
             dismiss.textContent = 'Dismiss';
             dismiss.title = 'Hide until next restart';
-            dismiss.onclick = function () { dismissNotificationSession(notif.id); };
+            dismiss.onclick = function () { dismissNotification(notif.id, false); };
             actions.appendChild(dismiss);
 
             // A card for a problem that comes and goes (an unmounted media folder) is session-only.
@@ -149,7 +137,7 @@ function renderNotifications(notifications) {
                 dismissPerm.className = 'btn btn-sm btn-outline-danger ov-nt-perm';
                 dismissPerm.textContent = 'Dismiss permanently';
                 dismissPerm.title = 'Never show this notification again';
-                dismissPerm.onclick = function () { dismissNotificationPermanent(notif.id); };
+                dismissPerm.onclick = function () { dismissNotification(notif.id, true); };
                 actions.appendChild(dismissPerm);
             }
         }
@@ -172,80 +160,78 @@ function renderNotifications(notifications) {
     });
 }
 
-function dismissNotificationSession(notificationId) {
-    fetch('/api/system/notifications/' + encodeURIComponent(notificationId) + '/dismiss', {
-        method: 'POST',
-    })
-        .then(function (r) { return r.json(); })
-        .then(function (data) {
-            if (!data || !data.ok) {
-                throw new Error((data && data.error) || 'Unknown error');
-            }
-            if (typeof showToast === 'function') {
-                showToast('Dismissed', 'Notification hidden for this session', 'info');
-            }
-            loadNotifications();
-        })
-        .catch(function (err) {
-            console.error('dismissNotificationSession failed:', err);
-            if (typeof showToast === 'function') {
-                showToast('Error', 'Could not dismiss notification', 'danger');
-            }
-        });
+async function updateNotification(path) {
+    var response = await fetch('/api/system/notifications/' + path, { method: 'POST' });
+    if (response.redirected || response.status === 401) throw new Error('Sign in again to update notices.');
+    var data = response.headers.get('content-type')?.includes('application/json') ? await response.json() : null;
+    if (!response.ok || data?.ok !== true) throw new Error(data?.error || 'The server did not confirm the update.');
 }
 
-function dismissNotificationPermanent(notificationId) {
-    fetch('/api/system/notifications/' + encodeURIComponent(notificationId) + '/dismiss-permanent', {
-        method: 'POST',
-    })
-        .then(function (r) { return r.json(); })
-        .then(function (data) {
-            if (data && data.ok) {
-                if (typeof showToast === 'function') {
-                    showToast('Dismissed permanently', 'This notification will not appear again', 'info');
-                }
-                loadNotifications();
-            } else {
-                throw new Error((data && data.error) || 'Unknown error');
-            }
-        })
-        .catch(function (err) {
-            console.error('dismissNotificationPermanent failed:', err);
-            if (typeof showToast === 'function') {
-                showToast('Error', 'Could not permanently dismiss notification', 'danger');
-            }
-        });
-}
-
-function resetDismissedNotifications() {
-    fetch('/api/system/notifications/reset-dismissed', { method: 'POST' })
-        .then(function (r) { return r.json(); })
-        .then(function (data) {
-            if (data && data.ok) {
-                if (typeof showToast === 'function') {
-                    showToast('Reset', 'Dismissed notifications cleared', 'info');
-                }
-                loadNotifications();
-            }
-        })
-        .catch(function (err) {
-            console.error('resetDismissedNotifications failed:', err);
-        });
-}
-
-// Bind reset button and initial load once DOM is ready.  loadNotifications()
-// is safe to call on any page because the bell dropdown lives in the shared
-// navbar (base.html).
-document.addEventListener('DOMContentLoaded', function () {
-    var resetBtn = document.getElementById('notificationResetBtn');
-    if (resetBtn) {
-        resetBtn.addEventListener('click', function (ev) {
-            ev.preventDefault();
-            resetDismissedNotifications();
-        });
+async function performNotificationAction(action) {
+    if (notificationMutation) return;
+    notificationMutation = true;
+    var panel = document.getElementById('rpActivity');
+    var status = document.getElementById('notificationActionStatus');
+    var controls = '#notificationDismissAllBtn, #notificationResetBtn, .ov-nt-dismiss, .ov-nt-perm';
+    panel.querySelectorAll(controls).forEach(function (control) { control.setAttribute('aria-disabled', 'true'); });
+    status.textContent = 'Updating notices…';
+    status.hidden = false;
+    try {
+        var message = await action();
+        // A poll that started before dismissal may have fetched the old list. Wait for it, then load the saved state.
+        if (notificationLoad) await notificationLoad;
+        var refreshed = await loadNotifications();
+        status.textContent = message + (refreshed ? '' : ' The list could not refresh.');
+    } catch (err) {
+        status.textContent = 'Could not update notices: ' + err.message;
+    } finally {
+        notificationMutation = false;
+        panel.querySelectorAll(controls).forEach(function (control) { control.removeAttribute('aria-disabled'); });
     }
+}
+
+function dismissNotification(id, permanent) {
+    performNotificationAction(async function () {
+        try {
+            await updateNotification(encodeURIComponent(id) + (permanent ? '/dismiss-permanent' : '/dismiss'));
+            return permanent ? 'Notice dismissed permanently.' : 'Notice dismissed until restart.';
+        } catch (err) {
+            return 'Could not dismiss the notice: ' + err.message;
+        }
+    });
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+    var panel = document.getElementById('rpActivity');
+    if (!panel) return;
+    panel.addEventListener('rp:popup-open', function () { if (!notificationMutation) loadNotifications(); });
+    document.getElementById('notificationRetryBtn').addEventListener('click', loadNotifications);
+    document.getElementById('notificationResetBtn').addEventListener('click', function () {
+        performNotificationAction(async function () {
+            try {
+                await updateNotification('reset-dismissed');
+                return 'Dismissed notices restored.';
+            } catch (err) {
+                return 'Could not restore dismissed notices: ' + err.message;
+            }
+        });
+    });
+    document.getElementById('notificationDismissAllBtn').addEventListener('click', function () {
+        var entries = Array.from(panel.querySelectorAll('.notification-entry:has(.ov-nt-dismiss)'));
+        if (!entries.length) return;
+        performNotificationAction(async function () {
+            var results = await Promise.allSettled(entries.map(function (entry) {
+                return updateNotification(encodeURIComponent(entry.dataset.notificationId) + '/dismiss');
+            }));
+            var failed = results.filter(function (result) { return result.status === 'rejected'; }).length;
+            var dismissed = results.length - failed;
+            if (!failed) return 'Dismissed ' + dismissed + (dismissed === 1 ? ' notice.' : ' notices.');
+            if (!dismissed) return 'Could not dismiss these notices. Try again.';
+            return 'Dismissed ' + dismissed + '. Could not dismiss ' + failed + '.';
+        });
+    });
     loadNotifications();
-    // Refresh every 60s so a Vulkan state change (e.g. after a container
-    // restart with fixed env) shows up without a manual page reload.
-    setInterval(loadNotifications, 60000);
+    setInterval(function () {
+        if (!document.hidden && !notificationMutation) loadNotifications();
+    }, 60000);
 });

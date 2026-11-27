@@ -1,22 +1,36 @@
-/* Reprise · To approve. Layout for this one page; every colour, radius, button and surface comes from reprise-lucent.css. */
+/* Review: compact season rows, with the episode footage as the editor’s main surface. */
 
-.ap-notice:not(:empty) { margin: 0 0 var(--lu-space-5); }
+.ap-notice:not(:empty) { margin-block-end: var(--lu-space-3); }
+.ap-sending-note { display: flex; flex-wrap: wrap; align-items: center; gap: 0 var(--lu-space-2); font-size: var(--lu-type-label); }
 .ap-queue, .ap-review { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--lu-space-5); }
 .ap-review { gap: var(--lu-space-4); }
-.ap[data-view="review"] #apSub { display: none; }
+.ap:not([data-view="queue"]) #apSub, .ap #apSub:empty { display: none; }
 .ap [tabindex="-1"]:focus-visible { outline: none; }
+.ap :is(.lu-btn, .lu-iconbtn) { min-height: var(--h-btn); height: auto; line-height: 1.25; }
+.ap .lu-btn { padding-block: var(--lu-space-2); white-space: normal; text-align: center; }
+.ap .lu-btn > .bi { flex: none; }
+.ap p { margin-block: 0; }
+.ap :is(h2, h3, .ap-top, .ap-sent-row) { overflow-wrap: anywhere; }
 
-/* ── The queue: one panel per show, one row per season ─────────────────────────────────────────────────────── */
-.ap-skel { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--lu-space-3); padding: var(--lu-space-5); }
+/* The queue and season workspace */
+.ap-skel { display: grid; gap: var(--lu-space-3); padding: var(--lu-space-5); }
 .ap-seasons { border-top: 1px solid var(--lu-material-edge); }
-.ap-season { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--lu-space-5); padding: var(--lu-space-4) var(--lu-space-5) var(--lu-space-5); }
-.ap-season-head { display: flex; align-items: baseline; gap: var(--lu-space-3); }
-.ap-do { display: flex; align-items: center; gap: var(--lu-space-4); }
-.ap-what { display: flex; align-items: flex-start; gap: var(--lu-space-3); flex: 1 1 0; min-width: 0; }
-.ap-do > .lu-btn { flex: none; }
-.ap-plan { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; margin: var(--lu-space-2) 0 0; padding: 0; list-style: none; color: var(--lu-ink-2); font: 400 var(--lu-type-label)/1.4 var(--lu-font); }
-.ap-plan:empty { display: none; }
-.ap-plan-wait .lu-skel { width: 58%; height: .9em; }
+.ap-season { display: flex; flex-wrap: wrap; align-items: center; gap: var(--lu-space-3) var(--lu-space-5); padding: var(--lu-space-4) var(--lu-inset-card, var(--lu-space-5)); }
+.ap-season > .lu-col { flex: 1 1 14rem; min-width: 0; }
+.ap-season > .lu-btn { max-width: 100%; }
+.ap-season-work { display: grid; gap: var(--lu-space-3); padding: var(--lu-inset-card, var(--lu-space-5)); }
+.ap-season-work > .lu-btn { justify-self: start; }
+.ap-step { border-top: 1px solid var(--lu-material-edge); padding-inline: 0; }
+.ap :is(.ap-plan, .ap-episode-links, .ap-reason) > summary {
+  padding-block: var(--lu-space-2); cursor: pointer; color: var(--lu-ink-2); font-size: var(--lu-type-label);
+}
+.ap :is(.ap-plan, .ap-episode-links, .ap-reason) > summary:focus-visible {
+  outline: none; color: var(--lu-ink); background: var(--lu-glass-raised); border-radius: var(--lu-radius-control);
+  box-shadow: var(--lu-shadow-raised);
+}
+.ap-plan ul { margin: 0; padding-inline-start: var(--lu-space-5); color: var(--lu-ink-2); font-size: var(--lu-type-label); }
+.ap-episode-links ul { list-style: none; margin: 0; padding: 0; }
+.ap-episode-links .lu-btn { text-align: start; }
 
 .ap-empty { display: grid; justify-items: center; gap: var(--lu-space-4); padding: var(--lu-space-8) var(--lu-space-5); text-align: center; }
 .ap-empty .lu-col { align-items: center; gap: var(--lu-space-2); }
@@ -30,34 +44,45 @@
 .ap-sent-row + .ap-sent-row { padding-top: var(--lu-space-3); border-top: 1px solid var(--lu-material-edge); }
 .ap-sent-row > .lu-col { padding-top: 2px; }
 .ap-sent-actions { display: flex; align-items: center; gap: var(--lu-space-1); flex: none; }
-.ap-sent-head { position: sticky; top: 0; z-index: 1; display: flex; flex-wrap: wrap; align-items: center; gap: var(--lu-space-2) var(--lu-space-3); padding-bottom: var(--lu-space-2); background: var(--lu-reading); border-bottom: 1px solid var(--lu-material-edge); }
-.ap-sent-head > .lu-grow { flex: 1 1 140px; min-width: 0; }
+.ap-sent-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--lu-space-2) var(--lu-space-3); padding-bottom: var(--lu-space-2); border-bottom: 1px solid var(--lu-material-edge); }
+.ap-sent-head > .lu-grow { flex: 1 1 140px; min-width: 0; margin: 0; }
+.ap-sent-head h2 span { display: block; }
 .ap-sent-tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--lu-space-1); }
 .ap-new { display: inline-block; padding: 0 var(--lu-space-2); border-radius: var(--lu-radius-pill); background: var(--lu-accent-fill); color: var(--lu-accent-fill-ink); font: 700 var(--lu-type-caption)/1.5 var(--lu-font); vertical-align: 1px; }
 .ap-fails { margin: var(--lu-space-1) 0 0; padding-left: var(--lu-space-4); color: var(--lu-ink-2); font: 400 var(--lu-type-caption)/1.45 var(--lu-font); }
 
 /* ── The review: one episode at a time ─────────────────────────────────────────────────────────────────────── */
-.ap-top { display: flex; align-items: center; gap: var(--lu-space-3); }
-.ap-top > .lu-btn { padding: 0 var(--lu-space-4); }
+.ap-top { display: flex; flex-wrap: wrap; align-items: center; gap: var(--lu-space-3); }
+.ap-top > .lu-btn { padding-inline: var(--lu-space-4); }
+.ap-top > .lu-col { min-width: 0; }
 .ap-keys { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: var(--lu-space-2) var(--lu-space-4); justify-items: start; padding: var(--lu-space-4) var(--lu-space-5); }
 .ap-keys .lu-kbd { display: inline-grid; min-width: 34px; }
-.ap-card { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--lu-space-4); padding: var(--lu-space-5); }
+.ap-card { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--lu-space-4); padding: var(--lu-inset-card, var(--lu-space-5)); }
 .ap-card-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--lu-space-2) var(--lu-space-4); }
 .ap-badges { display: flex; flex-wrap: wrap; align-items: center; gap: var(--lu-space-2); }
 .ap-reason { max-width: 68ch; }
+.ap-reason p { margin-block-start: var(--lu-space-2); }
+.ap-jump-tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--lu-space-3); }
+.ap-jump { display: grid; gap: var(--lu-space-3); min-width: 0; }
+.ap-jump-tools p { flex: 1 1 12rem; }
+.ap-jump-status:empty { display: none; }
+.ap-jump-video { width: 100%; max-height: 60dvh; aspect-ratio: 16 / 9; border-radius: var(--lu-radius-card); background: var(--lu-material-well); }
 .ap-clips { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--lu-space-5); }
 .ap-edge { display: grid; align-content: start; gap: var(--lu-space-2); min-width: 0; }
 .ap-edge-title { color: var(--lu-ink-2); font-weight: 600; font-size: var(--lu-type-label); }
-.ap-card[data-adjusting="true"] .ap-edge.is-active .lu-clip-stage { box-shadow: 0 0 0 2px var(--lu-accent-text); }
+.ap-card[data-adjusting="false"] .ap-edge .lu-clip-play { display: none; }
+.ap-card[data-adjusting="true"] .ap-edge.is-active .lu-clip-stage { box-shadow: var(--lu-shadow-raised); }
 .ap-card[data-adjusting="true"] .ap-edge.is-active .ap-edge-title { color: var(--lu-ink); }
 .ap-plex { display: flex; align-items: flex-start; gap: var(--lu-space-2); }
 .ap-plex .bi { flex: none; margin-top: 1px; font-size: 14px; }
 
-.ap-choose { margin-top: var(--lu-space-2); }
+.ap .lu-tray { bottom: calc(var(--rp-dock-clearance, 0px) + var(--lu-space-3)); }
+.ap .lu-toasts { bottom: calc(var(--rp-dock-clearance, 0px) + var(--lu-space-8) + 6rem); }
+.ap-choose { margin-top: 0; }
 .ap-choose .lu-tsum b { display: block; font-size: var(--lu-type-body); }
 .ap-times { display: block; margin-top: 2px; color: var(--lu-ink-2); font: 500 var(--lu-type-label)/1.3 var(--lu-font); }
 .ap-times .lu-acc { font-weight: 700; }
-.ap-buttons { display: flex; gap: var(--lu-space-2); }
+.ap-buttons { display: flex; flex-wrap: wrap; gap: var(--lu-space-2); }
 .ap-buttons .lu-btn[aria-pressed="true"] { background-color: var(--lu-glass-raised); border-color: var(--lu-edge-raised); }
 .ap-review.is-busy .ap-buttons { opacity: .6; pointer-events: none; }
 .ap-top .lu-iconbtn:disabled { opacity: .4; cursor: not-allowed; }
@@ -65,34 +90,34 @@
 .ap-wait { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--lu-space-3); padding: var(--lu-space-6) var(--lu-space-5); }
 .ap-done { display: grid; justify-items: center; gap: var(--lu-space-4); padding: var(--lu-space-8) var(--lu-space-5); text-align: center; }
 .ap-done .lu-col { align-items: center; gap: var(--lu-space-2); }
-.ap-done .ap-do { width: min(600px, 100%); padding: var(--lu-space-4); border-radius: var(--lu-radius-row); background: var(--lu-material-well); text-align: left; }
 .ap-done-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--lu-space-3); }
 
 /* ── Narrow screens ────────────────────────────────────────────────────────────────────────────────────────── */
 @media (max-width: 760px) {
   .ap-card[data-adjusting="true"] .ap-clips { grid-template-columns: minmax(0, 1fr); }
 }
-@media (max-width: 600px) {
-  .ap-season { padding: var(--lu-space-4); gap: var(--lu-space-4); }
-  .ap-do { flex-direction: column; align-items: stretch; }
-  .ap-do > .lu-btn { width: 100%; }
-  .ap-card { padding: var(--lu-space-4); }
+@media (max-width: 640px) {
+  .ap-season { padding: var(--lu-space-4); }
+  .ap-step { padding-inline: 0; }
+  .ap-season > :is(.lu-col, .lu-btn) { flex-basis: 100%; }
+  .ap-card, .ap-season-work { padding: var(--lu-space-4); }
   .ap-clips { gap: var(--lu-space-3); }
-  .ap-clips .lu-clip-play > span { width: 40px; height: 40px; }
-  .ap-clips .lu-clip-play .bi { font-size: 20px; }
   .ap-clips .lu-clip-stage { border-radius: var(--lu-radius-control); }
-  .ap-buttons { width: 100%; }
-  .ap-buttons .lu-btn { flex: 1 1 0; min-width: 0; padding: 0 var(--lu-space-2); }
+  .ap-buttons { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
+  .ap-buttons .lu-btn { min-width: 0; padding-inline: var(--lu-space-2); }
+  .ap-buttons [data-act="skip"] { grid-column: 1 / -1; }
+  .ap-buttons .lu-kbd { display: none; }
+  .ap .lu-toasts { bottom: calc(var(--rp-dock-clearance, 0px) + 12rem); }
   .ap-sent-row { flex-wrap: wrap; }
-  .ap-sent-row > .lu-col { flex: 1 1 180px; }
-  .ap-sent-actions { margin-left: calc(var(--h-btn) + var(--lu-space-3)); flex: 1 1 100%; }
+  .ap-sent-row > .lu-col { flex: 1 1 9rem; }
+  .ap-sent-actions { margin-inline-start: calc(var(--h-btn) + var(--lu-space-3)); }
   .ap-empty, .ap-done { padding: var(--lu-space-6) var(--lu-space-4); }
-  .ap-done .ap-do { flex-direction: column; align-items: stretch; }
-  /* The arrow is enough on a phone; the words stay for screen readers, and the show name gets the room. */
-  .ap-top > [data-act="back"] { width: var(--h-btn); padding: 0; }
+  .ap-top > [data-act="back"] { width: var(--h-btn); padding-inline: 0; }
   .ap-top > [data-act="back"] > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 }
-@media (max-width: 380px) {
-  .ap-buttons .lu-btn .bi { display: none; }
+@media (hover: none) {
+  .ap-help, .ap-buttons .lu-kbd { display: none; }
 }
-@media (hover: none) { .ap-help { display: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .ap .lu-skel { animation: none; }
+}

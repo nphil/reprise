@@ -1,8 +1,8 @@
 // The first-run tour (templates/_onboarding.html): a modal <dialog>, so the browser traps focus, makes the page behind it
 // inert and closes it on Esc. Five steps, Skip on every one. Skip and Done are remembered on the server for the account
 // (POST /api/account/onboarding), so the tour stays closed in every browser; Skip closes it even when that can't be
-// saved. Esc or a click outside only closes it for this browser session. Anything with [data-tour-open] (Settings, the
-// sidebar) opens it again from step 1.
+// saved. Esc or a click outside only closes it for this browser session. A [data-tour-open] button in Settings or
+// Help opens it again from step 1.
 (function () {
     'use strict';
 

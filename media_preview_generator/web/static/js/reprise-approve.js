@@ -1,10 +1,4 @@
-/* Reprise · To approve.
- *
- * Everything Reprise found that waits for the owner, from /api/reprise/approvals. Two ways through it:
- *   1. One click per season: "Approve & send N sure ones" (only the High-confidence suggestions), with Undo.
- *   2. One by one for the rest: a start picture and an end picture, then Skip it, Keep it or Adjust (keys S, K, A),
- *      moving on by itself, with Undo (U). At the end, "Send N episodes to Plex".
- * The pictures and the nudge/snap controls come from reprise-clip.js; the colours from the Lucent theme layer. */
+/* Reprise · Review a season or fix a skip for one exact media version. */
 (function () {
   'use strict';
 
@@ -16,13 +10,7 @@
   const fmt = Clip.fmt;
   const queueEl = $('apQueue'), reviewEl = $('apReview'), noticeEl = $('apNotice'), subEl = $('apSub'), sentEl = $('apSent'), titleEl = $('apTitle');
 
-  const state = {
-    queue: null,        // GET /approvals
-    plans: new Map(),   // season key -> GET /approvals/season (what each button would change in Plex)
-    generation: 0,      // counts queue loads, so a late plan for an old queue is dropped
-    sent: [],           // what this visit sent or approved, newest first, each with its Undo
-    review: null,       // the one-by-one review in progress
-  };
+  const state = { sent: [], review: null, route: 0, sending: false };
 
   /* ── small helpers ────────────────────────────────────────────────────────────────────────────────────────── */
   const el = (tag, cls, text) => {
@@ -35,10 +23,51 @@
   const plural = (n, one, many) => n + ' ' + (n === 1 ? one : many || one + 's');
   const keyOf = (show, season) => JSON.stringify([show, season]);
   const seasonUrl = (show, season) => '/approvals/season?show=' + encodeURIComponent(show) + '&season=' + season;
-  const KIND = {
-    intro: { one: 'intro', many: 'intros', ask: 'Skip this intro?' },
-    credits: { one: 'credits', many: 'credits', ask: 'Skip these credits?' },
-  };
+  const KIND = { intro: 'Intro', credits: 'Credits' };
+
+  function scopeHref(scope, hash = '') {
+    const params = new URLSearchParams();
+    if (scope.show && Number.isInteger(scope.season)) {
+      params.set('show', scope.show);
+      params.set('season', scope.season);
+    }
+    if (scope.episode) params.set('episode_id', scope.episode);
+    if (scope.kind) params.set('kind', scope.kind);
+    const query = params.toString();
+    return location.pathname + (query ? '?' + query : '') + hash;
+  }
+
+  function libraryLink(scope = {}) {
+    const url = new URL(root.dataset.libraryUrl, location.origin);
+    if (scope.show) url.searchParams.set('show', scope.show);
+    if (Number.isInteger(scope.season)) url.searchParams.set('season', scope.season);
+    if (scope.episode) {
+      url.searchParams.set('open', scope.episode);
+      if (scope.kind) url.searchParams.set('kind', scope.kind);
+      url.hash = 'fix';
+    }
+    const link = el('a', 'lu-btn', scope.episode ? 'Fix in Library' : 'Open Library');
+    link.href = url.pathname + url.search + url.hash;
+    return link;
+  }
+
+  function viewLink(text, href, opts = {}) {
+    const link = el('a', opts.cls || 'lu-btn');
+    link.href = href;
+    if (opts.icon) link.append(icon(opts.icon));
+    link.append(el('span', null, text));
+    link.addEventListener('click', event => {
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      event.preventDefault();
+      const here = location.pathname + location.search + location.hash;
+      if (here === href) return;
+      if (opts.back && history.state?.reviewFrom === href) { history.back(); return; }
+      if (opts.back) history.replaceState(null, '', href);
+      else history.pushState({ reviewFrom: here }, '', href);
+      loadRoute();
+    });
+    return link;
+  }
 
   /* 1 min 3 s: a length in whole seconds, for a plain sentence. */
   function length(ms) {
@@ -47,10 +76,12 @@
     const minutes = Math.floor(total / 60), rest = total % 60;
     return minutes + ' min' + (rest ? ' ' + rest + ' s' : '');
   }
-  const NOUN = { intro: ['intro', 'intros'], credits: ['set of credits', 'sets of credits'] };
-  function kindsText(kinds) {
-    const parts = ['intro', 'credits'].filter(k => kinds && kinds[k]).map(k => plural(kinds[k], NOUN[k][0], NOUN[k][1]));
-    return parts.join(' and ');
+  function counts(sure, needs, ready) {
+    return [
+      sure ? plural(sure, 'high-confidence skip') : '',
+      needs ? plural(needs, 'skip') + ' to check' : '',
+      ready ? plural(ready, 'episode') + ' ready to send' : '',
+    ].filter(Boolean).join(' · ');
   }
 
   function button(text, opts = {}) {
@@ -121,28 +152,27 @@
   function showView(view) {
     root.dataset.view = view;
     queueEl.hidden = view !== 'queue';
-    reviewEl.hidden = view !== 'review';
+    reviewEl.hidden = view === 'queue';
   }
-  const sendingOn = () => Boolean(state.queue && state.queue.sending && state.queue.sending.enabled);
 
   /* ═══ The queue ═══════════════════════════════════════════════════════════════════════════════════════════════ */
-  async function loadQueue(opts = {}) {
-    state.generation += 1;
-    state.plans.clear();
-    if (!opts.quiet) { queueEl.setAttribute('aria-busy', 'true'); renderSkeleton(); }
+  async function loadQueue(route) {
+    queueEl.setAttribute('aria-busy', 'true');
+    renderSkeleton();
     try {
-      state.queue = await api('/approvals');
-      renderNotice();
-      renderQueue();
+      const queue = await api('/approvals');
+      if (route !== state.route) return;
+      renderNotice(queue.sending);
+      renderQueue(queue);
     } catch (error) {
-      renderLoadError(error);
+      if (route === state.route) renderLoadError(error);
     } finally {
-      queueEl.setAttribute('aria-busy', 'false');
+      if (route === state.route) queueEl.setAttribute('aria-busy', 'false');
     }
   }
 
   function renderSkeleton() {
-    subEl.textContent = 'Looking for what is waiting…';
+    subEl.textContent = 'Loading seasons…';
     queueEl.replaceChildren(...[0, 1].map(() => {
       const panel = el('div', 'lu-panel');
       const rows = el('div', 'ap-skel');
@@ -156,40 +186,32 @@
     subEl.textContent = '';
     const banner = el('div', 'lu-banner lu-bad');
     const body = el('div', 'lu-col lu-grow');
-    body.append(el('b', 'lu-h', 'Couldn’t load what is waiting'), el('span', 'lu-muted', error.message));
+    body.append(el('b', 'lu-h', 'Couldn’t load Review'), el('span', 'lu-muted', error.message));
     const again = button('Try again', { icon: 'arrow-repeat' });
-    again.addEventListener('click', () => act(again, () => loadQueue()));
+    again.addEventListener('click', () => loadRoute());
     const actions = el('div', 'lu-actions'); actions.append(again);
     body.append(actions);
     banner.append(glyph('exclamation-triangle', 'lu-bad'), body);
     queueEl.replaceChildren(banner);
   }
 
-  function renderNotice() {
+  function renderNotice(sending) {
     noticeEl.replaceChildren();
-    const sending = state.queue.sending;
     if (!sending || sending.enabled) return;
-    const banner = el('div', 'lu-banner lu-warn');
-    const body = el('div', 'lu-col lu-grow');
-    body.append(el('span', 'lu-h', sending.message));
+    const note = el('p', 'ap-sending-note lu-muted', sending.available
+      ? 'Review only · Approvals stay in Reprise.'
+      : 'Review only · Sending to Plex is unavailable on this install.');
     if (sending.available) {
-      const link = el('a', 'lu-btn', 'Open Sharing');
+      const link = el('a', 'lu-btn lu-quiet', 'Sharing');
       link.href = root.dataset.sharingUrl;
-      const actions = el('div', 'lu-actions'); actions.append(link);
-      body.append(actions);
+      note.append(link);
     }
-    banner.append(glyph('send-slash', 'lu-warn'), body);
-    noticeEl.append(banner);
+    noticeEl.append(note);
   }
 
-  function renderQueue() {
-    const queue = state.queue, totals = queue.totals;
-    const parts = [];
-    if (totals.sure) parts.push(plural(totals.sure, 'skip') + ' Reprise is sure about');
-    if (totals.needs) parts.push(totals.needs + ' for you to look at');
-    if (totals.ready) parts.push(plural(totals.ready, 'episode') + ' approved, not sent yet');
-    subEl.textContent = parts.length ? parts.join(' · ') : 'Nothing is waiting for you.';
-    pending.clear();
+  function renderQueue(queue) {
+    const { sure, needs, ready } = queue.totals;
+    subEl.textContent = counts(sure, needs, ready);
     if (!queue.shows.length) { queueEl.replaceChildren(emptyState()); return; }
     queueEl.replaceChildren(...queue.shows.map(showPanel));
   }
@@ -197,18 +219,18 @@
   function emptyState() {
     const box = el('div', 'lu-panel ap-empty lu-enter');
     const text = el('div', 'lu-col');
-    text.append(el('h2', 'lu-title', 'Nothing is waiting for you'),
-      el('p', 'lu-muted lu-measure', 'When Reprise finds intros or credits, they show up here for you to approve. Analyze a season in the Library to get some.'));
-    const open = el('a', 'lu-btn lu-primary', 'Open the Library');
-    open.href = root.dataset.libraryUrl;
+    text.append(el('h2', 'lu-title', 'Nothing to review'),
+      el('p', 'lu-muted lu-measure', 'Analyze a season in Library to find intros and credits.'));
+    const open = libraryLink();
+    open.classList.add('lu-primary');
     box.append(glyph('inbox', 'lu-acc', 'lu-big'), text, open);
     return box;
   }
 
   function showPanel(show) {
-    const panel = el('section', 'lu-panel ap-show lu-enter');
+    const panel = el('section', 'lu-panel ap-show');
     const head = el('div', 'lu-panel-head');
-    head.append(el('h2', 'lu-title lu-ell lu-grow', show.show));
+    head.append(el('h2', 'lu-title lu-grow', show.show));
     if (show.seasons.length > 1) head.append(el('span', 'lu-cap lu-muted', plural(show.seasons.length, 'season')));
     const list = el('div', 'ap-seasons lu-divide');
     list.append(...show.seasons.map(seasonRow));
@@ -216,121 +238,116 @@
     return panel;
   }
 
-  /* What each season's buttons would change in Plex is read lazily, one season at a time, as it scrolls into view. */
-  const slots = new Map();      // season key -> {sure, ready}: where its plan lines go
-  const pending = new Set();    // season keys already asked for
-  let planChain = Promise.resolve();
-  const watcher = 'IntersectionObserver' in window
-    ? new IntersectionObserver((entries, observer) => {
-      for (const entry of entries) if (entry.isIntersecting) { observer.unobserve(entry.target); wantPlan(entry.target._season); }
-    }, { rootMargin: '240px' })
-    : null;
-
-  function wantPlan(season) {
-    const key = keyOf(season.show, season.season);
-    if (pending.has(key)) return;
-    pending.add(key);
-    const generation = state.generation;
-    planChain = planChain.then(async () => {
-      if (generation !== state.generation) return;
-      let plan = null, failure = null;
-      try { plan = await api(seasonUrl(season.show, season.season)); } catch (error) { failure = error; }
-      if (generation !== state.generation) return;
-      if (plan) state.plans.set(key, plan);
-      fillPlan(key, plan, failure);
-    });
-  }
-
-  function fillPlan(key, plan, failure) {
-    const where = slots.get(key);
-    if (!where) return;
-    for (const group of ['sure', 'ready']) {
-      const slot = where[group];
-      if (!slot) continue;
-      slot.replaceChildren();
-      slot.removeAttribute('aria-busy');
-      const lines = [];
-      if (failure) lines.push('Couldn’t check what Plex has now: ' + failure.message);
-      else {
-        lines.push(...plan.changes[group].lines);
-        if (plan.plex.status !== 'read') lines.push('Plex could not be fully checked' + (plan.plex.message ? ': ' + plan.plex.message : '.'));
-      }
-      for (const line of lines) slot.append(el('li', null, line));
-    }
-  }
-
-  function planSlot(key, group) {
-    const list = el('ul', 'ap-plan');
-    list.setAttribute('aria-busy', 'true');
-    list.setAttribute('aria-label', 'What this changes in Plex');
-    const line = el('li', 'ap-plan-wait'); line.append(el('span', 'lu-skel'));
-    list.append(line);
-    slots.get(key)[group] = list;
-    return list;
-  }
-
   function seasonRow(season) {
-    const key = keyOf(season.show, season.season);
-    if (!slots.has(key)) slots.set(key, {});
     const row = el('article', 'ap-season');
-    row._season = season;
-    const head = el('div', 'ap-season-head');
-    head.append(el('h3', 'lu-h', season.label), el('span', 'lu-cap lu-muted', plural(season.episodes, 'episode')));
-    row.append(head);
-    if (!Number.isInteger(season.season)) {
-      row.append(el('p', 'lu-cap lu-muted', 'These episodes have no season number, so they can’t be approved here yet.'));
-      return row;
+    const detail = el('div', 'lu-col');
+    detail.append(el('h3', 'lu-h', season.label),
+      el('p', 'lu-muted lu-cap', counts(season.sure, season.needs, season.ready)));
+    row.append(detail);
+    if (Number.isInteger(season.season)) {
+      const open = viewLink('Review season', scopeHref(season), { icon: 'chevron-right' });
+      open.setAttribute('aria-label', 'Review season: ' + season.show + ', ' + season.label);
+      row.append(open);
+    } else {
+      detail.append(el('p', 'lu-cap lu-muted', 'Open these episodes in Library to review them.'));
+      row.append(libraryLink(season));
     }
-    const sending = state.queue.sending;
-    if (season.sure) {
-      const detail = el('div', 'lu-col lu-grow');
-      detail.append(el('b', 'lu-h', season.sure === 1 ? '1 sure one' : season.sure + ' sure ones'),
-        el('span', 'lu-cap lu-muted', kindsText(season.kinds) + ', matched closely in other episodes'), planSlot(key, 'sure'));
-      const go = button(sending.enabled ? 'Approve & send ' + season.sure + ' sure ' + (season.sure === 1 ? 'one' : 'ones') : 'Approve ' + season.sure + ' sure ' + (season.sure === 1 ? 'one' : 'ones'),
-        { cls: 'lu-primary', icon: sending.enabled ? 'send-check' : 'check2-all' });
-      go.addEventListener('click', () => act(go, () => approveSure(season)));
-      row.append(doing('check2-circle', 'lu-pos', detail, go));
-    }
-    if (season.needs) {
-      const detail = el('div', 'lu-col lu-grow');
-      detail.append(el('b', 'lu-h', season.needs + ' to look at'), el('span', 'lu-cap lu-muted', 'Less certain. You decide each one.'));
-      const look = button('Review ' + season.needs, { icon: 'eye' });
-      look.addEventListener('click', () => act(look, () => startReview(season)));
-      row.append(doing('eye', 'lu-warn', detail, look));
-    }
-    if (season.ready) {
-      const detail = el('div', 'lu-col lu-grow');
-      detail.append(el('b', 'lu-h', plural(season.ready, 'episode') + ' approved, not sent yet'), el('span', 'lu-cap lu-muted', 'These are yours, but Plex does not have them yet.'), planSlot(key, 'ready'));
-      const send = button('Send ' + plural(season.ready, 'episode') + ' to Plex', { icon: 'send' });
-      if (sending.enabled) send.addEventListener('click', () => act(send, () => sendApproved(season)));
-      else { send.disabled = true; send.title = sending.message; }
-      row.append(doing('send', 'lu-inf', detail, send));
-    }
-    if (watcher && (season.sure || season.ready)) { row._season = season; watcher.observe(row); } else if (season.sure || season.ready) wantPlan(season);
     return row;
   }
 
-  function doing(name, tone, detail, action) {
-    const line = el('div', 'ap-do');
-    const what = el('div', 'ap-what');
-    what.append(glyph(name, tone), detail);
-    line.append(what, action);
-    return line;
+  function backToQueue() {
+    return viewLink('All seasons', scopeHref({}), { back: true, icon: 'arrow-left' });
   }
 
-  /* ── one click for the sure ones ──────────────────────────────────────────────────────────────────────────── */
-  async function approveSure(season) {
-    const result = await api('/approvals/send', {
-      show: season.show, season: season.season, scope: 'sure', to_plex: sendingOn(),
-    });
-    remember(result, season);
-    await loadQueue({ quiet: true });
+  function planDetails(plan, group) {
+    const details = el('details', 'ap-plan');
+    details.append(el('summary', null, 'What changes in Plex'));
+    const lines = [...plan.changes[group].lines];
+    if (plan.plex.status !== 'read') lines.push('Plex’s current timings could not be fully checked.');
+    if (lines.length) {
+      const list = el('ul');
+      for (const line of lines) list.append(el('li', null, line));
+      details.append(list);
+    }
+    details.hidden = lines.length === 0;
+    return details;
   }
 
-  async function sendApproved(season) {
-    const result = await api('/approvals/send', { show: season.show, season: season.season, scope: 'approved', to_plex: true });
-    remember(result, season);
-    await loadQueue({ quiet: true });
+  async function sendSeason(plan, scope, toPlex) {
+    const result = await api('/approvals/send', { show: plan.show, season: plan.season, scope, to_plex: toPlex });
+    remember(result, plan);
+  }
+
+  function sendButton(plan, scope, primary, after) {
+    const sure = scope === 'sure';
+    const toPlex = !sure || plan.sending.enabled;
+    const text = sure
+      ? (toPlex ? 'Approve & send ' : 'Approve ') + plural(plan.sure.length, 'high-confidence skip')
+      : 'Send skips for ' + plural(plan.ready.length, 'episode') + ' to Plex';
+    const send = button(text, { cls: primary ? 'lu-primary' : 'lu-quiet', icon: toPlex ? 'send' : 'check2-all' });
+    send.disabled = !sure && !plan.sending.enabled;
+    send.addEventListener('click', () => act(send, async () => {
+      if (state.sending) return;
+      const route = state.route;
+      state.sending = true;
+      try { await sendSeason(plan, scope, toPlex); }
+      finally { state.sending = false; }
+      if (route === state.route) after();
+    }));
+    return send;
+  }
+
+  function backToSeason(scope) {
+    return viewLink('Back to season', scopeHref({ show: scope.show, season: scope.season }), { back: true, icon: 'arrow-left' });
+  }
+
+  function renderSeason(plan, scopedEpisode) {
+    const top = el('div', 'ap-top');
+    top.append(scopedEpisode ? backToSeason(plan) : backToQueue());
+    const panel = el('section', 'lu-panel ap-season-work');
+    const heading = el('h2', 'lu-title', plan.show + ' · ' + plan.label); heading.tabIndex = -1;
+    panel.append(heading);
+    if (scopedEpisode) {
+      panel.append(el('p', 'lu-muted', 'No pending skip matches this episode. Open it in Library to check saved timings or undo an earlier send.'), libraryLink(scopedEpisode));
+    } else if (!plan.sure.length && !plan.needs.length && !plan.ready.length) {
+      panel.append(el('p', 'lu-muted', 'Nothing to review in this season.'), libraryLink(plan));
+    }
+    if (!scopedEpisode) {
+      function step(label, action, details) {
+        const row = el('div', 'ap-season ap-step');
+        const text = el('div', 'lu-col');
+        text.append(el('h3', 'lu-h', label));
+        if (details) text.append(details);
+        row.append(text, action);
+        panel.append(row);
+      }
+      if (plan.needs.length) {
+        step('Check the suggested timings', viewLink('Review ' + plural(plan.needs.length, 'skip'), scopeHref(plan, '#review'),
+          { cls: 'lu-btn lu-primary', icon: 'eye' }));
+      }
+      if (plan.sure.length) {
+        step('High-confidence suggestions', sendButton(plan, 'sure', !plan.needs.length, loadRoute), planDetails(plan, 'sure'));
+      }
+      if (plan.ready.length) {
+        step('Approved, not sent', sendButton(plan, 'approved', !plan.needs.length && !plan.sure.length, loadRoute), planDetails(plan, 'ready'));
+      }
+      const candidates = [...plan.needs, ...plan.sure];
+      if (candidates.length) {
+        const details = el('details', 'ap-episode-links');
+        details.append(el('summary', null, 'Fix a specific skip'));
+        const list = el('ul');
+        for (const item of candidates) {
+          const li = el('li');
+          li.append(viewLink(item.label + (item.title ? ' · ' + item.title : '') + ' · ' + KIND[item.kind],
+            scopeHref({ ...plan, episode: item.media_version_id, kind: item.kind }, '#fix'), { cls: 'lu-btn lu-quiet' }));
+          list.append(li);
+        }
+        details.append(list);
+        panel.append(details);
+      }
+    }
+    reviewEl.replaceChildren(top, panel);
+    heading.focus({ preventScroll: true });
   }
 
   /* ── what was just done, and its Undo ─────────────────────────────────────────────────────────────────────── */
@@ -343,15 +360,14 @@
 
   function sentView(entry) {
     const r = entry.result;
-    const sentSkips = skipCount(r.sent), approvedSkips = skipCount(r.approved);
+    const approvedSkips = skipCount(r.approved);
     const trouble = r.failed.length > 0 || Boolean(r.stopped);
     const view = { tone: 'lu-pos', mark: 'send-check', title: '', detail: [entry.label], more: [], canUndo: false };
     if (entry.undone) {
       view.mark = 'arrow-counterclockwise'; view.tone = entry.undone.failed.length ? 'lu-warn' : 'lu-pos';
       view.title = entry.undone.failed.length
-        ? 'Put back ' + plural(entry.undone.restored.length, 'episode') + ', but ' + entry.undone.failed.length + ' could not be'
+        ? 'Restored ' + plural(entry.undone.restored.length, 'episode') + '; ' + plural(entry.undone.failed.length, 'episode') + ' could not be restored'
         : 'Undone';
-      view.detail.push(entry.undone.restored.length ? 'Plex and your approvals are back as they were.' : 'Nothing was changed.');
       view.more = entry.undone.failed.map(f => f.label + ': ' + f.reason);
       view.canUndo = entry.undone.failed.length > 0;
       return view;
@@ -367,12 +383,12 @@
       return view;
     }
     if (r.sent.length) {
-      view.title = 'Sent ' + plural(sentSkips, 'skip') + ' to Plex';
+      view.title = 'Sent skips for ' + plural(r.sent.length, 'episode') + ' to Plex';
       if (r.backup) view.detail.push('Plex was backed up first');
       if (trouble) { view.tone = 'lu-warn'; view.mark = 'exclamation-circle'; }
     } else if (r.approved.length) {
       view.title = 'Approved ' + plural(approvedSkips, 'skip');
-      view.detail.push(r.failed.length ? 'Not sent' : (r.already || []).length ? 'Plex already has them' : 'Not sent: sending to Plex is turned off');
+      view.detail.push(r.failed.length ? 'Not sent' : (r.already || []).length ? 'Plex already has them' : 'Not sent · Review only');
       view.mark = 'check2-all'; view.tone = trouble ? 'lu-warn' : 'lu-pos';
     } else if ((r.already || []).length && !r.failed.length) {
       view.title = 'Plex already has these skips'; view.detail.push('Nothing to send'); view.mark = 'check2-all';
@@ -418,23 +434,28 @@
   function sentHead() {
     const fresh = state.sent.filter(entry => entry.auto && entry.auto.unread > 0).length;
     const head = el('div', 'ap-sent-head');
-    const title = el('span', 'lu-cap lu-muted lu-grow');
-    title.append(el('b', null, plural(state.sent.length, 'notice')), fresh ? ' · ' + fresh + ' new' : '');
+    const title = el('h2', 'lu-h lu-grow', 'Recent changes');
+    title.id = 'automatic-sends';
+    title.tabIndex = -1;
+    if (state.sent.length) title.append(el('span', 'lu-cap lu-muted', plural(state.sent.length, 'notice') + (fresh ? ' · ' + fresh + ' new' : '')));
     const actions = el('div', 'ap-sent-tools');
     if (fresh) {
       const read = button('Mark all as read', { cls: 'lu-quiet', icon: 'check2-all' });
       read.addEventListener('click', () => act(read, markAllRead));
       actions.append(read);
     }
-    const clear = button('Clear all', { cls: 'lu-quiet', icon: 'x-circle' });
-    clear.addEventListener('click', () => act(clear, clearAll));
-    actions.append(clear);
+    if (state.sent.length) {
+      const clear = button('Clear all', { cls: 'lu-quiet', icon: 'x-circle' });
+      clear.addEventListener('click', () => act(clear, clearAll));
+      actions.append(clear);
+    }
     head.append(title, actions);
     return head;
   }
 
-  function renderSent() {
-    sentEl.hidden = state.sent.length === 0;
+  function renderSent(emptyMessage = 'No recent changes.') {
+    sentEl.hidden = state.sent.length === 0 && location.hash !== '#automatic-sends';
+    if (sentEl.hidden) { sentEl.replaceChildren(); return; }
     const rows = state.sent.map(entry => {
       const view = sentView(entry);
       const row = el('div', 'ap-sent-row');
@@ -443,6 +464,24 @@
       if (view.fresh) title.append(' ', el('span', 'ap-new', 'New'));
       text.append(title, el('span', 'lu-cap lu-muted', view.detail.join(' · ')));
       if (view.more.length) { const list = el('ul', 'ap-fails'); for (const line of view.more) list.append(el('li', null, line)); text.append(list); }
+      if (entry.auto && !entry.undone && Number.isInteger(entry.result.season)) {
+        const links = el('details', 'ap-episode-links');
+        links.append(el('summary', null, 'Fix an episode'));
+        const list = el('ul');
+        for (const item of entry.result.sent) {
+          const li = el('li');
+          const link = libraryLink({
+            show: entry.result.show, season: entry.result.season, episode: item.media_version_id,
+            kind: item.kinds.length === 1 ? item.kinds[0] : '',
+          });
+          link.classList.add('lu-quiet');
+          link.textContent = item.label;
+          li.append(link);
+          list.append(li);
+        }
+        links.append(list);
+        text.append(links);
+      }
       const actions = el('div', 'ap-sent-actions');
       if (view.canUndo) {
         const undo = button('Undo', { icon: 'arrow-counterclockwise' });
@@ -455,7 +494,7 @@
       row.append(glyph(view.mark, view.tone), text, actions);
       return row;
     });
-    sentEl.replaceChildren(...(rows.length ? [sentHead(), ...rows] : []));
+    sentEl.replaceChildren(sentHead(), ...(rows.length ? rows : [el('p', 'lu-muted', emptyMessage)]));
   }
 
   async function undoSent(entry) {
@@ -472,7 +511,7 @@
       r.approved = (r.approved || []).filter(a => left.has(a.media_version_id));
     }
     renderSent();
-    await loadQueue({ quiet: true });
+    loadRoute();
   }
 
   /* What Reprise sent by itself (kept in Plex, newest first) joins the tray as one row for each show and season, so a
@@ -497,7 +536,11 @@
   }
   async function loadAutomatic() {
     let found;
-    try { found = (await api('/approvals/automatic')).sent || []; } catch (_) { return; }   // the tray is a courtesy: the queue still works
+    try { found = (await api('/approvals/automatic')).sent || []; }
+    catch (_) {
+      renderSent('Couldn’t load recent changes.');
+      return;
+    }
     const mine = state.sent.filter(entry => !entry.auto);
     const kept = state.sent.filter(entry => entry.auto && entry.undone);
     const known = new Set(kept.flatMap(entry => entry.auto.change_ids));
@@ -513,69 +556,157 @@
   const endOf = item => (item.edit ? item.edit.end_ms : item.end_ms);
 
   const SURENESS = {
-    high: { tone: 'lu-pos', mark: 'patch-check', text: 'Very sure' },
-    confirmed: { tone: 'lu-pos', mark: 'check2-all', text: 'Matched in other episodes' },
-    medium: { tone: 'lu-warn', mark: 'question-circle', text: 'Fairly sure' },
-    low: { tone: 'lu-warn', mark: 'exclamation-circle', text: 'A guess' },
+    high: { tone: 'lu-pos', mark: 'patch-check', text: 'High confidence' },
+    confirmed: { tone: 'lu-pos', mark: 'check2-all', text: 'Matched across episodes' },
+    medium: { tone: 'lu-warn', mark: 'question-circle', text: 'Medium confidence' },
+    low: { tone: 'lu-warn', mark: 'exclamation-circle', text: 'Low confidence' },
   };
   const sureness = item => SURENESS[item.how_sure] || { tone: 'lu-inf', mark: 'info-circle', text: 'From ' + item.source };
 
   function plexNote(item) {
-    const word = KIND[item.kind].one;
-    if (item.change === 'same') return { mark: 'check2-circle', text: 'Plex already has this ' + word + ' skip in about the same place.' };
-    if (item.change === 'new') return { mark: 'plus-circle', text: 'Plex has no ' + word + ' skip here yet.' };
-    if (item.change === 'moved' && item.plex) {
-      const moves = [];
-      for (const [edge, delta] of [['start', item.start_delta_ms], ['end', item.end_delta_ms]]) {
-        if (Math.abs(delta || 0) >= 1000) moves.push('the ' + edge + ' ' + length(delta) + (delta > 0 ? ' later' : ' earlier'));
-      }
-      return { mark: 'arrow-left-right', text: 'Plex has it at ' + fmt(item.plex.start_ms) + ' to ' + fmt(item.plex.end_ms) + '. This moves ' + (moves.join(' and ') || 'it a little') + '.' };
-    }
-    return { mark: 'question-circle', text: 'Couldn’t check what Plex has for this one.' };
+    if (item.plex) return 'Plex now skips ' + fmt(item.plex.start_ms) + ' to ' + fmt(item.plex.end_ms) + '. Keeping Plex unchanged won’t remove that skip.';
+    if (item.change === 'new') return 'Plex has no ' + KIND[item.kind].toLowerCase() + ' skip.';
+    return 'Plex’s current timing is unavailable. Keeping Plex unchanged won’t remove any existing skip.';
   }
 
-  async function startReview(season) {
-    showView('review');
-    renderReviewWait('Getting the ones that need you…');
-    const key = keyOf(season.show, season.season);
-    try {
-      const plan = await api(seasonUrl(season.show, season.season));
-      state.plans.set(key, plan);
-      if (!plan.needs.length) { toast('Nothing is left to look at in ' + plan.label + '.'); leaveReview(false); return; }
-      state.review = {
-        show: plan.show, season: season.season, label: plan.label, items: plan.needs.map(i => ({ ...i, edit: null })),
-        index: 0, history: [], busy: false, adjusting: false, active: 'start', clips: null,
-        revs: new Map(plan.needs.map(i => [i.media_version_id, i.revision])),
-      };
-      history.pushState({ review: true }, '', '#review');
-      renderReview();
-    } catch (error) {
-      toast(error.message, { tone: 'bad' });
-      leaveReview(false);
-    }
-  }
-
-  function renderReviewWait(text) {
-    const box = el('div', 'lu-panel ap-wait');
-    const line = el('span', 'lu-skel'); line.style.width = '46%';
-    box.append(el('p', 'lu-muted', text), line);
-    reviewEl.replaceChildren(box);
-  }
-
-  function leaveReview(fromButton) {
-    if (fromButton && history.state && history.state.review) { history.back(); return; }   // popstate finishes the job
+  async function loadRoute() {
+    const route = ++state.route;
     teardownClips();
     state.review = null;
     reviewEl.replaceChildren();
-    showView('queue');
-    titleEl.focus({ preventScroll: true });
-    loadQueue({ quiet: true });
+    if ($('apToasts').querySelector('button')) $('apToasts').replaceChildren();
+    reviewEl.classList.remove('is-busy');
+    noticeEl.replaceChildren();
+    const params = new URLSearchParams(location.search);
+    const number = params.get('season') || '';
+    const scope = {
+      show: params.get('show') || '', season: /^\d{1,4}$/.test(number) ? Number(number) : null,
+      episode: params.get('episode_id') || '', kind: params.get('kind') || '',
+    };
+    if (!scope.show || scope.season === null) {
+      if (scope.episode) {
+        showView('season');
+        renderSeasonError('No season was specified for this episode.', scope);
+        return;
+      }
+      showView('queue');
+      const activity = location.hash === '#automatic-sends';
+      renderSent(activity ? 'Loading recent changes…' : undefined);
+      await Promise.all([loadQueue(route), activity ? loadAutomatic() : undefined]);
+      if (route === state.route) {
+        if (activity) $('automatic-sends')?.focus();
+        else titleEl.focus({ preventScroll: true });
+      }
+      return;
+    }
+    const manual = scope.episode || location.hash === '#review';
+    showView(manual ? 'review' : 'season');
+    renderReviewWait('Loading ' + scope.show + ', Season ' + scope.season + '…', manual ? scope : null);
+    try {
+      const plan = await api(seasonUrl(scope.show, scope.season));
+      if (state.route !== route) return;
+      renderNotice(plan.sending);
+      const items = scope.episode
+        ? [...plan.needs, ...plan.sure].filter(item => item.media_version_id === scope.episode && (!scope.kind || item.kind === scope.kind))
+        : plan.needs;
+      if (!manual || !items.length) {
+        showView('season');
+        renderSeason(plan, scope.episode ? scope : null);
+        return;
+      }
+      state.review = {
+        ...scope, show: plan.show, label: plan.label, items: items.map(i => ({ ...i, edit: null })),
+        index: 0, history: [], busy: false, adjusting: location.hash === '#fix', active: 'start',
+        revs: new Map(items.map(i => [i.media_version_id, i.revision])),
+      };
+      renderReview();
+    } catch (error) {
+      if (state.route === route) renderSeasonError(error.message, scope);
+    }
   }
-  window.addEventListener('popstate', () => { if (state.review || root.dataset.view === 'review') leaveReview(false); });
+
+  function renderReviewWait(text, scope) {
+    const box = el('div', 'lu-panel ap-wait');
+    const line = el('span', 'lu-skel'); line.style.width = '46%';
+    box.append(el('p', 'lu-muted', text), line);
+    reviewEl.replaceChildren(scope ? backToSeason(scope) : backToQueue(), box);
+  }
+
+  function renderSeasonError(message, scope) {
+    const box = el('div', 'lu-banner lu-bad');
+    const body = el('div', 'lu-col lu-grow');
+    body.append(el('b', 'lu-h', 'Couldn’t open this review'), el('p', 'lu-muted', message));
+    const actions = el('div', 'lu-actions');
+    if (scope.show && scope.season !== null) {
+      const retry = button('Try again', { icon: 'arrow-repeat' }); retry.addEventListener('click', loadRoute);
+      actions.append(retry);
+    }
+    if (scope.episode) actions.append(libraryLink(scope));
+    body.append(actions);
+    box.append(glyph('exclamation-triangle', 'lu-bad'), body);
+    reviewEl.replaceChildren(backToQueue(), box);
+  }
+
+  window.addEventListener('popstate', loadRoute);
 
   function teardownClips() {
     const rv = state.review;
-    if (rv && rv.clips) { rv.clips.start.destroy(); rv.clips.end.destroy(); rv.clips = null; }
+    if (!rv) return;
+    if (rv.jump) { rv.jump.reset(); rv.jump = null; }
+    if (rv.clips) { rv.clips.start.destroy(); rv.clips.end.destroy(); rv.clips = null; }
+  }
+
+  function jumpPreview(rv, item, stage, clips) {
+    const toolbar = el('div', 'ap-jump-tools');
+    const play = button('Play the jump', { icon: 'play-fill' });
+    const caption = el('p', 'lu-cap lu-muted', 'Watch what plays before and after the skip.');
+    const status = el('p', 'ap-jump-status lu-muted'); status.setAttribute('role', 'status');
+    const video = el('video', 'ap-jump-video');
+    video.controls = true; video.playsInline = true; video.preload = 'none'; video.hidden = true;
+    video.setAttribute('aria-label', 'Skip preview');
+    toolbar.append(play, caption);
+    stage.append(toolbar, status, video);
+    let attempt = 0;
+    function reset(text = '') {
+      ++attempt;
+      const loaded = video.hasAttribute('src');
+      if (loaded) {
+        video.pause(); video.removeAttribute('src'); video.load();
+      }
+      video.hidden = true;
+      clips.hidden = false;
+      play.querySelector('span').textContent = 'Play the jump';
+      play.querySelector('.bi').className = 'bi bi-play-fill';
+      status.textContent = text;
+    }
+    function toggle() {
+      if (video.hasAttribute('src')) { reset(); return; }
+      const start = rv.clips.start.edge, end = rv.clips.end.edge;
+      if (start === 0 && end >= item.duration_ms) { reset('Jump preview unavailable: there’s no footage outside this skip.'); return; }
+      const mine = ++attempt;
+      for (const clip of Object.values(rv.clips)) clip.pause();
+      const params = new URLSearchParams({ start_ms: start, end_ms: end });
+      video.src = API + '/media/' + encodeURIComponent(item.media_version_id) + '/jump-preview?' + params;
+      status.textContent = 'Preparing preview…';
+      play.querySelector('span').textContent = 'Close preview';
+      play.querySelector('.bi').className = 'bi bi-x-lg';
+      video.play().catch(error => {
+        if (mine !== attempt) return;
+        if (error.name === 'NotAllowedError') { video.hidden = false; status.textContent = 'Use the video’s Play button.'; }
+        else reset('Jump preview unavailable. You can still check the timings below.');
+      });
+    }
+    play.addEventListener('click', toggle);
+    video.addEventListener('playing', () => {
+      if (!video.hasAttribute('src')) return;
+      video.hidden = false;
+      clips.hidden = !rv.adjusting;
+      status.textContent = '';
+    });
+    video.addEventListener('error', () => {
+      if (video.hasAttribute('src')) reset('Jump preview unavailable. You can still check the timings below.');
+    });
+    return { reset, toggle };
   }
 
   function renderReview() {
@@ -587,12 +718,14 @@
 
     const top = el('div', 'ap-top');
     const where = el('div', 'lu-col lu-grow');
-    where.append(el('span', 'lu-h lu-ell', rv.show + ' · ' + rv.label), el('span', 'lu-cap lu-muted', 'Choice ' + (rv.index + 1) + ' of ' + total));
+    where.append(el('span', 'lu-h', rv.show + ' · ' + rv.label),
+      el('span', 'lu-cap lu-muted', 'Skip ' + (rv.index + 1) + ' of ' + total));
     const keys = iconButton('keyboard', 'Keyboard shortcuts', 'keys');
     keys.classList.add('ap-help'); keys.setAttribute('aria-expanded', 'false'); keys.setAttribute('aria-controls', 'apKeys');
     const undo = iconButton('arrow-counterclockwise', 'Undo the last choice', 'undo');
     undo.disabled = rv.history.length === 0;
-    top.append(button('To approve', { cls: 'lu-quiet', icon: 'arrow-left', act: 'back' }), where, keys, undo);
+    const back = backToSeason(rv); back.dataset.act = 'back';
+    top.append(back, where, keys, undo);
 
     const bar = el('div', 'lu-bar');
     bar.setAttribute('role', 'progressbar'); bar.setAttribute('aria-label', 'Progress'); bar.setAttribute('aria-valuemin', '0');
@@ -600,53 +733,63 @@
     const fill = el('i'); fill.style.width = (rv.index / total) * 100 + '%'; bar.append(fill);
 
     const help = el('div', 'lu-panel ap-keys'); help.id = 'apKeys'; help.hidden = true;
-    for (const [key, what] of [['S', 'Skip it'], ['K', 'Keep it'], ['A', 'Adjust the times'], ['Space', 'Play around the start or the end'],
-      ['1 2', 'Pick the start or the end'], ['← →', 'Move the picked time 1 second (Adjust)'], ['C', 'Snap the picked time to a cut (Adjust)'],
-      ['U', 'Undo the last choice'], ['Esc', 'Back to the list']]) {
+    for (const [key, what] of [['S', 'Approve skip'], ['K', 'Keep Plex unchanged'], ['A', 'Adjust timings'], ['Space', 'Play the jump or the selected edge while editing'],
+      ['1 2', 'Pick the start or end'], ['← →', 'Move that edge by 1 second'], ['C', 'Snap the edge to a cut'],
+      ['U', 'Undo the last choice'], ['Esc', 'Back to season']]) {
       help.append(el('kbd', 'lu-kbd', key), el('span', 'lu-muted', what));
     }
 
-    const card = el('article', 'lu-panel ap-card lu-enter');
+    const card = el('article', 'lu-panel ap-card');
     card.dataset.adjusting = String(rv.adjusting);
     const mark = sureness(item);
     const head = el('div', 'ap-card-head');
     const heading = el('h2', 'lu-title', item.label + (item.title ? ' · ' + item.title : ''));
     heading.id = 'apCardTitle'; heading.tabIndex = -1;
     const badges = el('div', 'ap-badges');
-    badges.append(el('span', 'lu-badge lu-acc', KIND[item.kind].one === 'intro' ? 'Intro' : 'Credits'));
+    badges.append(el('span', 'lu-badge lu-acc', KIND[item.kind]));
     const sure = el('span', 'lu-badge ' + mark.tone); sure.append(icon(mark.mark), mark.text);
     badges.append(sure);
-    if (item.how_sure) badges.append(el('span', 'lu-cap lu-muted', 'Suggested by ' + item.source));
+    if (item.how_sure && item.source !== 'Reprise') badges.append(el('span', 'lu-cap lu-muted', item.source));
     head.append(heading, badges);
     card.append(head);
-    if (item.reason) card.append(el('p', 'lu-muted ap-reason', item.reason));
+    if (item.reason) {
+      const why = el('details', 'ap-reason');
+      why.append(el('summary', null, 'Why this skip?'), el('p', 'lu-muted', item.reason));
+      card.append(why);
+    }
 
+    const jump = el('div', 'ap-jump');
+    card.append(jump);
     const clips = el('div', 'ap-clips');
     const boxes = {};
     for (const [side, title] of [['start', 'Skip starts'], ['end', 'Skip ends']]) {
       const box = el('div', 'ap-edge'); box.dataset.side = side;
       box.append(el('span', 'lu-h ap-edge-title', title));
       boxes[side] = el('div'); box.append(boxes[side]);
+      box.addEventListener('focusin', () => pick(side));
       box.addEventListener('pointerdown', () => pick(side));
+      box.addEventListener('click', event => {
+        if (event.target.closest('.lu-clip-play')) rv.jump.reset();
+      }, { capture: true });
       clips.append(box);
     }
     card.append(clips);
-    const plex = plexNote(item);
-    const note = el('p', 'lu-cap lu-muted ap-plex'); note.append(icon(plex.mark), plex.text);
+    const note = el('p', 'lu-cap lu-muted ap-plex');
+    note.append(icon('info-circle'), plexNote(item));
     card.append(note);
 
     const tray = el('div', 'lu-tray ap-choose');
     tray.setAttribute('role', 'group'); tray.setAttribute('aria-label', 'Your choice');
     const row = el('div', 'lu-trow');
     const sum = el('div', 'lu-tsum');
-    sum.append(el('b', null, KIND[item.kind].ask), ' ');
+    sum.append(el('b', null, KIND[item.kind] + ' skip'));
     const times = el('span', 'ap-times'); times.id = 'apTimes';
     sum.append(times);
     const buttons = el('div', 'ap-buttons');
-    const adjust = button('Adjust', { cls: 'lu-big', icon: 'sliders', key: 'A', act: 'adjust' });
+    const adjust = button('Adjust timings', { icon: 'sliders', key: 'A', act: 'adjust' });
     adjust.setAttribute('aria-pressed', String(rv.adjusting));
-    buttons.append(button('Skip it', { cls: 'lu-primary lu-big', icon: 'skip-forward-fill', key: 'S', act: 'skip' }),
-      button('Keep it', { cls: 'lu-big', icon: 'shield-check', key: 'K', act: 'keep' }), adjust);
+    buttons.append(button('Approve skip', { cls: 'lu-primary', icon: 'check2', key: 'S', act: 'skip' }),
+      button('Keep Plex unchanged', { key: 'K', act: 'keep' }), adjust);
     row.append(sum, buttons);
     tray.append(row);
 
@@ -654,11 +797,12 @@
 
     const make = (side, edge, originalMs, label) => Clip.create(boxes[side], {
       mediaId: item.media_version_id, durationMs: item.duration_ms, edgeMs: edge, originalMs, label,
-      onChange: () => { pick(side); fit(); paintTimes(); },
+      onChange: () => { rv.jump.reset(); pick(side); fit(); paintTimes(); },
     });
     rv.clips = { start: make('start', startOf(item), item.start_ms, 'Skip starts'), end: make('end', endOf(item), item.end_ms, 'Skip ends') };
+    rv.jump = jumpPreview(rv, item, jump, clips);
     fit();
-    pick(rv.active, true);
+    pick(rv.active);
     paintTimes();
     if (rv.adjusting) for (const clip of Object.values(rv.clips)) clip.edit(true);
     heading.focus({ preventScroll: true });
@@ -671,15 +815,14 @@
     const rv = state.review;
     if (!rv || !rv.clips) return;
     const item = rv.items[rv.index];
-    rv.clips.start.bounds(0, rv.clips.end.edge - 1000);
-    rv.clips.end.bounds(rv.clips.start.edge + 1000, item.duration_ms);
+    rv.clips.start.bounds(0, rv.clips.end.edge - 1);
+    rv.clips.end.bounds(rv.clips.start.edge + 1, item.duration_ms);
   }
-  function pick(side, quiet) {
+  function pick(side) {
     const rv = state.review;
     if (!rv) return;
     rv.active = side;
     for (const box of reviewEl.querySelectorAll('.ap-edge')) box.classList.toggle('is-active', box.dataset.side === side);
-    if (!quiet && rv.clips) rv.clips[side].focus();
   }
   function paintTimes() {
     const rv = state.review, node = $('apTimes');
@@ -692,9 +835,11 @@
 
   function setAdjusting(on) {
     const rv = state.review;
-    if (!rv || !rv.clips) return;
+    if (!rv || rv.busy || !rv.clips) return;
+    rv.jump.reset();
     rv.adjusting = on;
     for (const clip of Object.values(rv.clips)) clip.edit(on);
+    if (!on) for (const clip of Object.values(rv.clips)) clip.pause();
     const adjust = reviewEl.querySelector('[data-act="adjust"]');
     if (adjust) adjust.setAttribute('aria-pressed', String(on));
     const card = reviewEl.querySelector('.ap-card');
@@ -713,27 +858,26 @@
     reviewEl.classList.add('is-busy');
     try {
       const answer = await api('/approvals/decide', body);
+      if (state.review !== rv) return;
       rv.revs.set(item.media_version_id, answer.revision);
-      item.edit = decision === 'skip' ? { start_ms: start, end_ms: end } : null;
+      item.edit = { start_ms: start, end_ms: end };
       rv.history.push({ index: rv.index, item, decision, undo: answer.undo });
       rv.index += 1;
-      rv.adjusting = false;
+      rv.adjusting = location.hash === '#fix';
       rv.active = 'start';
-      const what = item.label + ' ' + KIND[item.kind].one;
-      toast(decision === 'skip' ? what + ': skip approved' : what + ': kept', { undo: undoLast, ms: 7000 });
+      toast(decision === 'skip' ? 'Skip approved. Nothing sent to Plex.' : 'Suggestion dismissed. Plex unchanged.',
+        { undo: () => { if (state.review === rv) undoLast(); } });
       renderReview();
     } catch (error) {
-      if (error.status >= 400 && error.status < 500) {   // it changed since the list was made (another tab, a new analysis)
-        toast(error.message + ' Getting what is left.', { tone: 'bad' });
-        const again = { show: rv.show, season: rv.season, label: rv.label };
-        teardownClips(); state.review = null;
-        await startReview(again);
+      if (state.review !== rv) return;
+      if (error.status === 409) {
+        toast(error.message + ' Reloading this review.', { tone: 'bad' });
+        loadRoute();
         return;
       }
       toast(error.message, { tone: 'bad' });
     } finally {
-      if (state.review === rv) rv.busy = false;
-      reviewEl.classList.remove('is-busy');
+      if (state.review === rv) { rv.busy = false; reviewEl.classList.remove('is-busy'); }
     }
   }
 
@@ -745,78 +889,42 @@
     reviewEl.classList.add('is-busy');
     try {
       const answer = await api('/approvals/decide', { media_version_id: id, expected_revision: rv.revs.get(id), ...last.undo });
+      if (state.review !== rv) return;
       rv.revs.set(id, answer.revision);
       rv.history.pop();
       rv.index = last.index;
       const moved = Boolean(last.item.edit && (last.item.edit.start_ms !== last.item.start_ms || last.item.edit.end_ms !== last.item.end_ms));
-      rv.adjusting = moved;   // what you adjusted is still there to change again
+      rv.adjusting = moved || location.hash === '#fix';
       if (!moved) last.item.edit = null;
       toast('Undone. Choose again.', { ms: 3500 });
       renderReview();
     } catch (error) {
       toast(error.message, { tone: 'bad' });
     } finally {
-      if (state.review === rv) rv.busy = false;
-      reviewEl.classList.remove('is-busy');
+      if (state.review === rv) { rv.busy = false; reviewEl.classList.remove('is-busy'); }
     }
   }
 
-  /* ── all done: send what was approved ─────────────────────────────────────────────────────────────────────── */
-  async function renderDone() {
+  function renderDone() {
     const rv = state.review;
     teardownClips();
-    renderReviewWait('Checking what is ready to send…');
-    let plan;
-    try { plan = await api(seasonUrl(rv.show, rv.season)); } catch (error) {
-      if (state.review !== rv || rv.index < rv.items.length) return;
-      const box = el('div', 'lu-banner lu-bad');
-      const body = el('div', 'lu-col lu-grow');
-      body.append(el('b', 'lu-h', 'Couldn’t check what is ready to send'), el('span', 'lu-muted', error.message));
-      const actions = el('div', 'lu-actions');
-      const retry = button('Try again', { icon: 'arrow-repeat' }); retry.addEventListener('click', () => renderDone());
-      const back = button('To approve', { cls: 'lu-quiet', icon: 'arrow-left', act: 'back' });
-      actions.append(retry, back); body.append(actions);
-      box.append(glyph('exclamation-triangle', 'lu-bad'), body);
-      reviewEl.replaceChildren(box);
-      return;
-    }
-    if (state.review !== rv || rv.index < rv.items.length) return;   // undone while this was loading
-    state.plans.set(keyOf(rv.show, rv.season), plan);
-    const skipped = rv.history.filter(h => h.decision === 'skip').length, kept = rv.history.filter(h => h.decision === 'keep').length;
-    const waiting = plan.ready.length;
-
-    const box = el('div', 'lu-panel ap-done lu-enter');
-    const heading = el('h2', 'lu-title', 'All done with ' + rv.label); heading.tabIndex = -1;
-    const said = [];
-    if (skipped) said.push('skip ' + skipped);
-    if (kept) said.push('keep ' + kept);
+    const approved = rv.history.filter(h => h.decision === 'skip').length;
+    const dismissed = rv.history.length - approved;
     const text = el('div', 'lu-col');
-    text.append(heading, el('p', 'lu-muted', said.length ? 'You chose to ' + said.join(' and ') + '.' : 'Nothing was left to choose.'));
-    box.append(glyph('check2-all', 'lu-pos', 'lu-big'), text);
-
+    const heading = el('h2', 'lu-title', rv.episode ? 'Episode review complete' : 'Timing review complete');
+    heading.tabIndex = -1;
+    text.append(heading, el('p', 'lu-muted', [
+      approved ? plural(approved, 'skip') + ' approved' : '',
+      dismissed ? plural(dismissed, 'suggestion') + ' dismissed' : '',
+    ].filter(Boolean).join(' · ')), el('p', 'lu-cap lu-muted', 'Nothing was sent to Plex.'));
+    const box = el('div', 'lu-panel ap-done');
     const actions = el('div', 'ap-done-actions');
-    if (waiting) {
-      const detail = el('div', 'lu-col lu-grow');
-      detail.append(el('b', 'lu-h', plural(waiting, 'episode') + (waiting === 1 ? ' is' : ' are') + ' approved and not in Plex yet'));
-      const plan_ = el('ul', 'ap-plan');
-      for (const line of plan.changes.ready.lines) plan_.append(el('li', null, line));
-      if (plan.plex.status !== 'read') plan_.append(el('li', null, 'Plex could not be fully checked' + (plan.plex.message ? ': ' + plan.plex.message : '.')));
-      detail.append(plan_);
-      const send = button('Send ' + plural(waiting, 'episode') + ' to Plex', { cls: 'lu-primary', icon: 'send' });
-      if (plan.sending.enabled) {
-        send.addEventListener('click', () => act(send, async () => {
-          const result = await api('/approvals/send', { show: rv.show, season: rv.season, scope: 'approved', to_plex: true });
-          remember(result, { label: rv.label });
-          leaveReview(true);
-        }));
-      } else { send.disabled = true; send.title = plan.sending.message; detail.append(el('span', 'lu-cap lu-muted', plan.sending.message)); }
-      box.append(doing('send', 'lu-inf', detail, send));
-    }
-    const back = button(waiting ? 'Not now' : 'Back to the list', { cls: waiting ? 'lu-quiet' : 'lu-primary', icon: 'arrow-left', act: 'back' });
-    const undo = button('Undo the last choice', { cls: 'lu-quiet', icon: 'arrow-counterclockwise', act: 'undo' });
-    undo.disabled = rv.history.length === 0;
+    const back = backToSeason(rv);
+    back.classList.add('lu-primary');
+    back.dataset.act = 'back';
+    const undo = button('Undo the last choice', { icon: 'arrow-counterclockwise', act: 'undo' });
     actions.append(back, undo);
-    box.append(actions);
+    box.append(glyph('check2-all', 'lu-pos', 'lu-big'), text, actions);
     reviewEl.replaceChildren(box);
     heading.focus({ preventScroll: true });
   }
@@ -827,7 +935,7 @@
     if (!target || target.disabled) return;
     const rv = state.review;
     switch (target.dataset.act) {
-      case 'back': leaveReview(true); break;
+      case 'back': break; // the link handles the browser history
       case 'skip': decide('skip'); break;
       case 'keep': decide('keep'); break;
       case 'adjust': if (rv) setAdjusting(!rv.adjusting); break;
@@ -845,14 +953,19 @@
 
   document.addEventListener('keydown', event => {
     const rv = state.review;
-    if (!rv || root.dataset.view !== 'review' || event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
+    if (!rv || rv.busy || root.dataset.view !== 'review' || event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
     const from = event.target;
-    if (from.closest && from.closest('input, textarea, select, [contenteditable], .lu-thm-pop')) return;
+    if (from.closest && from.closest('input, textarea, select, video, dialog, [contenteditable], .lu-thm-pop')) return;
     const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
     const finished = rv.index >= rv.items.length;
     if (key === 'Escape') {
       const panel = $('apKeys');
-      if (panel && !panel.hidden) { panel.hidden = true; reviewEl.querySelector('[data-act="keys"]').setAttribute('aria-expanded', 'false'); } else leaveReview(true);
+      if (panel && !panel.hidden) {
+        panel.hidden = true;
+        const toggle = reviewEl.querySelector('[data-act="keys"]');
+        toggle.setAttribute('aria-expanded', 'false');
+        toggle.focus();
+      } else reviewEl.querySelector('[data-act="back"]')?.click();
     } else if (key === 'u') {
       if (event.repeat) return;
       undoLast();
@@ -865,10 +978,13 @@
       if (event.repeat) return;
       setAdjusting(!rv.adjusting);
     } else if (key === ' ') {
-      if (from.closest && from.closest('button, a')) return;   // Space on a focused button presses it
-      if (rv.clips) rv.clips[rv.active].toggle();
+      if (from.closest && from.closest('button, a, summary')) return;
+      if (rv.adjusting && rv.clips) {
+        rv.jump.reset();
+        rv.clips[rv.active].toggle();
+      } else rv.jump?.toggle();
     } else if (key === '1' || key === '2') {
-      pick(key === '1' ? 'start' : 'end', true);
+      pick(key === '1' ? 'start' : 'end');
     } else if ((key === 'ArrowLeft' || key === 'ArrowRight') && rv.adjusting && rv.clips) {
       rv.clips[rv.active].nudge((key === 'ArrowLeft' ? -1 : 1) * (event.shiftKey ? 100 : 1000));
     } else if (key === 'c' && rv.adjusting && rv.clips) {
@@ -881,8 +997,6 @@
   });
 
   /* ═══ Start ═══════════════════════════════════════════════════════════════════════════════════════════════════ */
-  if (window.RepriseTheme) window.RepriseTheme.mountPicker($('apTheme'));
-  if (location.hash === '#review') history.replaceState(null, '', location.pathname + location.search);
-  loadQueue();
-  loadAutomatic();
+  loadRoute();
+  if (location.hash !== '#automatic-sends') loadAutomatic();
 })();

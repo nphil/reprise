@@ -8,6 +8,10 @@ Start in the library-first interface: connect a Plex server, refresh a library, 
 
 Detection proposes ranges; it does not approve them. Inspect the evidence and original video, adjust keep and skip ranges, and approve or lock decisions yourself. A keep range vetoes overlapping skips; eligible skips remain separate rather than being joined across protected material. Native signal matching tolerates encoding differences and does not guarantee that every unique scene is found. Uncertain or changed evidence is not approval.
 
+**Checking a skip:** Open **Review season**, pick a suggestion, and select **Play the jump**. You’ll see and hear the moment before the skip and the moment playback resumes, with sound if the file has an audio track. Adjust either edge and play it again, or choose **Keep Plex unchanged**. Neither opening a preview nor changing the times on screen sends anything to Plex.
+
+**Correcting a skip that’s already in Plex:** Open the episode in **Library** and use **Set a skip exactly**, even if the episode isn’t in Review. Preview the new start and end before saving. If the episode has never been analyzed, analyze it first. Automatic sends and their **Undo** are under **Recent activity**.
+
 The [playback API](docs/reprise-api.md) serves saved results using the exact Plex playback identity, including the selected audio stream. Missing, stale, ambiguous or unapproved results yield no eligible skips. Named client credentials are scoped, and only their hashes are stored. The direct integration API is available for a future Marquee client, but this repository does not provide that client or deploy anything to a TV. Exact range ends and the explicit terminal flag must be respected.
 
 The **Plex report** (the Library's "Plex report" button, or `GET /api/reprise/report`) lines Plex's current skip markers up against what Reprise found for a show or season and flags where they differ, for example Plex skipping 52 seconds of story before the credits. It only reads: nothing is written to Plex.

@@ -8,8 +8,7 @@
 {% endblock %}
 
 {% block content %}
-{# First run should not invite leaving mid-wizard, so setup.css hides the full app navbar for this page and this
-   slim bar replaces it. base.html has no navbar block to override. #}
+{# This bare page keeps only the controls needed during setup. #}
 <header class="setup-topbar">
     <span class="setup-brand">
         <img src="{{ url_for('static', filename='images/reprise.svg') }}" alt="" width="26" height="26">
@@ -508,23 +507,19 @@
 function markDirty() {}
 </script>
 <script>
-// base.html's theme toggle lives in the navbar, which this page hides; mirror its behaviour for the slim top bar.
+// The bare setup page shares the same saved theme as the rest of Reprise.
 (function () {
     var btn = document.getElementById('setupThemeBtn');
     if (!btn) return;
     var icon = btn.querySelector('i');
     function sync() {
-        var dark = (document.documentElement.getAttribute('data-bs-theme') || 'dark') === 'dark';
+        var dark = window.RepriseTheme.active().scheme === 'dark';
         icon.className = dark ? 'bi bi-moon-stars-fill' : 'bi bi-sun-fill';
         btn.setAttribute('aria-pressed', dark ? 'true' : 'false');
     }
     sync();
-    btn.addEventListener('click', function () {
-        var next = (document.documentElement.getAttribute('data-bs-theme') || 'dark') === 'dark' ? 'light' : 'dark';
-        document.documentElement.setAttribute('data-bs-theme', next);
-        try { localStorage.setItem('theme', next); } catch (e) { /* best-effort */ }
-        sync();
-    });
+    btn.addEventListener('click', window.RepriseTheme.toggleScheme);
+    document.addEventListener('reprise:theme', sync);
 })();
 </script>
 <script>

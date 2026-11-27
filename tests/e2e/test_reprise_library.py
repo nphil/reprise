@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -19,6 +20,7 @@ from ._mocks import _fulfill_json
 from .conftest import accept_app_confirm
 
 DURATION = 1_320_000
+TEST_IMAGE = '<svg xmlns="http://www.w3.org/2000/svg" width="2" height="3"><rect width="2" height="3"/></svg>'
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -191,6 +193,7 @@ class RepriseApi:
                 "last_problem": None,
             },
         }
+        self.frames: list[str] = []
         self.settings_patches: list[dict] = []
         self.libraries = [
             {"server_id": "s", "server_type": "plex", "server_name": "Home Plex", "id": 1, "name": "TV Shows"}
@@ -255,13 +258,18 @@ class RepriseApi:
         request = route.request
         path, method = urlparse(request.url).path, request.method
         body = json.loads(request.post_data) if request.post_data else {}
-        match = re.fullmatch(r"/api/reprise/media/([^/]+)/(result|stream|review)", path)
+        match = re.fullmatch(r"/api/reprise/media/([^/]+)/(result|stream|frame|poster|review)", path)
         if path == "/api/reprise/media":
             return _fulfill_json(route, self.list_media(parse_qs(urlparse(request.url).query)))
         if match and match[2] == "result":
             return _fulfill_json(route, copy.deepcopy(self.results[match[1]]))
         if match and match[2] == "stream":
             return route.fulfill(status=404, body="")
+        if match and match[2] == "frame":
+            self.frames.append(request.url)
+            return route.fulfill(content_type="image/svg+xml", body=TEST_IMAGE)
+        if match and match[2] == "poster":
+            return route.fulfill(content_type="image/svg+xml", body=TEST_IMAGE)
         if match and match[2] == "review" and method == "PATCH":
             self.reviews.append(body)
             return _fulfill_json(route, self.results[match[1]])
@@ -325,13 +333,62 @@ class TestEpisodeList:
         rows = authed_page.locator(".rp-episode-open")
         expect(rows).to_have_count(6)
         expect(rows.nth(0)).to_contain_text("Pilot")
-        expect(rows.nth(0)).to_contain_text("Community · S1 E1 · 22 min")
+        expect(authed_page.locator(".rp-season-head h3")).to_have_text("Community · Season 1")
+        expect(rows.nth(0).locator(".rp-episode-context")).to_have_text("E1 · 22 min")
+        expect(rows.nth(0)).to_have_accessible_name("Community · S1 E1 · Pilot, 2 to review")
         for row, status in zip(
             range(6),
             ["2 to review", "Nothing found", "Analysis failed", "Not analyzed", "Not analyzed", "File changed"],
             strict=True,
         ):
             expect(rows.nth(row).locator(".rp-chip")).to_have_text(status)
+
+    def test_one_lazy_poster_per_season_uses_plex_artwork_not_episode_frames(
+        self, authed_page: Page, api: RepriseApi, app_url: str
+    ) -> None:
+        api.items[1]["poster_url"] = "/api/reprise/media/v2/poster"
+        api.items[2]["poster_url"] = "/api/reprise/media/v3/poster"
+        _more_episodes(api, 2, show="Andor")
+        _open(authed_page, app_url)
+        groups = authed_page.locator(".rp-season")
+        expect(groups).to_have_count(2)
+        poster = groups.filter(has_text="Community · Season 1").locator(".rp-season-poster")
+        expect(poster).to_have_count(1)
+        expect(poster).to_have_attribute("loading", "lazy")
+        expect(poster).to_have_attribute("alt", "")
+        expect(poster).to_have_attribute("src", "/api/reprise/media/v2/poster")
+        expect(poster).to_have_js_property("naturalWidth", 2)
+        expect(groups.filter(has_text="Andor · Season 1").locator(".rp-season-poster")).to_have_count(0)
+        assert api.frames == []
+
+    @pytest.mark.parametrize("width", [390, 1440])
+    def test_only_the_open_episode_gets_a_frame_and_back_returns_to_its_row(
+        self, authed_page: Page, api: RepriseApi, app_url: str, width: int
+    ) -> None:
+        api.items[1]["ranges"].update(skip=2, proposed=2, suggested=2)
+        authed_page.set_viewport_size({"width": width, "height": 900})
+        _open(authed_page, app_url)
+        pilot = authed_page.locator(".rp-episode-open").first
+        expect(pilot).to_be_visible()
+        assert api.frames == []
+        status = authed_page.locator(".rp-episode-open .rp-chip").nth(1)
+        expect(status).to_have_text("2 suggestions")
+        assert status.evaluate(
+            """chip => {
+                const text = document.createRange();
+                text.selectNodeContents(chip);
+                return text.getClientRects().length;
+            }"""
+        ) == 1
+        pilot.click()
+        artwork = authed_page.locator("#rpEpisodeStill")
+        expect(artwork).to_be_visible()
+        assert {urlparse(url).path for url in api.frames} == {"/api/reprise/media/v1/frame"}
+        assert parse_qs(urlparse(api.frames[0]).query) == {"t_ms": ["1000"], "w": ["640"]}
+        assert authed_page.evaluate("document.documentElement.scrollWidth") <= width
+        authed_page.get_by_role("button", name="Back to episodes").click()
+        expect(authed_page.locator("#rpReview")).to_be_hidden()
+        expect(pilot).to_be_focused()
 
     def test_technical_identifiers_stay_hidden_until_file_details_is_opened(
         self, authed_page: Page, api: RepriseApi, app_url: str
@@ -436,6 +493,10 @@ class TestReviewingAnEpisode:
         )
         names = authed_page.locator(".rp-range-name")
         expect(names).to_have_text(["Skip intro", "Skip credits", "Keep credits"])
+        timeline = authed_page.locator("#rpTimeline")
+        expect(timeline.locator(".rp-timeline-segment.suggested")).to_have_count(2)
+        expect(timeline.locator(".rp-timeline-segment.skip")).to_have_count(0)
+        expect(timeline.locator(".rp-timeline-segment.keep")).to_have_count(1)
         expect(authed_page.locator("#rpSaveBar")).to_be_hidden()
 
     def test_approving_a_section_and_saving_sends_only_that_decision(
@@ -446,6 +507,7 @@ class TestReviewingAnEpisode:
         first = authed_page.locator(".rp-range").first
         first.locator(":scope > summary").click()
         first.locator("label[data-value=approved]").click()
+        expect(authed_page.locator("#rpTimeline .rp-timeline-segment.skip")).to_have_count(1)
         expect(authed_page.locator("#rpSaveBar")).to_be_visible()
         expect(authed_page.locator("#rpSaveState")).to_have_text("You have unsaved changes.")
         authed_page.locator("#rpSave").click()
@@ -610,6 +672,8 @@ def _owned(rid: str, kind: str, start: int, end: int, status: str = "approved") 
 def _open_pilot(page: Page, app_url: str) -> None:
     _open(page, app_url)
     page.locator(".rp-episode-open").first.click()
+    expect(page.locator("#rpSetSkip")).to_be_hidden()
+    page.locator("#rpEditRanges > summary").click()
     expect(page.locator("#rpSetSkip")).to_be_enabled()
 
 
@@ -771,6 +835,61 @@ class TestSettingASkipExactly:
         authed_page.locator(".rp-episode-open").nth(5).click()
         expect(authed_page.locator("#rpOutcome")).to_contain_text("This file has changed since Reprise last read it.")
         expect(authed_page.locator("#rpSetSkip")).to_be_disabled()
+        expect(authed_page.locator("#rpEditRanges")).to_be_hidden()
+
+    def test_fix_link_previews_typed_boundaries_without_saving(
+        self, authed_page: Page, api: RepriseApi, app_url: str
+    ) -> None:
+        requests: list[str] = []
+        clip = Path(__file__).resolve().parents[2] / "media_preview_generator/gpu/assets/test_video.mp4"
+
+        def preview(route: Route) -> None:
+            requests.append(route.request.url)
+            route.fulfill(path=clip, content_type="video/mp4")
+
+        authed_page.route(re.compile(r"/jump-preview\?"), preview)
+        authed_page.goto(f"{app_url}/reprise?show=Community&season=1&open=v1&kind=credits#fix")
+        expect(authed_page.locator("#rpSpanKind")).to_have_value("credits")
+        expect(authed_page.locator("#rpSpanStart")).to_have_value("1240000")
+        expect(authed_page.locator("#rpSpanEnd")).to_have_value(str(DURATION))
+        video = authed_page.locator("#rpJumpVideo")
+        expect(video).to_be_hidden()
+        assert requests == []
+        authed_page.locator("#rpSpanStart").fill("1263000")
+        authed_page.locator("#rpSpanJump").click()
+        expect(video).to_be_visible()
+        expect(video).to_have_js_property("controls", True)
+        assert f"/media/v1/jump-preview?start_ms=1263000&end_ms={DURATION}" in requests[0]
+        authed_page.locator("#rpSpanEnd").fill("1319000")
+        expect(video).to_be_hidden()
+        expect(video).not_to_have_attribute("src", re.compile("."))
+        expect(authed_page.locator("#rpSaveBar")).to_be_hidden()
+        assert api.reviews == []
+
+    def test_jump_for_a_missing_skip_keeps_editing_available_if_the_preview_fails(
+        self, authed_page: Page, api: RepriseApi, app_url: str
+    ) -> None:
+        requests: list[str] = []
+
+        def unavailable(route: Route) -> None:
+            requests.append(route.request.url)
+            route.fulfill(status=503)
+
+        authed_page.route(re.compile(r"/jump-preview\?"), unavailable)
+        authed_page.goto(f"{app_url}/reprise?show=Community&season=1&open=v2#fix")
+        expect(authed_page.locator("#rpSpanStart")).to_have_value("")
+        expect(authed_page.locator("#rpSpanEnd")).to_have_value("")
+        authed_page.locator("#rpSpanJump").click()
+        expect(authed_page.locator("#rpJumpStatus")).to_contain_text("Enter a start and end")
+        assert requests == []
+        authed_page.locator("#rpSpanStart").fill("5000")
+        authed_page.locator("#rpSpanEnd").fill("40000")
+        authed_page.locator("#rpSpanJump").click()
+        expect(authed_page.locator("#rpJumpStatus")).to_contain_text("Jump preview unavailable.")
+        expect(authed_page.locator("#rpJumpVideo")).to_be_hidden()
+        assert "/media/v2/jump-preview?start_ms=5000&end_ms=40000" in requests[0]
+        expect(authed_page.locator("#rpSpanStart")).to_be_editable()
+        assert api.reviews == []
 
     def test_the_form_fits_a_phone(self, authed_page: Page, api: RepriseApi, app_url: str) -> None:
         authed_page.set_viewport_size({"width": 390, "height": 844})
@@ -790,18 +909,26 @@ class TestAnalysisProgress:
         authed_page.locator(".rp-episode input[type=checkbox]").nth(4).check()
         authed_page.locator("#rpAnalyze").click()
         assert api.analyses == [{"media_version_ids": ["v4", "v5"]}]
-        job = authed_page.locator("#rpActivity .rp-job").first
+        summary = authed_page.locator("#rpActivityDetails > summary")
+        expect(summary).to_contain_text("1 active")
+        expect(authed_page.locator("#rpQueue")).to_be_hidden()
+        summary.click()
+        expect(authed_page.locator("#notificationBellBtn")).to_have_attribute("aria-expanded", "false")
+        expect(authed_page.locator("#rpActivity")).to_be_hidden()
+        job = authed_page.locator("#rpLibraryActivity .rp-job").first
         expect(job).to_contain_text("Analyzing 2 episodes")
         expect(authed_page.locator(".rp-episode-open").nth(3).locator(".rp-chip")).to_contain_text("Analyzing")
+        pause = job.get_by_role("button", name="Pause")
+        pause.focus()
         api.jobs[0]["progress"] = {"percent": 40.0, "current_item": "Checking the intro: comparing with episode 2 of 6"}
         expect(job).to_contain_text("40%", timeout=10_000)
         expect(job).to_contain_text("comparing with episode 2 of 6")
-        expect(job.get_by_role("button", name="Pause")).to_be_visible()
+        expect(pause).to_be_focused()
         api.finish_analysis()
         expect(authed_page.locator(".rp-episode-open").nth(3).locator(".rp-chip")).to_have_text(
             "Nothing found", timeout=10_000
         )
-        expect(authed_page.locator("#rpActivity .rp-job").first).to_contain_text(
+        expect(authed_page.locator("#rpLibraryActivity .rp-job").first).to_contain_text(
             "Finished: nothing repeating was confirmed in 2 episodes."
         )
 
@@ -847,9 +974,11 @@ class TestAnalysisProgress:
             },
         )
         _open(authed_page, app_url)
-        job = authed_page.locator("#rpActivity .rp-job").first
+        authed_page.locator("#rpActivityDetails > summary").click()
+        job = authed_page.locator("#rpLibraryActivity .rp-job").first
         expect(job).to_contain_text("Refreshing the library")
         expect(job).to_contain_text("2 episodes could not be read and kept their earlier entries")
+        job.locator("details > summary").click()
         warnings = job.locator(".rp-job-warn li")
         expect(warnings).to_have_count(2)
         expect(warnings.first).to_have_text(
@@ -879,6 +1008,8 @@ class TestShellStatus:
         self, authed_page: Page, api: RepriseApi, app_url: str
     ) -> None:
         _open(authed_page, app_url)
+        authed_page.locator("#rpLibraryTools > summary").click()
+        authed_page.locator("#rpAnalysisSettings > summary").click()
         hardware = authed_page.locator("#rpHardware")
         expect(hardware).to_contain_text("Analysis uses GPU: NVIDIA Tesla P40 (NVDEC decode).")
         authed_page.locator("#rpHardwareToggle").click()
@@ -890,6 +1021,8 @@ class TestShellStatus:
         self, authed_page: Page, api: RepriseApi, app_url: str
     ) -> None:
         _open(authed_page, app_url)
+        authed_page.locator("#rpLibraryTools > summary").click()
+        authed_page.locator("#rpAnalysisSettings > summary").click()
         switch = authed_page.locator("#rpOnlineToggle")
         expect(authed_page.locator("#rpOnline")).to_contain_text("Look up intro times online (IntroDB, SkipDB)")
         expect(switch).to_be_checked()
@@ -975,6 +1108,8 @@ class TestListLayout:
                 {**api.jobs[0], "id": f"old-{n}", "status": "completed", "created_at": f"2026-11-02T0{n}:00:00+00:00"}
             )
         _open(authed_page, app_url)
+        authed_page.locator("#rpActivityDetails > summary").click()
+        authed_page.locator(".rp-episode-open").first.click()
         for n in range(3):
             authed_page.locator(".rp-episode input[type=checkbox]").nth(n).check()
         authed_page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
@@ -1024,7 +1159,7 @@ class TestListFollowsFilters:
         expect(authed_page.locator("#rpReviewHeading")).to_have_text("Pilot")
         authed_page.select_option("#rpShow", "Andor")
         expect(authed_page.locator("#rpReview")).to_be_hidden()
-        expect(authed_page.locator("#rpReviewEmpty")).to_be_visible()
+        expect(authed_page.locator("#rpLibraryList")).to_be_visible()
         expect(authed_page.locator("#rpMessage")).to_contain_text("Closed Pilot")
         expect(authed_page.locator(".rp-episode-open[aria-current=true]")).to_have_count(0)
 
@@ -1115,10 +1250,13 @@ class TestSelectingEpisodes:
         expect(outcome.get_by_role("button", name="Refresh library")).to_have_count(0)
         expect(authed_page.locator("#rpAnalyzeOne")).to_be_visible()
 
-    def test_the_empty_review_offers_the_next_episode_waiting_for_a_decision(
+    def test_only_an_actionable_season_links_to_its_review(
         self, authed_page: Page, api: RepriseApi, app_url: str
     ) -> None:
+        _more_episodes(api, 2, show="Andor")
         _open(authed_page, app_url)
-        expect(authed_page.locator("#rpNextBtn")).to_have_text("Review next: Pilot (2 to review)")
-        authed_page.locator("#rpNextBtn").click()
-        expect(authed_page.locator("#rpReviewHeading")).to_have_text("Pilot")
+        expect(authed_page.get_by_role("link", name="Review season 1 of Community")).to_have_attribute(
+            "href", "/reprise/approve?show=Community&season=1"
+        )
+        expect(authed_page.get_by_role("link", name=re.compile("Review season .* of Andor"))).to_have_count(0)
+        expect(authed_page.locator("#rpReview")).to_be_hidden()

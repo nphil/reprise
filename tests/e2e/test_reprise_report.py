@@ -280,5 +280,8 @@ class TestReport:
     ) -> None:
         authed_page.goto(f"{app_url}/reprise?show=Community&season=3")
         link = authed_page.locator("#rpReportLink")
+        expect(link).to_be_hidden()
+        authed_page.locator("#rpLibraryTools > summary").click()
+        expect(link).to_be_visible()
         expect(link).to_have_attribute("href", "/reprise/report?show=Community&season=3")
         assert api.reports == []

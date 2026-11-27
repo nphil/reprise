@@ -18,7 +18,7 @@
             </div>
         </div>
     </header>
-    <p class="settings-intro">Most changes save the moment you make them. Two things wait for you: <strong>Apply</strong> on worker groups, and <strong>Save</strong> on the pause schedule.</p>
+    <p class="settings-intro">Most changes save as you go. Use <strong>Apply</strong> for worker groups and <strong>Save</strong> for the pause schedule.</p>
 
     <div class="settings-layout">
         {{ settings_sidebar("settings") }}
@@ -27,12 +27,16 @@
         <div class="card section-card" id="section-workers">
             <div role="heading" aria-level="2" class="card-header">
                 <i class="bi bi-cpu sec-ico" aria-hidden="true"></i>
-                <div class="sec-title"><span class="sec-name">Workers</span><span class="sec-desc">Groups decide which hardware runs which task types, and when.</span></div>
+                <div class="sec-title"><span class="sec-name">Workers</span><span class="sec-desc">Choose which machines run each task, and when.</span></div>
             </div>
             <div class="card-body"><div id="workerGroupSettings">
                 <div class="wg-skeleton" aria-hidden="true"><span></span><span></span></div>
                 <p class="visually-hidden">Loading worker groups…</p>
             </div></div>
+            <div class="card-footer settings-related">
+                <a class="rp-chrome-control" href="{{ url_for('main.nodes_page') }}"><i class="bi bi-pc-display-horizontal" aria-hidden="true"></i>Manage nodes</a>
+                <a class="rp-chrome-control" href="{{ url_for('main.dashboard_page') }}"><i class="bi bi-speedometer2" aria-hidden="true"></i>View jobs</a>
+            </div>
         </div>
         {% include '_worker_quiet_hours.html' %}
 
@@ -833,7 +837,7 @@
                         <label for="logRetentionCount" class="sr-title">Retention
                             <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="How many rotated log files to keep on disk. Older ones beyond this count are deleted automatically."><i class="bi bi-info-circle"></i></button>
                         </label>
-                        <div class="sr-hint">How many old log files to keep. The <a href="/logs">Logs</a> page reads them.</div>
+                        <div class="sr-hint">How many old log files to keep. You can <a href="{{ url_for('main.logs_page') }}">view them in Logs</a>.</div>
                     </div>
                     <div class="sr-control">
                         <div class="input-group">

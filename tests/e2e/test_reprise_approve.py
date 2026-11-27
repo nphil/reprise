@@ -1,16 +1,12 @@
-"""E2E: the To approve screen.
-
-One click for a season's sure skips (with Undo), the one-by-one review for the rest (buttons and keys, nudging a time,
-Undo), the states where sending to Plex is off or a change went stale, and the theme picker. The /api/reprise/approvals*
-and picture endpoints are answered by ``_approvals_api.ApprovalsApi``; the shell, scripts and styles are the real ones.
-"""
+"""E2E: the Review season queue, Fix editor, Plex send gates and Undo."""
 
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
-from playwright.sync_api import Page, expect
+from playwright.sync_api import Page, Route, expect
 
 from ._approvals_api import ApprovalsApi, automatic_entry, span
 
@@ -38,13 +34,19 @@ def community(page: Page):
     return page.locator(".ap-show", has_text="Community")
 
 
+def open_season(page: Page) -> None:
+    community(page).get_by_role("link", name="Review season: Community, Season 2").click()
+    expect(page.locator(".ap-season-work")).to_be_visible()
+
+
 def choose(page: Page, name: str):
     """One of the three buttons of the one-by-one view (each carries its key as a small label)."""
     return page.locator(".ap-choose").get_by_role("button", name=re.compile(rf"^{name}\b"))
 
 
 def start_review(page: Page) -> None:
-    community(page).get_by_role("button", name="Review 2").click()
+    open_season(page)
+    page.get_by_role("link", name="Review 2 skips", exact=True).click()
     expect(page.locator(".ap-card")).to_be_visible()
 
 
@@ -56,10 +58,8 @@ def test_the_queue_shows_each_season_and_what_you_can_do(authed_page: Page, app_
     page = authed_page
     open_page(page, app_url)
 
-    expect(page.get_by_role("heading", name="To approve", level=1)).to_be_visible()
-    expect(page.locator("#apSub")).to_have_text(
-        "5 skips Reprise is sure about · 2 for you to look at · 1 episode approved, not sent yet"
-    )
+    expect(page.get_by_role("heading", name="Review", level=1)).to_be_visible()
+    expect(page.locator("#apSub")).to_have_text("5 high-confidence skips · 2 skips to check · 1 episode ready to send")
     shows = page.locator(".ap-show")
     expect(shows).to_have_count(2)
     expect(shows.nth(0)).to_contain_text("Community")  # the show that needs you most comes first
@@ -67,13 +67,16 @@ def test_the_queue_shows_each_season_and_what_you_can_do(authed_page: Page, app_
 
     season = community(page).locator(".ap-season")
     expect(season).to_contain_text("Season 2")
-    expect(season).to_contain_text("3 sure ones")
-    expect(season).to_contain_text("2 intros and 1 set of credits")
-    expect(season.get_by_role("button", name="Approve & send 3 sure ones")).to_be_enabled()
-    expect(season.get_by_role("button", name="Review 2")).to_be_enabled()
-    expect(season.get_by_role("button", name="Send 1 episode to Plex")).to_be_enabled()
-    # what a click would change in Plex, said in plain words, arrives after the list
-    expect(season).to_contain_text("Intro skip is added on 2 episodes where Plex has none.")
+    expect(season).to_contain_text("3 high-confidence skips · 2 skips to check · 1 episode ready to send")
+    expect(season.get_by_role("button")).to_have_count(0)
+    expect(season.get_by_role("link")).to_have_count(1)
+    open_season(page)
+    workspace = page.locator(".ap-season-work")
+    expect(workspace.locator(".lu-primary")).to_have_count(1)
+    expect(workspace.get_by_role("button", name="Approve & send 3 high-confidence skips")).to_be_enabled()
+    expect(workspace.get_by_role("button", name="Send skips for 1 episode to Plex")).to_be_enabled()
+    workspace.get_by_text("What changes in Plex", exact=True).first.click()
+    expect(workspace).to_contain_text("Intro skip is added on 2 episodes where Plex has none.")
     expect(page.locator('[data-tour="nav-approve"]')).to_have_attribute("aria-current", "page")
     assert errors == []
 
@@ -83,9 +86,8 @@ def test_nothing_waiting_says_so_and_a_failed_load_can_be_retried(authed_page: P
     page = authed_page
     api = ApprovalsApi(page, spans=[])
     page.goto(f"{app_url}/reprise/approve")
-    expect(page.get_by_role("heading", name="Nothing is waiting for you")).to_be_visible()
-    expect(page.get_by_role("link", name="Open the Library")).to_have_attribute("href", re.compile(r"/reprise$"))
-    expect(page.locator("#apSub")).to_have_text("Nothing is waiting for you.")
+    expect(page.get_by_role("heading", name="Nothing to review")).to_be_visible()
+    expect(page.get_by_role("link", name="Open Library")).to_have_attribute("href", re.compile(r"/reprise$"))
 
     api.fail[("GET", "/approvals")] = (500, {"error": "Operation failed"})
     page.reload()
@@ -105,13 +107,14 @@ def test_one_click_sends_the_sure_ones_and_undo_puts_them_back(
     page = authed_page
     api = open_page(page, app_url)
 
-    community(page).get_by_role("button", name="Approve & send 3 sure ones").click()
+    open_season(page)
+    page.get_by_role("button", name="Approve & send 3 high-confidence skips").click()
     sent = page.locator("#apSent")
-    expect(sent).to_contain_text("Sent 3 skips to Plex")
+    expect(sent).to_contain_text("Sent skips for 2 episodes to Plex")
     expect(sent).to_contain_text("Plex was backed up first")
     assert api.posts("/approvals/send") == [{"show": "Community", "season": 2, "scope": "sure", "to_plex": True}]
-    # the season no longer offers them; the other show still does
-    expect(page.get_by_role("button", name=re.compile(r"^Approve & send"))).to_have_count(1)
+    # This season no longer has high-confidence suggestions waiting.
+    expect(page.get_by_role("button", name=re.compile(r"^Approve & send"))).to_have_count(0)
 
     sent.get_by_role("button", name="Undo").click()
     expect(sent).to_contain_text("Undone")
@@ -128,7 +131,7 @@ def test_one_click_sends_the_sure_ones_and_undo_puts_them_back(
             ]
         }
     ]
-    expect(community(page).get_by_role("button", name="Approve & send 3 sure ones")).to_be_visible()
+    expect(page.get_by_role("button", name="Approve & send 3 high-confidence skips")).to_be_visible()
     expect(sent.get_by_role("button", name="Undo")).to_have_count(0)  # an undone change cannot be undone twice
     assert errors == []
 
@@ -240,29 +243,39 @@ def test_a_failed_episode_is_listed_and_stays_unsent(authed_page: Page, app_url:
     api = open_page(page, app_url)
     api.send_fails["v202"] = "Plex's data did not allow it: the episode moved."
 
-    community(page).get_by_role("button", name="Approve & send 3 sure ones").click()
+    open_season(page)
+    page.get_by_role("button", name="Approve & send 3 high-confidence skips").click()
     sent = page.locator("#apSent")
-    expect(sent).to_contain_text("Sent 2 skips to Plex")
+    expect(sent).to_contain_text("Sent skips for 1 episode to Plex")
     expect(sent).to_contain_text("S02E02: Plex's data did not allow it: the episode moved.")
     # the one that did not go is approved and waits (with the one that already waited)
-    expect(community(page)).to_contain_text("2 episodes approved, not sent yet")
+    expect(page.get_by_role("button", name="Send skips for 2 episodes to Plex")).to_be_enabled()
 
 
 @pytest.mark.e2e
-def test_with_sending_off_it_only_approves(authed_page: Page, app_url: str) -> None:
+@pytest.mark.parametrize("sending", ["off", "missing"])
+def test_with_sending_disabled_it_only_approves(authed_page: Page, app_url: str, sending: str) -> None:
     page = authed_page
-    api = open_page(page, app_url, sending="off")
-
-    expect(page.locator("#apNotice")).to_contain_text("Sending to Plex is turned off")
-    expect(page.get_by_role("link", name="Open Sharing")).to_be_visible()
-    expect(community(page).get_by_role("button", name="Send 1 episode to Plex")).to_be_disabled()
+    page.set_viewport_size({"width": 390, "height": 844})
+    api = open_page(page, app_url, sending=sending)
+    notice = page.locator("#apNotice")
+    sharing = notice.get_by_role("link", name="Sharing")
+    if sending == "off":
+        expect(notice).to_contain_text("Review only · Approvals stay in Reprise.")
+        expect(sharing).to_be_visible()
+    else:
+        expect(notice).to_have_text("Review only · Sending to Plex is unavailable on this install.")
+        expect(sharing).to_have_count(0)
+    expect(notice.locator(".lu-warn")).to_have_count(0)
+    open_season(page)
+    expect(page.get_by_role("button", name="Send skips for 1 episode to Plex")).to_be_disabled()
     expect(page.get_by_role("button", name=re.compile(r"Approve & send"))).to_have_count(0)
 
-    community(page).get_by_role("button", name="Approve 3 sure ones").click()
+    page.get_by_role("button", name="Approve 3 high-confidence skips").click()
     expect(page.locator("#apSent")).to_contain_text("Approved 3 skips")
-    expect(page.locator("#apSent")).to_contain_text("sending to Plex is turned off")
+    expect(page.locator("#apSent")).to_contain_text("Not sent · Review only")
     assert api.posts("/approvals/send") == [{"show": "Community", "season": 2, "scope": "sure", "to_plex": False}]
-    expect(community(page).get_by_role("button", name="Send 3 episodes to Plex")).to_be_disabled()
+    expect(page.get_by_role("button", name="Send skips for 3 episodes to Plex")).to_be_disabled()
 
 
 @pytest.mark.e2e
@@ -270,15 +283,16 @@ def test_sending_a_season_you_approved_earlier(authed_page: Page, app_url: str) 
     page = authed_page
     api = open_page(page, app_url)
 
-    community(page).get_by_role("button", name="Send 1 episode to Plex").click()
-    expect(page.locator("#apSent")).to_contain_text("Sent 1 skip to Plex")
+    open_season(page)
+    page.get_by_role("button", name="Send skips for 1 episode to Plex").click()
+    expect(page.locator("#apSent")).to_contain_text("Sent skips for 1 episode to Plex")
     assert api.posts("/approvals/send") == [{"show": "Community", "season": 2, "scope": "approved", "to_plex": True}]
     page.locator("#apSent").get_by_role("button", name="Undo").click()
     expect(page.locator("#apSent")).to_contain_text("Undone")
     assert api.posts("/approvals/undo")[0]["changes"] == [
         {"media_version_id": "v204", "change_id": "c1", "span_ids": [], "label": "S02E04"}
     ]
-    expect(community(page).get_by_role("button", name="Send 1 episode to Plex")).to_be_visible()
+    expect(page.get_by_role("button", name="Send skips for 1 episode to Plex")).to_be_visible()
 
 
 # ── one by one ──────────────────────────────────────────────────────────────────────────────────────────────────
@@ -293,22 +307,22 @@ def test_review_one_by_one_with_the_keyboard(authed_page: Page, app_url: str, er
     # credits come first within an episode; the card says what it is, how sure Reprise is, and what Plex has
     card = page.locator(".ap-card")
     expect(card.get_by_role("heading", name="S02E03 · Basic Genealogy")).to_be_visible()
-    expect(page.locator(".ap-top")).to_contain_text("Choice 1 of 2")
-    expect(card).to_contain_text("A guess")
-    expect(card).to_contain_text("Plex has it at 20:50 to 22:00. This moves the start 10 s earlier.")
+    expect(page.locator(".ap-top")).to_contain_text("Skip 1 of 2")
+    expect(card).to_contain_text("Low confidence")
+    expect(card).to_contain_text("Plex now skips 20:50 to 22:00. Keeping Plex unchanged won’t remove that skip.")
     expect(page.locator("#apTimes")).to_have_text("20:40 → 22:00 · 1 min 20 s")
-    expect(page.locator(".ap-choose")).to_contain_text("Skip these credits?")
+    expect(page.locator(".ap-choose")).to_contain_text("Credits skip")
 
     # A opens the nudge controls; the arrow keys move the picked time by a second
     page.keyboard.press("a")
-    expect(choose(page, "Adjust")).to_have_attribute("aria-pressed", "true")
+    expect(choose(page, "Adjust timings")).to_have_attribute("aria-pressed", "true")
     expect(page.get_by_role("button", name="Skip starts: 1 second later")).to_be_visible()
     page.keyboard.press("ArrowRight")
     expect(page.locator("#apTimes")).to_have_text("20:41 → 22:00 · 1 min 19 s")
     expect(card.locator(".lu-clip").first).to_contain_text("20:41 · was 20:40")
 
     page.keyboard.press("s")
-    expect(page.locator(".ap-top")).to_contain_text("Choice 2 of 2")
+    expect(page.locator(".ap-top")).to_contain_text("Skip 2 of 2")
     assert api.posts("/approvals/decide") == [
         {
             "media_version_id": "v203",
@@ -319,12 +333,12 @@ def test_review_one_by_one_with_the_keyboard(authed_page: Page, app_url: str, er
             "end_ms": 1_320_000,
         }
     ]
-    expect(page.locator(".ap-choose")).to_contain_text("Skip this intro?")
-    expect(card).to_contain_text("Plex has no intro skip here yet.")
+    expect(page.locator(".ap-choose")).to_contain_text("Intro skip")
+    expect(card).to_contain_text("Plex has no intro skip.")
 
     page.keyboard.press("k")
-    expect(page.get_by_role("heading", name="All done with Season 2")).to_be_visible()
-    expect(page.locator(".ap-done")).to_contain_text("You chose to skip 1 and keep 1.")
+    expect(page.get_by_role("heading", name="Timing review complete")).to_be_visible()
+    expect(page.locator(".ap-done")).to_contain_text("1 skip approved · 1 suggestion dismissed")
     assert api.posts("/approvals/decide")[1] == {
         "media_version_id": "v203",
         "expected_revision": 2,
@@ -332,11 +346,12 @@ def test_review_one_by_one_with_the_keyboard(authed_page: Page, app_url: str, er
         "decision": "keep",
     }
 
-    # what you approved here and earlier waits to be sent
-    expect(page.locator(".ap-done")).to_contain_text("2 episodes are approved and not in Plex yet")
-    page.get_by_role("button", name="Send 2 episodes to Plex").click()
-    expect(page.locator("#apQueue")).to_be_visible()
-    expect(page.locator("#apSent")).to_contain_text("Sent 2 skips to Plex")
+    # Approval didn't send. Go back to the same season, then choose to publish explicitly.
+    assert api.posts("/approvals/send") == []
+    page.get_by_role("link", name="Back to season").click()
+    expect(page.locator(".ap-season-work")).to_be_visible()
+    page.get_by_role("button", name="Send skips for 2 episodes to Plex").click()
+    expect(page.locator("#apSent")).to_contain_text("Sent skips for 2 episodes to Plex")
     assert api.posts("/approvals/send") == [{"show": "Community", "season": 2, "scope": "approved", "to_plex": True}]
     assert errors == []
 
@@ -347,14 +362,20 @@ def test_review_buttons_decide_and_the_back_button_leaves(authed_page: Page, app
     api = open_page(page, app_url)
     start_review(page)
 
-    choose(page, "Keep it").click()
-    expect(page.locator(".ap-top")).to_contain_text("Choice 2 of 2")
+    choose(page, "Keep Plex unchanged").click()
+    expect(page.locator(".ap-top")).to_contain_text("Skip 2 of 2")
     assert [(p["kind"], p["decision"]) for p in api.posts("/approvals/decide")] == [("credits", "keep")]
 
-    page.go_back()  # the browser's own Back goes to the list, not out of the page
-    expect(page.locator("#apQueue")).to_be_visible()
+    credits = next(s for s in api.spans if s["mid"] == "v203" and s["kind"] == "credits")
+    assert credits["plex"] == (1_250_000, 1_320_000)
+    assert api.posts("/approvals/send") == []
+    page.go_back()
+    expect(page.locator(".ap-season-work")).to_be_visible()
     expect(page.locator(".ap-card")).to_have_count(0)
-    expect(community(page)).to_contain_text("1 to look at")
+    expect(page.get_by_role("link", name="Review 1 skip", exact=True)).to_be_visible()
+    page.go_back()
+    expect(page.locator("#apQueue")).to_be_visible()
+    expect(community(page)).to_contain_text("1 skip to check")
 
 
 @pytest.mark.e2e
@@ -366,10 +387,10 @@ def test_undo_brings_back_the_choice_you_made(authed_page: Page, app_url: str) -
     page.keyboard.press("a")
     page.keyboard.press("ArrowRight")
     page.keyboard.press("s")
-    expect(page.locator(".ap-top")).to_contain_text("Choice 2 of 2")
+    expect(page.locator(".ap-top")).to_contain_text("Skip 2 of 2")
     page.keyboard.press("u")
 
-    expect(page.locator(".ap-top")).to_contain_text("Choice 1 of 2")
+    expect(page.locator(".ap-top")).to_contain_text("Skip 1 of 2")
     assert api.posts("/approvals/decide")[1] == {
         "media_version_id": "v203",
         "expected_revision": 2,
@@ -379,7 +400,7 @@ def test_undo_brings_back_the_choice_you_made(authed_page: Page, app_url: str) -
         "range_ids": [],
     }
     # the time you moved is still there to change again
-    expect(choose(page, "Adjust")).to_have_attribute("aria-pressed", "true")
+    expect(choose(page, "Adjust timings")).to_have_attribute("aria-pressed", "true")
     expect(page.locator("#apTimes")).to_have_text("20:41 → 22:00 · 1 min 19 s")
 
 
@@ -393,8 +414,7 @@ def test_a_held_key_decides_only_once(authed_page: Page, app_url: str) -> None:
     page.keyboard.down("s")  # the key repeating while held
     page.keyboard.down("s")
     page.keyboard.up("s")
-    expect(page.locator(".ap-top")).to_contain_text("Choice 2 of 2")
-    page.wait_for_timeout(300)
+    expect(page.locator(".ap-top")).to_contain_text("Skip 2 of 2")
     assert len(api.posts("/approvals/decide")) == 1
 
 
@@ -403,7 +423,7 @@ def test_snapping_to_a_cut_moves_the_picked_time(authed_page: Page, app_url: str
     page = authed_page
     open_page(page, app_url)
     start_review(page)
-    choose(page, "Keep it").click()  # on to the intro: 0:02 to 0:34, cuts at 0:31, 0:32 and 0:33
+    choose(page, "Keep Plex unchanged").click()  # on to the intro: 0:02 to 0:34, cuts at 0:31, 0:32 and 0:33
     expect(page.locator("#apTimes")).to_have_text("0:02 → 0:34 · 32 s")
 
     page.keyboard.press("a")
@@ -422,39 +442,139 @@ def test_a_changed_episode_reloads_what_is_left(authed_page: Page, app_url: str)
     api.revisions["v203"] += 1  # someone else decided it while this page was open
     page.keyboard.press("s")
     expect(page.locator("#apToasts")).to_contain_text(
-        "This changed while you were looking at it. Getting what is left."
+        "This changed while you were looking at it. Reloading this review."
     )
-    expect(page.locator(".ap-top")).to_contain_text("Choice 1 of 2")
+    expect(page.locator(".ap-top")).to_contain_text("Skip 1 of 2")
     expect(page.locator(".ap-card")).to_be_visible()
     # what is asked now carries the new revision
     page.keyboard.press("s")
-    expect(page.locator(".ap-top")).to_contain_text("Choice 2 of 2")
+    expect(page.locator(".ap-top")).to_contain_text("Skip 2 of 2")
     assert api.posts("/approvals/decide")[-1]["expected_revision"] == 2
 
 
-# ── the theme, and the phone ────────────────────────────────────────────────────────────────────────────────────
+@pytest.mark.e2e
+@pytest.mark.parametrize(
+    ("show", "season", "kind", "action"),
+    [
+        ("Parks%20and%20Recreation", 1, "sure", "Approve & send 1 high-confidence skip"),
+        ("Community", 2, "ready", "Send skips for 1 episode to Plex"),
+    ],
+)
+def test_direct_season_link_works_without_manual_review(
+    authed_page: Page, app_url: str, show: str, season: int, kind: str, action: str
+) -> None:
+    page = authed_page
+    mid = "v301" if kind == "sure" else "v204"
+    api = ApprovalsApi(page, spans=[span(mid, "intro", kind, 0, 25_000)])
+    page.goto(f"{app_url}/reprise/approve?show={show}&season={season}")
+    expect(page.get_by_role("button", name=action)).to_be_enabled()
+    expect(page.locator(".ap-card")).to_have_count(0)
+    assert api.posts("/approvals/send") == []
+    page.get_by_role("link", name="All seasons").click()
+    expect(page.locator("#apQueue .ap-season")).to_be_visible()
 
 
 @pytest.mark.e2e
-def test_the_theme_picker_changes_and_remembers_the_theme(authed_page: Page, app_url: str) -> None:
+def test_direct_fix_opens_the_exact_episode_and_kind_in_edit_mode(authed_page: Page, app_url: str) -> None:
     page = authed_page
-    open_page(page, app_url)
-    html = page.locator("html")
-    expect(page.get_by_role("button", name="Colour theme")).to_be_visible()
+    api = ApprovalsApi(page)
+    target = f"{app_url}/reprise/approve?show=Community&season=2&episode_id=v201&kind=intro#fix"
+    page.goto(target)
+    expect(page.get_by_role("heading", name="S02E01 · Anthropology 101")).to_be_visible()
+    expect(page.locator(".ap-top")).to_contain_text("Skip 1 of 1")
+    expect(choose(page, "Adjust timings")).to_have_attribute("aria-pressed", "true")
+    page.get_by_role("button", name="Skip ends: 1 second earlier").click()
+    choose(page, "Approve skip").click()
+    expect(page.get_by_role("heading", name="Episode review complete")).to_be_visible()
+    assert api.posts("/approvals/decide") == [
+        {
+            "media_version_id": "v201",
+            "kind": "intro",
+            "decision": "skip",
+            "expected_revision": 1,
+            "start_ms": 0,
+            "end_ms": 31_000,
+        }
+    ]
+    assert api.posts("/approvals/send") == []
+    page.get_by_role("button", name="Undo the last choice").click()
+    expect(page.locator("#apTimes")).to_have_text("0:00 → 0:31 · 31 s")
+    expect(choose(page, "Adjust timings")).to_have_attribute("aria-pressed", "true")
+    page.get_by_role("link", name="Back to season").click()
+    expect(page).to_have_url(re.compile(r"\?show=Community&season=2$"))
+    expect(page.get_by_role("link", name="Review 2 skips")).to_be_visible()
 
-    page.get_by_role("button", name="Colour theme").click()
-    dialog = page.get_by_role("dialog", name="Theme")
-    expect(dialog).to_be_visible()
-    dialog.get_by_role("radio", name="Dracula", exact=True).click()
-    expect(html).to_have_attribute("data-theme", "dracula")
-    expect(html).to_have_attribute("data-scheme", "dark")
 
-    page.keyboard.press("Escape")
-    expect(dialog).to_be_hidden()
-    page.reload()
-    expect(html).to_have_attribute("data-theme", "dracula")  # remembered, and applied before the page paints
-    page.get_by_role("button", name="Colour theme").click()
-    page.get_by_role("dialog", name="Theme").get_by_role("radio", name="Lucent").first.click()
+@pytest.mark.e2e
+def test_direct_fix_without_a_pending_skip_links_to_the_exact_library_episode(authed_page: Page, app_url: str) -> None:
+    page = authed_page
+    ApprovalsApi(page)
+    page.goto(f"{app_url}/reprise/approve?show=Community&season=2&episode_id=v204#fix")
+    expect(page.locator(".ap-season-work")).to_contain_text("No pending skip matches this episode.")
+    expect(page.get_by_role("link", name="Fix in Library")).to_have_attribute(
+        "href", "/reprise?show=Community&season=2&open=v204#fix"
+    )
+    expect(page.locator(".ap-card")).to_have_count(0)
+
+
+@pytest.mark.e2e
+def test_jump_playback_requests_the_edited_edges_on_demand(authed_page: Page, app_url: str) -> None:
+    page = authed_page
+    ApprovalsApi(page)
+    clip = Path(__file__).resolve().parents[2] / "media_preview_generator/gpu/assets/test_video.mp4"
+    requests: list[str] = []
+
+    def preview(route: Route) -> None:
+        requests.append(route.request.url)
+        route.fulfill(path=clip, content_type="video/mp4")
+
+    page.route(re.compile(r"/jump-preview\?"), preview)
+    page.goto(f"{app_url}/reprise/approve?show=Community&season=2&episode_id=v203&kind=intro#fix")
+    expect(page.get_by_role("button", name="Play the jump")).to_be_visible()
+    video = page.locator(".ap-jump-video")
+    expect(video).to_be_hidden()
+    assert requests == []
+    page.get_by_role("button", name="Skip ends: 1 second earlier").click()
+    page.get_by_role("button", name="Play the jump").click()
+    expect(video).to_be_visible()
+    expect(video).to_have_js_property("controls", True)
+    assert "/media/v203/jump-preview?start_ms=2000&end_ms=33000" in requests[0]
+    page.get_by_role("button", name="Skip ends: 1 second later").click()
+    expect(video).to_be_hidden()
+    expect(page.get_by_role("button", name="Play the jump")).to_be_visible()
+
+
+@pytest.mark.e2e
+def test_jump_preview_failure_does_not_claim_playback(authed_page: Page, app_url: str) -> None:
+    page = authed_page
+    ApprovalsApi(page)
+    page.route(
+        re.compile(r"/jump-preview\?"), lambda route: route.fulfill(status=503, body="Video temporarily unavailable")
+    )
+    page.goto(f"{app_url}/reprise/approve?show=Community&season=2&episode_id=v203&kind=intro")
+    page.get_by_role("button", name="Play the jump").click()
+    expect(page.locator(".ap-jump-status")).to_have_text(
+        "Jump preview unavailable. You can still check the timings below."
+    )
+    expect(page.locator(".ap-jump-video")).to_be_hidden()
+    expect(choose(page, "Adjust timings")).to_be_visible()
+
+
+@pytest.mark.e2e
+def test_recent_changes_link_focuses_activity_and_keeps_undo_reachable(authed_page: Page, app_url: str) -> None:
+    page = authed_page
+    ApprovalsApi(page, automatic=three_automatic())
+    page.goto(f"{app_url}/reprise/approve#automatic-sends")
+    expect(page.locator("#automatic-sends")).to_be_focused()
+    expect(page.locator("#apSent")).to_be_visible()
+    expect(page.locator("#apSent").get_by_role("button", name="Undo")).to_have_count(2)
+    page.locator("#apSent").get_by_text("Fix an episode", exact=True).first.click()
+    expect(page.locator("#apSent").get_by_role("link", name="S02E01")).to_have_attribute(
+        "href", "/reprise?show=Community&season=2&open=v201&kind=credits#fix"
+    )
+
+
+# ── phone layout ────────────────────────────────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.e2e
@@ -472,6 +592,6 @@ def test_the_phone_layout_does_not_scroll_sideways(authed_page: Page, app_url: s
     page.keyboard.press("a")
     expect(page.get_by_role("button", name="Skip starts: 1 second later")).to_be_visible()
     assert overflow() <= 0
-    # the three choices stay reachable without scrolling
-    for name in ("Skip it", "Keep it", "Adjust"):
+    # The three choices stay reachable at phone width.
+    for name in ("Approve skip", "Keep Plex unchanged", "Adjust timings"):
         expect(choose(page, name)).to_be_in_viewport()

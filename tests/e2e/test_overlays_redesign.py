@@ -533,6 +533,68 @@ class TestNotificationsToastsAndInfo:
         ).to_have_count(0)
         expect(page.locator("#notificationResetBtn")).to_have_text("Restore dismissed")
 
+    def test_recent_activity_bulk_dismiss_keeps_failed_and_required_notices(self, overlay_page) -> None:
+        page, _ = overlay_page
+        initial = [
+            *_NOTIFICATIONS["notifications"],
+            {"id": "required", "severity": "warning", "title": "Required notice", "dismissable": False},
+        ]
+        active = list(initial)
+        writes: list[str] = []
+
+        def handle(route: Route) -> None:
+            path = route.request.url.split("/api/system/notifications", 1)[1]
+            if route.request.method == "GET":
+                route.fulfill(json={"notifications": active})
+                return
+            writes.append(path)
+            if path == "/vk/dismiss":
+                active[:] = [notice for notice in active if notice["id"] != "vk"]
+                route.fulfill(json={"ok": True})
+            elif path == "/reset-dismissed":
+                active[:] = initial
+                route.fulfill(json={"ok": True})
+            else:
+                route.fulfill(status=500, json={"ok": False, "error": "Could not save"})
+
+        page.route("**/api/system/notifications", handle)
+        page.route("**/api/system/notifications/**", handle)
+        page.reload(wait_until="domcontentloaded")
+        page.locator("#notificationBellBtn").click()
+        panel = page.get_by_role("region", name="Recent activity")
+        expect(panel.get_by_role("link", name="All jobs")).to_have_attribute("href", "/dashboard")
+        expect(panel.get_by_role("link", name="Automatic sends")).to_have_attribute(
+            "href", "/reprise/approve#automatic-sends"
+        )
+        panel.get_by_role("button", name="Dismiss all").click()
+        expect(panel.locator("#notificationActionStatus")).to_have_text("Dismissed 1. Could not dismiss 1.")
+        expect(panel.locator(".notification-title")).to_have_text(["Media folder not mounted", "Required notice"])
+        assert sorted(writes) == ["/mnt/dismiss", "/vk/dismiss"]
+        panel.get_by_role("button", name="Restore dismissed").click()
+        expect(panel.get_by_text("Vulkan GPU probe failed")).to_be_visible()
+        assert writes[-1] == "/reset-dismissed"
+
+    def test_recent_activity_shows_load_failure_until_a_successful_retry(self, overlay_page) -> None:
+        page, _ = overlay_page
+        available = False
+
+        def get_notices(route: Route) -> None:
+            if available:
+                route.fulfill(json={"notifications": []})
+            else:
+                route.fulfill(status=503, json={"error": "Temporarily unavailable"})
+
+        page.route("**/api/system/notifications", get_notices)
+        page.reload(wait_until="domcontentloaded")
+        page.locator("#notificationBellBtn").click()
+        panel = page.get_by_role("region", name="Recent activity")
+        expect(panel.get_by_role("alert")).to_have_text("Couldn't load system notices.")
+        expect(panel.get_by_text("No system notices.")).to_be_hidden()
+        available = True
+        panel.get_by_role("button", name="Try again").click()
+        expect(panel.get_by_text("No system notices.")).to_be_visible()
+        expect(panel.get_by_role("alert")).to_be_hidden()
+
     def test_toasts_stack_up_to_three_and_errors_stay_until_closed(self, overlay_page) -> None:
         page, _ = overlay_page
         page.clock.install()

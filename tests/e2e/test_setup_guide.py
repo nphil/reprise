@@ -579,7 +579,7 @@ class TestRequiredStepsDone:
         GuideApi(authed_page, guide)
         _open(authed_page, app_url)
         expect(authed_page.locator("#sgDismissed")).to_have_text(
-            "This guide won't open by itself now. It stays under Setup guide in the sidebar."
+            "This guide won't open by itself now. You can reopen it from Help."
         )
         expect(authed_page.locator("#sgSkip")).to_be_hidden()
         expect(authed_page.locator("#rpSetupGuideLink")).to_have_attribute("aria-current", "page")
@@ -933,16 +933,18 @@ class TestKeyboard:
 
 
 class TestPageFrame:
-    def test_title_and_sidebar(self, authed_page: Page, app_url: str) -> None:
+    def test_title_and_help_link(self, authed_page: Page, app_url: str) -> None:
         GuideApi(authed_page, fresh())
         _open(authed_page, app_url)
         expect(authed_page).to_have_title("Setup guide · Reprise")
+        authed_page.locator("#rpHelpBtn").click()
         link = authed_page.locator("#rpSetupGuideLink")
+        expect(link).to_be_visible()
         expect(link).to_have_text("Setup guide")
         expect(link).to_have_attribute("aria-current", "page")
         expect(link).to_have_attribute("href", "/setup-guide")
-        for destination in ("Library", "Settings"):
-            expect(authed_page.locator(".rp-rail-nav").get_by_role("link", name=destination)).not_to_have_attribute(
+        for destination in ("Library", "Review", "Settings"):
+            expect(authed_page.locator(".rp-main-nav").get_by_role("link", name=destination)).not_to_have_attribute(
                 "aria-current", re.compile(".")
             )
 

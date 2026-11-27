@@ -1,87 +1,110 @@
-/* Shared shell behaviour (base.html): sidebar open/collapse and the always-visible "can Reprise change Plex?" chip. */
+/* Shared chrome: one light-dismiss popup at a time and the actual Plex publishing state. */
 (() => {
     'use strict';
-    const root = document.documentElement, body = document.body;
-    const toggle = document.getElementById('rpRailToggle');
-    const narrow = window.matchMedia('(max-width: 899.98px)');
+    const shade = document.querySelector('.rp-popup-shade');
+    let opener = null;
+    let popup = null;
 
-    function syncToggle() {
-        if (!toggle) return;
-        const expanded = narrow.matches ? body.classList.contains('rp-rail-open') : !root.classList.contains('rp-rail-collapsed');
-        const icon = toggle.querySelector('i');
-        toggle.setAttribute('aria-expanded', String(expanded));
-        toggle.setAttribute('aria-label', narrow.matches ? (expanded ? 'Close menu' : 'Open menu') : (expanded ? 'Collapse sidebar' : 'Expand sidebar'));
-        toggle.title = toggle.getAttribute('aria-label');
-        if (icon) icon.className = narrow.matches ? (expanded ? 'bi bi-x-lg' : 'bi bi-list') : (expanded ? 'bi bi-layout-sidebar-inset' : 'bi bi-layout-sidebar');
+    function closePopup(restore = true) {
+        const previous = opener;
+        const panel = popup;
+        popup = opener = null;
+        panel.hidden = true;
+        shade.hidden = true;
+        previous.setAttribute('aria-expanded', 'false');
+        if (restore) previous.focus({ preventScroll: true });
     }
-    if (toggle) {
-        toggle.addEventListener('click', () => {
-            if (narrow.matches) {
-                body.classList.toggle('rp-rail-open');
-            } else {
-                const collapsed = root.classList.toggle('rp-rail-collapsed');
-                try { localStorage.setItem('rpRailCollapsed', collapsed ? '1' : '0'); } catch (_) { /* best effort */ }
-            }
-            syncToggle();
+
+    document.querySelectorAll('[data-rp-popup]').forEach(trigger => {
+        const panel = document.getElementById(trigger.getAttribute('aria-controls'));
+        trigger.addEventListener('click', () => {
+            if (opener === trigger) { closePopup(); return; }
+            if (popup) closePopup(false);
+            opener = trigger;
+            popup = panel;
+            panel.hidden = false;
+            shade.hidden = false;
+            trigger.setAttribute('aria-expanded', 'true');
+            panel.dispatchEvent(new Event('rp:popup-open'));
+            const first = panel.querySelector('[data-rp-initial-focus]') || panel.querySelector('a, button');
+            first?.focus({ preventScroll: true });
         });
-        narrow.addEventListener('change', () => { body.classList.remove('rp-rail-open'); syncToggle(); });
-        document.addEventListener('keydown', event => {
-            if (event.key === 'Escape' && narrow.matches && body.classList.contains('rp-rail-open')) { body.classList.remove('rp-rail-open'); syncToggle(); toggle.focus(); }
+        panel.addEventListener('click', event => {
+            if (event.target.closest('[data-rp-close-popup]')) closePopup();
         });
-        syncToggle();
-    }
-    // Icon-only rows need a name on hover when the sidebar is collapsed.
-    document.querySelectorAll('.rp-rail-nav a, .rp-rail-btn').forEach(control => {
-        const label = control.querySelector('span:not(.badge)');
-        if (label && !control.title) control.title = label.textContent.trim();
     });
 
-    const chip = document.getElementById('rpSafety');
-    function showSafety(settings) {
-        if (!chip) return;
-        const title = document.getElementById('rpSafetyTitle'), note = document.getElementById('rpSafetyNote');
-        if (!settings) {
-            chip.dataset.state = 'unknown'; title.textContent = 'Plex status unavailable'; note.textContent = 'Open Sharing to check.';
-        } else if (settings.writes_enabled) {
-            chip.dataset.state = 'on'; title.textContent = 'Sending to Plex is on'; note.textContent = 'You still confirm each change.';
-        } else {
-            chip.dataset.state = 'off'; title.textContent = 'Review only'; note.textContent = 'Reprise is not changing Plex.';
-        }
-        // The words are hidden while the sidebar is collapsed to icons: keep them as the tooltip.
-        chip.title = title.textContent + '. ' + note.textContent;
-    }
-    if (chip) {
-        fetch('/api/reprise/settings', { headers: { Accept: 'application/json' } })
-            .then(response => response.ok ? response.json() : Promise.reject(new Error('status ' + response.status)))
-            .then(showSafety, () => showSafety(null));
-        window.addEventListener('rp:settings', event => showSafety(event.detail));
-    }
-})();
+    document.addEventListener('click', event => {
+        if (!popup || popup.contains(event.target) || event.target.closest('[data-rp-popup]')) return;
+        closePopup();
+        event.preventDefault();
+        event.stopPropagation();
+    }, true);
+    document.addEventListener('keydown', event => {
+        if (event.key !== 'Escape' || !popup) return;
+        event.preventDefault();
+        event.stopPropagation();
+        closePopup();
+    }, true);
+    document.addEventListener('focusin', event => {
+        if (popup && !popup.contains(event.target) && !opener.contains(event.target)) closePopup(false);
+    });
+    document.addEventListener('show.bs.modal', () => { if (popup) closePopup(); });
 
-// Settings tabs: when they do not all fit (a phone, a narrow tablet) the strip scrolls sideways. Scroll only as far as it takes
-// to show the current tab whole (never to centre it, which hid the first tabs on a tablet), and fade whichever edge is cut off.
-(() => {
-    const strip = document.querySelector('.rp-subnav-scroll');
-    if (!strip) return;
-    const edge = 24;
-    function fade() {
-        const more = strip.scrollWidth - strip.clientWidth;
-        const start = strip.scrollLeft > 2, end = more - strip.scrollLeft > 2;
-        if (start && end) strip.dataset.fade = 'both';
-        else if (start) strip.dataset.fade = 'start';
-        else if (end) strip.dataset.fade = 'end';
-        else delete strip.dataset.fade;
+    const theme = document.getElementById('rpTheme');
+    if (theme) window.RepriseTheme.mountPicker(theme);
+
+    const dock = document.querySelector('.rp-main-nav');
+    if (dock) {
+        const phone = matchMedia('(max-width: 639.98px)');
+        function updateClearance() {
+            if (phone.matches) document.body.style.setProperty('--rp-dock-clearance', `${dock.offsetHeight}px`);
+            else document.body.style.removeProperty('--rp-dock-clearance');
+        }
+        new ResizeObserver(updateClearance).observe(dock);
+        phone.addEventListener('change', updateClearance);
+        updateClearance();
     }
-    function showCurrent() {
-        const current = strip.querySelector('a.active');
-        if (!current) return;
-        const left = current.offsetLeft, right = left + current.offsetWidth;
-        if (left < strip.scrollLeft + edge) strip.scrollLeft = Math.max(0, left - edge);
-        else if (right > strip.scrollLeft + strip.clientWidth - edge) strip.scrollLeft = right - strip.clientWidth + edge;
+
+    const settingsHeader = document.getElementById('settingsHeader');
+    if (settingsHeader) {
+        new ResizeObserver(() => {
+            document.documentElement.style.setProperty('--rp-advanced-header-height', `${settingsHeader.offsetHeight}px`);
+        }).observe(settingsHeader);
     }
-    showCurrent();
-    fade();
-    strip.addEventListener('scroll', fade, { passive: true });
-    if ('ResizeObserver' in window) new ResizeObserver(() => { showCurrent(); fade(); }).observe(strip);
-    else window.addEventListener('resize', fade);
+
+    const chip = document.getElementById('rpSafety');
+    if (!chip) return;
+    const title = document.getElementById('rpSafetyTitle'), note = document.getElementById('rpSafetyNote');
+    const icon = chip.querySelector('.bi');
+    function showSafety(settings) {
+        if (typeof settings?.writes_enabled !== 'boolean') {
+            chip.dataset.state = 'unknown';
+            icon.className = 'bi bi-shield-exclamation';
+            title.textContent = 'Plex status unavailable';
+            note.textContent = 'Open Sharing to check.';
+        } else if (settings.writes_enabled) {
+            chip.dataset.state = 'on';
+            icon.className = 'bi bi-shield-exclamation';
+            title.textContent = 'Sending to Plex is on';
+            note.textContent = 'Your media files are not changed.';
+        } else {
+            chip.dataset.state = 'off';
+            icon.className = 'bi bi-shield-check';
+            title.textContent = 'Review only';
+            note.textContent = 'Reprise is not changing Plex.';
+        }
+        chip.title = `${title.textContent}. ${note.textContent}`;
+    }
+    let changed = false;
+    fetch('/api/reprise/settings', { headers: { Accept: 'application/json' } })
+        .then(response => {
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            return response.json();
+        })
+        .then(settings => { if (!changed) showSafety(settings); }, () => { if (!changed) showSafety(null); });
+    window.addEventListener('rp:settings', event => {
+        changed = true;
+        showSafety(event.detail);
+    });
 })();

@@ -21,7 +21,7 @@ from loguru import logger
 from ..gpu.ffmpeg_capabilities import ffmpeg_binary
 from ..servers.ownership import apply_path_mappings
 from ..shutdown import is_shutting_down
-from . import chapters, recovery, scan_cache
+from . import artwork, chapters, jump_preview, recovery, scan_cache
 from .admission import MAX_REFERENCES, admit_references, pair_provenance
 from .identity import currency, media_version
 from .models import SUGGESTION_ORIGINS, AnalysisRefused, CandidateWindow, PlaybackIdentity, is_owner_span
@@ -1010,6 +1010,11 @@ class RepriseService:
                     "show_title": meta.get("show_title", ""),
                     "season": meta.get("season"),
                     "episode": meta.get("episode"),
+                    **(
+                        {"poster_url": f"/api/reprise/media/{version_id}/poster"}
+                        if artwork.episode_binding(bindings)
+                        else {}
+                    ),
                     "duration_ms": version.duration_ms,
                     "analysis_status": current["analysis_status"] if current else "missing",
                     "freshness": current["freshness"] if current else "unavailable",
@@ -1046,6 +1051,18 @@ class RepriseService:
             result["evidence"] = [asdict(e) for e in stored.evidence]
         return result
 
+    def season_poster(self, media_version_id):
+        """Only an active, current episode binding can authorize reading its season or show poster."""
+        binding = artwork.episode_binding(self._bindings(media_version_id))
+        version = self.store.get_media(media_version_id) if binding else None
+        if not version or not self._valid_binding(version, *binding):
+            return None
+        identity, server_id, metadata = binding
+        server = self.registry.get(server_id)
+        if server is not None:
+            return artwork.season_poster(server.config, identity, metadata)
+        return None
+
     def picture_source(self, media_version_id):
         """``(frames, version)`` for the approval screen's pictures of one episode, only while the file is as Reprise
         read it and still in a library it may read (the test the stream passes)."""
@@ -1079,6 +1096,15 @@ class RepriseService:
         except BaseException:
             os.close(fd)
             raise
+
+    def jump_preview(self, media_version_id, start_ms, end_ms):
+        """Render the skip on demand, using the same authorized file handle as playback."""
+        file, version = self.open_stream(media_version_id)
+        with file:
+            data = jump_preview.encode(file, version, start_ms, end_ms, ffmpeg_binary())
+            if not any(self._valid_binding(version, *binding) for binding in self._bindings(media_version_id)):
+                raise FileNotFoundError("Media changed during the jump preview")
+        return data
 
     def review(self, media_version_id, expected_revision, edits, actor):
         version = self.store.get_media(media_version_id)

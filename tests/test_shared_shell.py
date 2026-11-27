@@ -1,4 +1,4 @@
-"""Every signed-in page shares one shell (GitHub issue #2): the Reprise sidebar and the Settings tabs.
+"""Every signed-in page shares the Reprise chrome, with tools grouped under Settings.
 
 The inherited upstream top navbar, its Ko-fi/Star links and its "Media Preview Generator" titles must never come back
 on any page reachable from the navigation.
@@ -34,6 +34,8 @@ TABS = [
     ("Sharing", "/reprise/sharing"),
     ("Automation", "/automation"),
     ("Advanced", "/settings"),
+]
+TOOLS = [
     ("Jobs", "/dashboard"),
     ("Logs", "/logs"),
     ("Inspector", "/inspector"),
@@ -63,25 +65,33 @@ def client(tmp_path, monkeypatch):
 
 
 class _Nav(HTMLParser):
-    """Collects the links inside the sidebar's main navigation and the Settings tab strip."""
+    """Collect links in the main navigation, Settings tabs, and Tools disclosure."""
 
     def __init__(self) -> None:
         super().__init__()
-        self.rail: list[dict] = []
+        self.main: list[dict] = []
         self.tabs: list[dict] = []
+        self.tools: list[dict] = []
+        self.tools_current = False
         self._zone: str | None = None
         self._link: dict | None = None
 
     def handle_starttag(self, tag, attrs):
         a = {k: (v or "") for k, v in attrs}
         classes = a.get("class", "").split()
-        if tag == "nav" and "rp-rail-nav" in classes:
-            self._zone = "rail"
+        if tag == "nav" and "rp-main-nav" in classes:
+            self._zone = "main"
         elif tag == "nav" and "rp-subnav" in classes:
             self._zone = "tabs"
+        elif tag == "button" and a.get("aria-controls") == "rpTools":
+            assert a.get("aria-expanded") == "false"
+            self.tools_current = "data-current" in a
+        elif tag == "div" and a.get("id") == "rpTools":
+            assert "hidden" in a
+            self._zone = "tools"
         elif tag == "a" and self._zone:
             self._link = {"href": a.get("href", ""), "current": a.get("aria-current"), "text": ""}
-            (self.rail if self._zone == "rail" else self.tabs).append(self._link)
+            getattr(self, self._zone).append(self._link)
 
     def handle_endtag(self, tag):
         if tag == "a":
@@ -97,7 +107,7 @@ class _Nav(HTMLParser):
 def _nav(html: str) -> _Nav:
     parser = _Nav()
     parser.feed(html)
-    for link in parser.rail + parser.tabs:
+    for link in parser.main + parser.tabs + parser.tools:
         link["text"] = link["text"].strip()
     return parser
 
@@ -110,9 +120,9 @@ def _page(client, path: str) -> str:
 
 class TestNoInheritedNavbar:
     @pytest.mark.parametrize("path", ALL_PAGES)
-    def test_page_uses_the_reprise_sidebar_not_the_upstream_navbar(self, client, path):
+    def test_page_uses_the_reprise_app_bar_not_the_upstream_navbar(self, client, path):
         html = _page(client, path)
-        assert 'class="rp-rail"' in html
+        assert 'class="rp-appbar"' in html
         for upstream in ("navbar-brand", "navbar-toggler", 'id="navbarNav"', "nav-hover-menu", "offcanvas-xl"):
             assert upstream not in html, f"{path} still renders the upstream navbar piece {upstream!r}"
         assert '<nav class="navbar' not in html
@@ -139,49 +149,50 @@ class TestNoInheritedNavbar:
 
 class TestNavigation:
     @pytest.mark.parametrize("path", ALL_PAGES)
-    def test_the_sidebar_has_three_destinations(self, client, path):
-        rail = _nav(_page(client, path)).rail
-        assert [(link["text"], link["href"]) for link in rail] == [
+    def test_main_navigation_has_three_destinations(self, client, path):
+        nav = _nav(_page(client, path))
+        assert [(link["text"], link["href"]) for link in nav.main] == [
             ("Library", "/reprise"),
-            ("To approve", "/reprise/approve"),
+            ("Review", "/reprise/approve"),
             ("Settings", "/servers"),
         ]
 
     def test_the_library_marks_itself_current_and_has_no_tabs(self, client):
         nav = _nav(_page(client, "/reprise"))
-        assert [(link["text"], link["current"]) for link in nav.rail] == [
+        assert [(link["text"], link["current"]) for link in nav.main] == [
             ("Library", "page"),
-            ("To approve", None),
+            ("Review", None),
             ("Settings", None),
         ]
-        assert nav.tabs == []
+        assert nav.tabs == nav.tools == []
 
-    def test_to_approve_marks_itself_current_and_has_no_tabs(self, client):
+    def test_review_marks_itself_current_and_has_no_tabs(self, client):
         nav = _nav(_page(client, "/reprise/approve"))
-        assert [(link["text"], link["current"]) for link in nav.rail] == [
+        assert [(link["text"], link["current"]) for link in nav.main] == [
             ("Library", None),
-            ("To approve", "page"),
+            ("Review", "page"),
             ("Settings", None),
         ]
-        assert nav.tabs == []
+        assert nav.tabs == nav.tools == []
 
-    def test_the_setup_guide_is_no_destination_and_has_no_tabs(self, client):
-        # The guide is reached from the sidebar footer, not from the three destinations, so none of them is marked current.
+    def test_the_setup_guide_is_reached_from_help_not_the_main_navigation(self, client):
         nav = _nav(_page(client, "/setup-guide"))
-        assert [(link["text"], link["current"]) for link in nav.rail] == [
+        assert [(link["text"], link["current"]) for link in nav.main] == [
             ("Library", None),
-            ("To approve", None),
+            ("Review", None),
             ("Settings", None),
         ]
-        assert nav.tabs == []
+        assert nav.tabs == nav.tools == []
 
     @pytest.mark.parametrize(("path", "expected"), SETTINGS_PAGES.items())
-    def test_settings_pages_show_the_same_tabs_and_mark_their_own(self, client, path, expected):
+    def test_settings_pages_show_the_same_tabs_and_tools_and_mark_their_own(self, client, path, expected):
         label, current = expected
         nav = _nav(_page(client, path))
         assert [(link["text"], link["href"]) for link in nav.tabs] == TABS
-        assert {link["text"]: link["current"] for link in nav.tabs if link["current"]} == {label: current}
-        assert [link["current"] for link in nav.rail] == [None, None, "true"]
+        assert [(link["text"], link["href"]) for link in nav.tools] == TOOLS
+        assert nav.tools_current == (label in {name for name, _ in TOOLS})
+        assert {link["text"]: link["current"] for link in nav.tabs + nav.tools if link["current"]} == {label: current}
+        assert [link["current"] for link in nav.main] == [None, None, "true"]
 
     def test_pages_without_their_own_tab_stay_reachable_from_their_parent(self, client):
         # Nodes is linked from Advanced's own sidebar, Webhook activity from Automation's and from the Jobs shortcuts.
@@ -190,20 +201,31 @@ class TestNavigation:
         assert 'href="/webhook-activity"' in _page(client, "/dashboard")
 
 
-class TestSidebarFooter:
-    def test_footer_keeps_the_safety_chip_notifications_theme_and_sign_out(self, client):
+class TestAppActions:
+    def test_app_bar_keeps_the_safety_chip_notifications_theme_and_sign_out(self, client):
         html = _page(client, "/reprise")
         for landmark in (
             'id="rpSafety"',
             'id="notificationBellBtn"',
             'id="notificationBellBadge"',
             'id="notificationList"',
-            'id="themeToggleBtn"',
+            'id="rpThemeBtn"',
             'id="navLogoutBtn"',
             'action="/logout"',
         ):
             assert landmark in html, landmark
         assert 'name="csrf_token"' in html
+
+    def test_recent_activity_links_to_saved_history_and_has_server_notice_actions(self, client):
+        html = _page(client, "/reprise")
+        panel = html[html.index('id="rpActivity"') : html.index('id="rpThemeBtn"')]
+        for landmark in (
+            'id="notificationDismissAllBtn"',
+            'id="notificationResetBtn"',
+            'href="/dashboard"',
+            'href="/reprise/approve#automatic-sends"',
+        ):
+            assert landmark in panel
 
     def test_the_safety_chip_never_claims_review_only_before_it_has_checked(self, client):
         html = _page(client, "/reprise")
@@ -217,34 +239,34 @@ class TestSidebarFooter:
         assert 'href="https://github.com/nphil/reprise/releases/latest"' in html
         assert 'href="https://github.com/nphil/reprise/issues"' in html
 
-    def test_the_footer_links_the_setup_guide_between_help_and_the_tour(self, client):
+    def test_help_has_the_setup_guide_and_tour(self, client):
         html = _page(client, "/reprise")
-        link = re.search(
-            r'<a class="rp-rail-btn" id="rpSetupGuideLink" href="/setup-guide"([^>]*)>(.*?)</a>', html, re.S
-        )
-        assert link, "the sidebar footer has no Setup guide link"
+        start = html.index('id="rpHelp"')
+        help_panel = html[start : html.index("</header>", start)]
+        link = re.search(r'id="rpSetupGuideLink" href="/setup-guide"([^>]*)>(.*?)</a>', help_panel, re.S)
+        assert link, "Help has no Setup guide link"
         assert "Setup guide" in link.group(2)
         assert "aria-current" not in link.group(1), "only the guide page itself marks the link current"
-        assert html.index('id="rpHelpLink"') < html.index('id="rpSetupGuideLink"') < html.index("data-tour-open")
+        assert help_panel.index('id="rpSetupGuideLink"') < help_panel.index("data-tour-open")
 
-    def test_the_guide_marks_its_own_footer_link_current(self, client):
+    def test_the_guide_marks_its_own_help_link_current(self, client):
         assert re.search(r'id="rpSetupGuideLink"[^>]*aria-current="page"', _page(client, "/setup-guide"))
 
 
 class TestStandalonePages:
-    def test_the_sign_out_confirmation_has_no_sidebar(self, client):
+    def test_the_sign_out_confirmation_has_no_app_bar(self, client):
         html = _page(client, "/logout")
-        assert 'class="rp-rail"' not in html
+        assert 'class="rp-appbar"' not in html
         assert "rp-bare" in html
 
 
 class TestReprisePages:
-    def test_library_teaches_the_flow_and_keeps_technical_ids_out_of_the_page(self, client):
+    def test_library_starts_with_episodes_and_keeps_technical_ids_in_file_details(self, client):
         html = _page(client, "/reprise")
         for landmark in (
-            "Pick an episode",
-            "Analyze it.",
-            "Review what Reprise found.",
+            'id="rpLibraryList"',
+            'id="rpLibraryTools"',
+            'id="rpRangesTitle"',
             'id="rpAnalyze"',
             'id="rpFileDetails"',
         ):

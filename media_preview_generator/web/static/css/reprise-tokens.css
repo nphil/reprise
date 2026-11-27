@@ -1,39 +1,90 @@
 @font-face{font-family:Manrope;src:url('../fonts/manrope-latin.woff2') format('woff2');font-style:normal;font-weight:200 800;font-display:swap}
-/* Reprise's single token layer: Lucent v2 structure + Rosé Pine roles (dark by default, Dawn for light).
-   Every page, including the inherited upstream pages, reads these through reprise-shell.css. */
-:root{color-scheme:dark;
---lu-canvas:#191724;--lu-sheet:#1f1d2e;--lu-glass:#26233a;--lu-edge:#ffffff33;--lu-edge-soft:#ffffff1f;
---lu-ink:#f2eff6;--lu-ink-2:#d4cfdf;--lu-ink-3:#aaa4bd;
---lu-accent:#a79bf5;--lu-accent-text:#a79bf5;--lu-accent-ink:#17131f;--lu-accent-wash:#a79bf529;
---lu-positive:#9ccfd8;--lu-warning:#f6c177;--lu-danger:#eb6f92;--lu-info:#c4a7e7;
---lu-hover-wash:#ffffff14;--lu-selected-wash:#a79bf51f;--lu-scrim:#120e1acc;
---lu-radius-card:16px;--lu-radius-control:10px;--lu-radius-row:12px;--lu-radius-pill:999px;
---lu-space-1:4px;--lu-space-2:8px;--lu-space-3:12px;--lu-space-4:16px;--lu-space-5:20px;--lu-space-6:24px;--lu-space-7:32px;
---lu-target:44px;--lu-font:Manrope,system-ui,sans-serif;
---lu-shadow-raised:0 12px 32px #0a0710a6,0 2px 8px #0a07108c}
-:root[data-bs-theme=light]{color-scheme:light;
---lu-canvas:#faf4ed;--lu-sheet:#fffaf3;--lu-glass:#f2e9e1;--lu-edge:#57527950;--lu-edge-soft:#57527933;
---lu-ink:#17131f;--lu-ink-2:#575279;--lu-ink-3:#5f5b7a;
---lu-accent:#907aa9;--lu-accent-text:#5b4a7d;--lu-accent-ink:#17131f;--lu-accent-wash:#907aa933;
---lu-positive:#286983;--lu-warning:#7a500f;--lu-danger:#9c3e5a;--lu-info:#6d5a9a;
---lu-hover-wash:#17131f0d;--lu-selected-wash:#907aa933;--lu-scrim:#17131f66;
---lu-shadow-raised:0 12px 32px #57527940,0 2px 8px #57527926}
-/* Colour themes (reprise-themes.css, chosen by reprise-theme.js). Any theme other than the two Lucent defaults repaints
-   the shell and every older page through the tokens above; the defaults already match them, so they are left alone.
-   The redesigned screens (reprise-lucent.css) read the palette directly. Needs relative colours; an older browser keeps
-   the default palette here. The Bootstrap --bs-*-rgb triplets in reprise-shell.css cannot follow a theme and stay as they are. */
-@supports (color: rgb(from red r g b)) {
-  :root[data-theme]:not([data-theme^="lucent-"]) {
-    --lu-canvas: var(--pal-canvas); --lu-sheet: rgb(from var(--pal-sheet) r g b);
-    --lu-glass: color-mix(in srgb, var(--pal-ink) 7%, rgb(from var(--pal-sheet) r g b));
-    --lu-edge: color-mix(in srgb, var(--pal-ink) 28%, transparent); --lu-edge-soft: color-mix(in srgb, var(--pal-ink) 16%, transparent);
-    --lu-ink: var(--pal-ink); --lu-ink-2: color-mix(in srgb, var(--pal-ink) 86%, transparent); --lu-ink-3: var(--pal-ink-2);
-    --lu-accent: var(--pal-accent-fill); --lu-accent-ink: var(--pal-accent-fill-ink); --lu-accent-text: var(--pal-accent-text);
-    --lu-accent-wash: color-mix(in srgb, var(--pal-accent) 18%, transparent);
-    --lu-positive: var(--pal-positive-text); --lu-warning: var(--pal-warning-text);
-    --lu-danger: var(--pal-danger-text); --lu-info: var(--pal-info-text);
-    --lu-hover-wash: color-mix(in srgb, var(--pal-ink) 8%, transparent);
-    --lu-selected-wash: color-mix(in srgb, var(--pal-accent) 16%, transparent);
-    --lu-scrim: color-mix(in srgb, var(--pal-canvas) 80%, transparent);
+/* One Lucent v2 token layer shared by the shell, review and inherited pages. */
+:root {
+  color-scheme: dark;
+  --lu-canvas: var(--pal-canvas);
+  --lu-sheet: color-mix(in srgb, var(--pal-sheet) 82%, var(--lu-canvas));
+  --lu-glass: var(--pal-glass);
+  --lu-glass-raised: var(--pal-glass-raised);
+  --lu-edge: color-mix(in srgb, var(--pal-ink) 25%, transparent);
+  --lu-edge-raised: color-mix(in srgb, var(--pal-ink) 34%, transparent);
+  --lu-edge-soft: color-mix(in srgb, var(--pal-ink) 14%, transparent);
+  --lu-ink: var(--pal-ink);
+  --lu-ink-2: color-mix(in srgb, var(--pal-ink-2) 50%, var(--lu-ink));
+  --lu-ink-3: color-mix(in srgb, var(--lu-ink-2) 72%, var(--lu-canvas));
+  --lu-accent: var(--pal-accent);
+  --lu-accent-ink: var(--pal-accent-ink);
+  --lu-accent-fill: var(--pal-accent-fill);
+  --lu-accent-fill-ink: var(--pal-accent-fill-ink);
+  --lu-accent-text: var(--pal-accent-text);
+  --lu-positive: var(--pal-positive-text);
+  --lu-warning: var(--pal-warning-text);
+  --lu-danger: var(--pal-danger-text);
+  --lu-info: var(--pal-info-text);
+  --lu-live: var(--pal-live);
+  --lu-positive-text: var(--lu-positive);
+  --lu-warning-text: var(--lu-warning);
+  --lu-danger-text: var(--lu-danger);
+  --lu-info-text: var(--lu-info);
+  --lu-scrim: var(--pal-scrim);
+  --lu-confirm-scrim: color-mix(in srgb, var(--lu-canvas) 98%, transparent);
+  --lu-track-off: var(--pal-track-off);
+  --lu-track-readable: color-mix(in srgb, var(--lu-ink) 60%, transparent);
+  --lu-accent-wash: color-mix(in srgb, var(--lu-accent) 16%, transparent);
+  --lu-hover-wash: color-mix(in srgb, var(--lu-ink) 4%, transparent);
+  --lu-selected-wash: color-mix(in srgb, var(--lu-ink) 8%, transparent);
+  --lu-press-wash: color-mix(in srgb, var(--lu-ink) 8%, transparent);
+  --lu-focus-wash: color-mix(in srgb, var(--lu-ink) 7%, transparent);
+  --lu-material-edge: var(--lu-edge-soft);
+  --lu-material-well: color-mix(in srgb, var(--lu-canvas) 28%, transparent);
+  --lu-material-overlay: color-mix(in srgb, var(--pal-sheet) 34%, var(--lu-canvas));
+  --lu-reading: color-mix(in srgb, var(--lu-ink) 4%, var(--lu-canvas));
+  --lu-quiet-fill: color-mix(in srgb, var(--lu-glass-raised) 70%, var(--lu-reading));
+  --lu-semantic-fill-ink: var(--lu-canvas);
+  --lu-shadow-rest: 0 16px 36px rgb(0 0 0 / .22);
+  --lu-shadow-raised: 0 24px 60px rgb(0 0 0 / .38), 0 6px 16px rgb(0 0 0 / .20);
+  --lu-shadow-pressed: 0 3px 10px rgb(0 0 0 / .26);
+  --lu-highlight-rest: inset 0 1px 0 rgb(255 255 255 / .07);
+  --lu-neumorphic-light: rgb(255 255 255 / .10);
+  --lu-neumorphic-shade: rgb(0 0 0 / .32);
+  --lu-neumorphic-raised: -2px -2px 4px var(--lu-neumorphic-light), 2px 2px 4px var(--lu-neumorphic-shade);
+  --lu-neumorphic-inset: inset 2px 2px 4px var(--lu-neumorphic-shade), inset -2px -2px 4px var(--lu-neumorphic-light);
+  --lu-sheen: linear-gradient(135deg, rgb(255 255 255 / .11), transparent 64%);
+
+  --lu-radius-sheet: 28px; --lu-radius-card: 24px; --lu-radius-tile: 20px;
+  --lu-radius-row: 18px; --lu-radius-control: 14px; --lu-radius-pill: 999px;
+  --lu-space-1: 4px; --lu-space-2: 8px; --lu-space-3: 12px; --lu-space-4: 16px;
+  --lu-space-5: 20px; --lu-space-6: 24px; --lu-space-7: 32px; --lu-space-8: 40px;
+  --lu-inset-card: var(--lu-space-5);
+  --lu-edge-x: var(--lu-space-7);
+  --lu-target: 48px; --h-btn: var(--lu-target); --h-chip: calc(var(--h-btn) - var(--lu-space-2));
+  --lu-shell-app-bar: 56px; --lu-shell-bottom-bar: 57px;
+  --lu-font: Manrope, system-ui, sans-serif;
+  --lu-type-page: 1.75rem; --lu-type-title: 1.25rem; --lu-type-body: 1rem;
+  --lu-type-label: .875rem; --lu-type-caption: .75rem;
+  --lu-type-body-line: 1.45; --lu-type-title-line: 1.25;
+  --lu-z-raised: 1; --lu-z-sticky: 2; --lu-z-chrome: 3; --lu-z-popup: 4;
+  --lu-ease: cubic-bezier(.33,1,.68,1);
+  --lu-motion-label: 120ms; --lu-motion-focus: 150ms; --lu-motion-card: 180ms; --lu-motion-layer: 220ms;
+  --lu-lift-raised: 4px; --lu-focus-scale: 1.02; --lu-travel-layer: 16px;
+}
+
+:root[data-bs-theme=light] {
+  color-scheme: light;
+  --lu-shadow-rest: 0 16px 36px rgb(0 0 0 / .12);
+  --lu-shadow-raised: 0 24px 60px rgb(0 0 0 / .22), 0 6px 16px rgb(0 0 0 / .12);
+  --lu-shadow-pressed: 0 3px 10px rgb(0 0 0 / .16);
+  --lu-highlight-rest: inset 0 1px 0 rgb(255 255 255 / .60);
+  --lu-neumorphic-light: rgb(255 255 255 / .86);
+  --lu-neumorphic-shade: rgb(0 0 0 / .10);
+  --lu-focus-wash: color-mix(in srgb, var(--lu-ink) 6%, transparent);
+}
+@media (max-width: 639.98px) {
+  :root { --lu-edge-x: var(--lu-space-4); --lu-type-page: 1.5rem; --lu-inset-card: var(--lu-space-4); }
+}
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --lu-motion-label: 0ms; --lu-motion-focus: 0ms; --lu-motion-card: 0ms; --lu-motion-layer: 0ms;
+    --lu-lift-raised: 0px; --lu-focus-scale: 1; --lu-travel-layer: 0px;
   }
 }

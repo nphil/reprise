@@ -16,7 +16,7 @@ Reprise finds repeated opening and closing material across episodes while protec
 
 ## Operating Context
 
-The home screen starts with the library: browse shows and seasons, select episodes for analysis, and open an episode for detailed comparison and review. Jobs run asynchronously. The app is intended for a managed, internal-only Unraid installation. Source is intended to be public; this does not make the running service public.
+The home screen starts with the library. Someone who opens Reprise should be able to tell what needs a decision, hear and see a proposed skip, and correct either edge without hunting through jobs or settings. Job progress belongs with the work; routine successes should not require dismissal. Reprise runs on a managed, internal-only Unraid installation. Publishing the source does not make that installation public.
 
 ## Capabilities and Constraints
 
@@ -30,7 +30,7 @@ The home screen starts with the library: browse shows and seasons, select episod
 
 ## Brand Commitments
 
-The name is Reprise; the working line is “Skip the repeat. Keep the story.” HomeLabber is the interface reference, with the active Lucent design language and Rosé Pine palette. An original mark should suggest repeated frames with a deliberately preserved break, rather than a generic play button. No trademark clearance is claimed.
+The name is Reprise; the working line is “Skip the repeat. Keep the story.” Use the Lucent web design language with Rosé Pine as the default and respect the owner’s selected theme throughout. Stashify is the visual reference for navigation, spacing, controls and the prominence of media, not a template for the workflow. In Reprise the meaningful comparison is the moment before playback skips and the moment it resumes. The original mark suggests repeated frames with a deliberately preserved break. No trademark clearance is claimed.
 
 ## Evidence on Hand
 

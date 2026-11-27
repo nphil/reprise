@@ -1,4 +1,4 @@
-"""A stand-in for the approvals and picture endpoints, shared by the To approve e2e tests.
+"""A stand-in for the approvals and picture endpoints, shared by the Review E2E tests.
 
 Only ``/api/reprise/approvals*`` and the picture endpoints under ``/api/reprise/media/<id>/`` are answered here; the
 shell, the scripts and the styles are the app's real ones. The state moves like the real backend: a send moves the sure
@@ -65,6 +65,7 @@ def span(mid, kind, bucket, start, end, how_sure="high", source="Reprise", reaso
         "mid": mid,
         "kind": kind,
         "bucket": bucket,
+        "first_bucket": bucket,
         "start_ms": start,
         "end_ms": end,
         "first": (start, end),
@@ -117,7 +118,7 @@ def _jpeg(width: int, height: int, tiles: int, tint: int) -> bytes:
 
 
 class ApprovalsApi:
-    """The approvals API as the To approve page sees it. ``calls`` lists every request, ``posts(path)`` the bodies sent
+    """The approvals API as the Review page sees it. ``calls`` lists every request, ``posts(path)`` the bodies sent
     to one endpoint; ``fail[(method, path)] = (status, body)`` makes the next such request fail once."""
 
     def __init__(
@@ -427,7 +428,7 @@ class ApprovalsApi:
             target["bucket"] = "kept"
             undo = {"decision": "restore", "kind": kind, "span_id": None, "range_ids": [f"r-{mid}-{kind}"]}
         else:  # restore: the suggestion waits again at the time it was found
-            target["bucket"] = "needs"
+            target["bucket"] = target["first_bucket"]
             target["start_ms"], target["end_ms"] = target["first"]
             undo = {"decision": "skip"}
         self.revisions[mid] += 1
