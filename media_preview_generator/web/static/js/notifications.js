@@ -14,6 +14,8 @@ function loadNotifications() {
     notificationLoad = fetch('/api/system/notifications', { headers: { Accept: 'application/json' } })
         .then(function (response) {
             if (!response.ok || response.redirected) throw new Error('HTTP ' + response.status);
+            // Before setup is complete the server can return the setup page instead of a notice list.
+            if (response.headers.get('content-type')?.includes('text/html')) throw new Error('Setup page');
             return response.json();
         })
         .then(function (data) {
@@ -23,8 +25,7 @@ function loadNotifications() {
             delete trigger.dataset.noticeState;
             return true;
         })
-        .catch(function (err) {
-            console.error('loadNotifications failed:', err);
+        .catch(function () {
             // Keep any last-known notices, but never claim the list is current or empty after a failure.
             document.getElementById('notificationEmpty').classList.add('d-none');
             failure.hidden = false;
