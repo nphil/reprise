@@ -582,7 +582,11 @@ class TestRequiredStepsDone:
             "This guide won't open by itself now. You can reopen it from Help."
         )
         expect(authed_page.locator("#sgSkip")).to_be_hidden()
-        expect(authed_page.locator("#rpSetupGuideLink")).to_have_attribute("aria-current", "page")
+        authed_page.get_by_role("navigation", name="Main").get_by_role("link", name="Library").click()
+        authed_page.locator("#rpHelpBtn").click()
+        authed_page.get_by_role("region", name="Help", exact=True).get_by_role("link", name="Setup guide").click()
+        expect(authed_page).to_have_url(f"{app_url}/setup-guide")
+        expect(authed_page.locator("#sgDismissed")).to_be_visible()
 
 
 # ---------------------------------------------------------------------------
@@ -948,11 +952,24 @@ class TestPageFrame:
                 "aria-current", re.compile(".")
             )
 
-    def test_the_tour_does_not_open_over_the_guide(self, authed_page: Page, app_url: str) -> None:
+    def test_the_tour_only_opens_from_help_on_the_guide(self, authed_page: Page, app_url: str) -> None:
         GuideApi(authed_page, fresh())
         _open(authed_page, app_url)
-        expect(authed_page.locator("#repriseTour")).to_have_attribute("data-auto", "false")
-        expect(authed_page.locator("#repriseTour")).not_to_have_attribute("open", re.compile(".*"))
+        tour = authed_page.locator("#repriseTour")
+        expect(tour).to_have_attribute("data-auto", "false")
+        expect(tour).to_be_hidden()
+
+        help_button = authed_page.locator("#rpHelpBtn")
+        help_button.click()
+        help_panel = authed_page.get_by_role("region", name="Help", exact=True)
+        help_panel.get_by_role("button", name="Take the tour").click()
+        expect(tour).to_be_visible()
+        expect(tour.locator("#tourCount")).to_have_text("Step 1 of 5")
+        expect(help_panel).to_be_hidden()
+
+        authed_page.keyboard.press("Escape")
+        expect(tour).to_be_hidden()
+        expect(help_button).to_be_focused()
 
     @pytest.mark.parametrize(("path", "says_it"), [("/setup-guide", False), ("/servers", True)])
     def test_missing_folder_cards_are_not_said_twice(

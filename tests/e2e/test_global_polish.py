@@ -137,8 +137,8 @@ class TestPageGutter:
             )
         assert len({tuple(value) for value in edges.values()}) == 1, edges
 
-    @pytest.mark.parametrize("width", [1920, 1440, 1100, 768, 390])
-    def test_first_content_element_has_the_same_left_x_when_pages_are_compared(
+    @pytest.mark.parametrize("width", [1920, 1440, 1100, 768, 390, 320])
+    def test_first_content_element_starts_at_the_shared_page_gutter(
         self, authed_page: Page, app_url: str, width: int
     ) -> None:
         """Pages must not add a container or margin of their own on top of ``.page-shell``."""
@@ -153,13 +153,19 @@ class TestPageGutter:
             "/webhook-activity": "h1.page-title",
             "/inspector": ".insp-page-title h1",
         }
-        lefts: dict[str, float] = {}
         for path, selector in first_element.items():
             authed_page.goto(f"{app_url}{path}")
             authed_page.wait_for_load_state("domcontentloaded")
-            lefts[path] = authed_page.evaluate(
-                "(sel) => { const el = [...document.querySelectorAll(sel)].find(e => e.getBoundingClientRect().width > 0);"
-                " return el.getBoundingClientRect().left; }",
+            left, gutter = authed_page.evaluate(
+                """(selector) => {
+                    const main = document.getElementById('main-content');
+                    const content = [...main.querySelectorAll(selector)]
+                        .find(el => el.getBoundingClientRect().width > 0);
+                    return [
+                        content.getBoundingClientRect().left,
+                        main.getBoundingClientRect().left + parseFloat(getComputedStyle(main).paddingLeft),
+                    ];
+                }""",
                 selector,
             )
-        assert len({round(left, 1) for left in lefts.values()}) == 1, lefts
+            assert left == pytest.approx(gutter, abs=0.1), path

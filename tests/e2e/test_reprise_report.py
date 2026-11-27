@@ -193,7 +193,7 @@ class TestReport:
         expect(row).to_contain_text("Intro\u00a01:00\u2060\u2013\u20602:10")
         expect(authed_page.locator("#rpReportSub")).to_contain_text("5 episodes \u00b7 3 analyzed")
         assert api.reports == [{"show": "Community", "season": "3"}]
-        expect(authed_page.locator("[data-tour=nav-library]")).to_have_attribute("aria-current", "page")
+        expect(authed_page.locator("[data-tour=nav-library]")).to_have_attribute("aria-current", "true")
 
     def test_a_filter_chip_narrows_the_list_and_can_be_cleared(
         self, authed_page: Page, api: ReportApi, app_url: str
@@ -279,9 +279,14 @@ class TestReport:
         self, authed_page: Page, api: ReportApi, app_url: str
     ) -> None:
         authed_page.goto(f"{app_url}/reprise?show=Community&season=3")
+        expect(authed_page.locator("[data-tour=nav-library]")).to_have_attribute("aria-current", "page")
         link = authed_page.locator("#rpReportLink")
         expect(link).to_be_hidden()
         authed_page.locator("#rpLibraryTools > summary").click()
         expect(link).to_be_visible()
         expect(link).to_have_attribute("href", "/reprise/report?show=Community&season=3")
         assert api.reports == []
+        link.click()
+        expect(authed_page).to_have_url(f"{app_url}/reprise/report?show=Community&season=3")
+        expect(authed_page.locator(".rp-report-row")).to_have_count(5)
+        assert api.reports == [{"show": "Community", "season": "3"}]

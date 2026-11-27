@@ -73,7 +73,7 @@ class TestSettingsTabStrip:
     def test_outside_click_closes_help_without_activating_the_page(self, authed_page: Page, app_url: str) -> None:
         mock_dashboard_defaults(authed_page)
         authed_page.goto(f"{app_url}/dashboard")
-        help_button = authed_page.get_by_role("button", name="Help", exact=True)
+        help_button = authed_page.locator("#rpHelpBtn")
         help_button.click()
         expect(authed_page.locator("#rpHelp")).to_be_visible()
         library = authed_page.get_by_role("navigation", name="Main", exact=True).get_by_role("link", name="Library")

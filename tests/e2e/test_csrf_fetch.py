@@ -104,7 +104,8 @@ class TestSignOut:
     def test_the_navs_logout_signs_out(self, authed_page: Page, app_url: str, complete_setup: None) -> None:
         authed_page.goto(f"{app_url}/logs")
 
-        authed_page.locator("#navLogoutBtn").click()
+        authed_page.locator("#rpHelpBtn").click()
+        authed_page.get_by_role("region", name="Help", exact=True).get_by_role("button", name="Sign out").click()
 
         expect(authed_page).to_have_url(f"{app_url}/login", timeout=5000)
         authed_page.goto(f"{app_url}/logs")
@@ -127,7 +128,9 @@ class TestSignOut:
         expect(authed_page.locator("#logoutConfirm")).to_contain_text("Sign out?", timeout=5000)
         authed_page.goto(f"{app_url}/logs")
         expect(authed_page).to_have_url(f"{app_url}/logs")
-        expect(authed_page.locator("#navLogoutBtn")).to_be_visible()
+        authed_page.locator("#rpHelpBtn").click()
+        sign_out = authed_page.get_by_role("region", name="Help", exact=True).get_by_role("button", name="Sign out")
+        expect(sign_out).to_be_visible()
 
     def test_opening_logout_asks_first_and_its_button_signs_out(
         self, authed_page: Page, app_url: str, complete_setup: None

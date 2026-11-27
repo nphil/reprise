@@ -1142,10 +1142,11 @@ class TestListLayout:
         authed_page.set_viewport_size({"width": 1280, "height": 720})
         _more_episodes(api, 34)
         _open(authed_page, app_url)
-        authed_page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        authed_page.locator("#rpRefresh").dispatch_event("click")
+        authed_page.locator("#rpLibraryTools > summary").click()
+        authed_page.locator("#rpRefresh").click()
         message = authed_page.locator("#rpMessage")
         expect(message).to_contain_text("Refreshing TV Shows")
+        authed_page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         assert 0 <= message.bounding_box()["y"] < 100  # stuck near the top of the window, not left above the fold
 
 
