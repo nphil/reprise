@@ -32,13 +32,13 @@ class TestLogsPolish:
 
     def test_log_body_follows_the_light_surface_when_theme_is_light(self, authed_page: Page, app_url: str) -> None:
         self._open(authed_page, app_url)
-        authed_page.evaluate("document.documentElement.setAttribute('data-bs-theme', 'light')")
+        authed_page.evaluate("RepriseTheme.choose('rose-pine-dawn')")
         bg = authed_page.evaluate(_LOG_LINE)["bg"]
         assert bg == "rgb(250, 244, 237)"
 
     def test_log_body_uses_the_dark_canvas_when_theme_is_dark(self, authed_page: Page, app_url: str) -> None:
         self._open(authed_page, app_url)
-        authed_page.evaluate("document.documentElement.setAttribute('data-bs-theme', 'dark')")
+        authed_page.evaluate("RepriseTheme.choose('rose-pine')")
         assert authed_page.evaluate(_LOG_LINE)["bg"] == "rgb(25, 23, 36)"
 
     def test_level_word_is_semibold_sentence_case_when_rendered(self, authed_page: Page, app_url: str) -> None:

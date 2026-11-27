@@ -388,7 +388,7 @@ class TestContrast:
         groups, workers = _loudness_example()
         workers[4]["current_phase"] = "Loudness 1/1"
         _open(authed_page, app_url, groups, workers)
-        authed_page.evaluate("t => document.documentElement.setAttribute('data-bs-theme', t)", theme)
+        authed_page.evaluate("theme => RepriseTheme.choose(RepriseTheme.preference()[theme])", theme)
         failures = authed_page.evaluate(
             """() => {
                 const parse = c => { const n = c.match(/[\\d.]+/g).map(Number); return c.startsWith('color(') ? n.map((v, i) => (i < 3 ? v * 255 : v)) : n; };

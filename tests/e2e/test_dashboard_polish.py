@@ -302,7 +302,7 @@ def test_queue_metadata_keeps_explicit_owners_and_readable_type(dashboard: Calla
         publishers=[{"server_id": "other", "server_name": "Unrelated publisher", "server_type": "emby"}],
     )
     page = dashboard([job])
-    page.evaluate("theme => document.documentElement.setAttribute('data-bs-theme', theme)", theme)
+    page.evaluate("theme => RepriseTheme.choose(RepriseTheme.preference()[theme])", theme)
     metadata = page.locator("#job-row-shared-movie .queue-metadata")
     for text in ("Previews", "Movies", "Home Plex", "Home Jellyfin", "Sonarr"):
         expect(metadata).to_contain_text(text)

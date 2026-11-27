@@ -857,7 +857,7 @@ class TestLayout:
     ) -> None:
         GuideApi(authed_page, partly())
         _open(authed_page, app_url)
-        authed_page.evaluate("(theme) => document.documentElement.setAttribute('data-bs-theme', theme)", theme)
+        authed_page.evaluate("theme => RepriseTheme.choose(RepriseTheme.preference()[theme])", theme)
         assert _weak(authed_page.evaluate(CONTRAST_JS, [list(row) for row in CONTRAST_ROWS])) == []
 
     @pytest.mark.parametrize("theme", ["dark", "light"])
@@ -868,7 +868,7 @@ class TestLayout:
         done["state"] = "dismissed"  # the calm note and the quiet "won't open by itself" line are both on screen
         api = GuideApi(authed_page, done)
         _open(authed_page, app_url)
-        authed_page.evaluate("(theme) => document.documentElement.setAttribute('data-bs-theme', theme)", theme)
+        authed_page.evaluate("theme => RepriseTheme.choose(RepriseTheme.preference()[theme])", theme)
         notes = [["#sgDone p", "calm note"], ["#sgOpenLibrary", "Open Library"], ["#sgDismissed", "quiet note"]]
         assert _weak(authed_page.evaluate(CONTRAST_JS, notes)) == []
         api.fail_gets = 1
