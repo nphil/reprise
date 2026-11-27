@@ -77,6 +77,8 @@
 .ap-plex .bi { flex: none; margin-top: 1px; font-size: 14px; }
 
 .ap .lu-tray { bottom: calc(var(--rp-dock-clearance, 0px) + var(--lu-space-3)); }
+/* Keep the picture and native playback controls clear while judging a jump. */
+.ap-review:has(.ap-jump-video:not([hidden])) .lu-tray { position: static; }
 .ap .lu-toasts { bottom: calc(var(--rp-dock-clearance, 0px) + var(--lu-space-8) + 6rem); }
 .ap-choose { margin-top: 0; }
 .ap-choose .lu-tsum b { display: block; font-size: var(--lu-type-body); }
